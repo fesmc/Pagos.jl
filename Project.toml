@@ -3,6 +3,10 @@ uuid = "c861e262-d8e9-4375-8e5f-146fb08f794b"
 authors = ["Alexander Robinson", "Jan Swierczek-Jereczek"]
 version = "1.0.0-DEV"
 
+[deps]
+FillArrays = "1a297f60-69ca-5386-bcde-b61e274b549b"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+
 [compat]
 julia = "1.10"
 
