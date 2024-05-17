@@ -43,15 +43,15 @@ function define_slab(;
         "u" => u,
     )
 
-    # Print summary
-    if verbose
-        nms = ["H0", "μ0", "β0", "α", "ρ", "ub", "u"]
-        println("Analytical stream defined:")
-        for nm in nms
-            @printf("  %4s = %5.3g", nm, strm[nm])
-        end
-        print("\n")
-    end
+    # # Print summary
+    # if verbose
+    #     nms = ["H0", "μ0", "β0", "α", "ρ", "ub", "u"]
+    #     println("Analytical stream defined:")
+    #     for nm in nms
+    #         @printf("  %4s = %5.3g", nm, strm[nm])
+    #     end
+    #     print("\n")
+    # end
 
     return strm
 end
