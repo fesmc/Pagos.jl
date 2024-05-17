@@ -96,32 +96,36 @@ function pseudo_transient!(icesheet::IceSheet{T}) where {T<:AbstractFloat}
     (; rho_ice, muB) = params
     (; dx, dy, nx, ny) = domain
 
-    (; theta_v, reltol, maxiter) = options
+    (; theta_v, abstol, maxiter) = options
 
     # Assign initial values
     pseudo_ux .= ux
     pseudo_uy .= uy
 
     # Init PT loop
-    err = 2 * reltol
+    err = 2 * abstol
     iter = 0
-    dtau = 1e-8
+    dtau = 1e-5
 
     # PT loop following Sandip et al. (2024)
-    while err > reltol && iter + 1 < maxiter
+    while err > abstol && iter + 1 < maxiter
         iter += 1
         pseudo_ux_old .= pseudo_ux
         pseudo_uy_old .= pseudo_uy
-        @show iter
 
         pseudo_dotvel!(state, domain, params, options)
-        # dtau = pseudo_dt(rho_ice, dx, mu, muB)
-        @show dtau
+        dtau = pseudo_dt(rho_ice, dx, mu, muB)
 
         pseudo_vel!(pseudo_ux, pseudo_ux_old, dotvel_x, dtau, theta_v)
         pseudo_vel!(pseudo_uy, pseudo_uy_old, dotvel_y, dtau, theta_v)
-        err = (norm((pseudo_ux - pseudo_ux_old)) + norm((pseudo_uy - pseudo_uy_old))) / (nx * ny)
-        @show err
+
+        if iter % options.compute_residual_every == 0
+            err = (norm((pseudo_ux - pseudo_ux_old)) + norm((pseudo_uy - pseudo_uy_old))) / (nx * ny)
+            @show iter
+            @show dtau
+            @show err
+        end
+
     end
     
     return nothing

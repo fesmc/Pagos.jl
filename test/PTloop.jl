@@ -9,7 +9,6 @@ end
 
 T = Float64
 domain = Domain(T, 6000, 6000, 16, 16)
-
 state = State(domain)
 params = Params{T}()
 options = Options{T}(maxiter = 1000)
@@ -24,13 +23,5 @@ state.mu .= 1e5
 state.β .= 1e3
 state.β_acx .= state.β
 state.β_acy .= state.β
-
-@btime pseudo_dotvel!($state, $domain, $params)
-# 3.360 ms (0 allocations: 0 bytes)
-
-dtau = 1.0
-@btime pseudo_vel!($state.pseudo_ux, $state.pseudo_ux_old,
-    $state.dotvel_x, $dtau, $options.theta_v)
-# 51.840 μs (0 allocations: 0 bytes)
 
 pseudo_transient!(icesheet)
