@@ -29,7 +29,7 @@ include("numerics/pseudotransient.jl")
 include("thermodynamics/viscosity.jl")
 
 export Domain, State, Params, Options, IceSheet
-
+export stagger_beta!
 export pseudo_dotvel!, pseudo_vel!, pseudo_transient!
 
 end
