@@ -48,6 +48,8 @@ mutable struct State{T<:AbstractFloat}
     pseudo_uy::Matrix{T}
     pseudo_ux_old::Matrix{T}
     pseudo_uy_old::Matrix{T}
+    dotvel_x::Matrix{T}
+    dotvel_y::Matrix{T}
     ux_x::Matrix{T}
     ux_y::Matrix{T}
     uy_x::Matrix{T}
@@ -66,6 +68,7 @@ mutable struct State{T<:AbstractFloat}
     c_bed::Matrix{T}
     f_ice::Matrix{T}
     mu::Matrix{T}
+    prealloc::Matrix{T}
 end
 # TODO should use lazy maps instead of large structs
 

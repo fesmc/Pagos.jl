@@ -41,9 +41,20 @@ function calc_driving_stress!(taud_acx, taud_acy, H, z_srf, ρ, g, nx, ny, dx, d
 end
 
 
-function shearstress!(shear_x, shear_y, strainrate_xx, strainrate_xy, strainrate_yy, dx, dy)
-    shear_x .= delx(strainrate_xx, dx) + dely(strainrate_xy, dy)
-    shear_y .= delx(strainrate_xy, dx) + dely(strainrate_yy, dy)
+function shearstress!(shear_x, shear_y, strainrate_xx, strainrate_xy, strainrate_yy,
+    prealloc, dx, dy, nx, ny)
+    
+    # Allocation-free version of: shear_x .= delx(sr_xx, dx) + dely(sr_xy, dy)
+    delx!(prealloc, strainrate_xx, dx, nx)
+    shear_x .= prealloc
+    dely!(prealloc, strainrate_xy, dy, ny)
+    shear_x .+= prealloc
+
+    # Allocation-free version of: shear_y .= delx(sr_xy, dx) + dely(sr_yy, dy)
+    delx!(prealloc, strainrate_xy, dx, nx)
+    shear_y .= prealloc
+    dely!(prealloc, strainrate_yy, dy, ny)
+    shear_y .+= prealloc
     return nothing
 end
 
@@ -53,8 +64,11 @@ function basalstress!(basalstress_x, basalstress_y, β_acx, β_acy, u, v)
     return nothing
 end
 
-function drivingstress!(drivingstress_x, drivingstress_y, rho_ice, g, H, z_srf, dx, dy, nx, ny)
-    drivingstress_x .= (rho_ice * g) .* H .* delx(z_srf, dx, nx)
-    drivingstress_y .= (rho_ice * g) .* H .* dely(z_srf, dy, ny)
+function drivingstress!(drivingstress_x, drivingstress_y, prealloc, rho_ice, g, H, z_b, dx, dy, nx, ny)
+    @. prealloc = H + z_b
+    delx!(drivingstress_x, prealloc, dx, nx)
+    dely!(drivingstress_y, prealloc, dy, ny)
+    drivingstress_x .*= (rho_ice * g) .* H
+    drivingstress_y .*= (rho_ice * g) .* H
     return nothing
 end

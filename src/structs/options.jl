@@ -22,4 +22,5 @@ options = Options{Float64}(theta_v=0.5, theta_mu=0.1, reltol=1e-4, maxiter=200)
     theta_mu::T = T(0.1)
     reltol::T = T(1e-3)
     maxiter::Int = 100
+    debug::Bool = false
 end

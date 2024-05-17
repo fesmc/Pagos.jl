@@ -1,6 +1,10 @@
 function delx(u, dx)
-    du = similar(u)
     nx = size(u, 1)
+    return delx(u, dx, nx)
+end
+
+function delx(u, dx, nx)
+    du = similar(u)
     delx!(du, u, dx, nx)
     return du
 end
@@ -16,8 +20,12 @@ function delx!(du::Matrix{T}, u::Matrix{T}, dx::T, nx::Int) where {T<:AbstractFl
 end
 
 function dely(u, dy)
-    du = similar(u)
     ny = size(u, 2)
+    return dely(u, dy, ny)
+end
+
+function dely(u, dy, ny)
+    du = similar(u)
     dely!(du, u, dy, ny)
     return du
 end
