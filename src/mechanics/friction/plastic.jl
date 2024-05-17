@@ -24,7 +24,7 @@ function calc_beta_aa_power_plastic(
 
     for i = 1:nx
         for j = 1:ny
-            im1, jm1 = periodic_bc_minusindices(i, nx), periodic_bc_minusindices(j, ny)
+            im1, jm1 = periodic_bc_minusindex(i, nx), periodic_bc_minusindex(j, ny)
 
             if f_ice[i, j] == 1.0
                 # Fully ice-covered point with some fully ice-covered neighbors 

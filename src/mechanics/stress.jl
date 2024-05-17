@@ -22,8 +22,8 @@ function calc_driving_stress!(taud_acx, taud_acy, H, z_srf, ρ, g, nx, ny, dx, d
 
     for i = 1:nx
         for j = 1:ny
-            ip1 = periodic_bc_plusindices(i, nx)
-            jp1 = periodic_bc_plusindices(j, ny)
+            ip1 = periodic_bc_plusindex(i, nx)
+            jp1 = periodic_bc_plusindex(j, ny)
 
             H_mid = 0.5 * (H[i, j] + H[ip1, j])
             taud_acx[i, j] = ρ * g * H_mid * (z_srf[ip1, j] - z_srf[i, j]) / dx

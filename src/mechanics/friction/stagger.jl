@@ -22,8 +22,8 @@ end
 function stagger_beta!(β_acx, β_acy, β, nx, ny)
     for i = 1:nx
         for j = 1:ny
-            ip1 = periodic_bc_plusindices(i, nx)
-            jp1 = periodic_bc_plusindices(j, ny)
+            ip1 = periodic_bc_plusindex(i, nx)
+            jp1 = periodic_bc_plusindex(j, ny)
 
             β_acx[i, j] = 0.5 * (β[i, j] + β[ip1, j])
             β_acy[i, j] = 0.5 * (β[i, j] + β[i, jp1])
