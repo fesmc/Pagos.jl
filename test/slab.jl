@@ -36,7 +36,7 @@ function solve_slab(slab, dx; nx = 11, ny = 3, dtau_scaling = 1.0)
     domain = Domain(T, lx, ly, dx, dy)
     state = State(domain)
     params = Params{T}()
-    options = Options{T}(maxiter = 100_000, printout_every = 1000, dtau_scaling = dtau_scaling)
+    options = Options{T}(maxiter = 10_000, printout_every = 1000, dtau_scaling = dtau_scaling)
     icesheet = IceSheet(state, domain, params, options)
     
     (; state, domain, params, options) = icesheet
@@ -63,12 +63,12 @@ end
 
 # Case 1 #
 slab1 = Slab()
-sol1 = solve_slab(slab1, 5e3, dtau_scaling = 1.0)
+sol1 = solve_slab(slab1, 5e3)
 # plot_var2D(strm1["ux"])
 
 # Case 2 #
 slab2 = Slab(H = 500.0, mu = 4e5, beta = 30.0, alpha = 1e-3)
-sol2 = solve_slab(slab2, 5e3, dtau_scaling = 1e1)
+sol2 = solve_slab(slab2, 5e3)
 # plot_var2D(strm2["ux"])
 
 ######################################
