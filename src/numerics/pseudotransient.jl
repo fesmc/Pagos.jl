@@ -59,18 +59,6 @@ function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
         end
     end
 
-    # @show extrema(strainrate_xx)
-    # @show extrema(strainrate_xy)
-    # @show extrema(strainrate_yy)
-
-    # @show extrema(shearstress_x)
-    # @show extrema(basalstress_x)
-    # @show extrema(drivingstress_x)
-
-    # @show extrema(shearstress_y)
-    # @show extrema(basalstress_y)
-    # @show extrema(drivingstress_y)
-
     dotvel!(dotvel_x, shearstress_x, basalstress_x, drivingstress_x, rho_ice, H, nx, ny)
     dotvel!(dotvel_y, shearstress_y, basalstress_y, drivingstress_y, rho_ice, H, nx, ny)
     if options.debug
@@ -153,9 +141,6 @@ function pseudo_transient!(icesheet::IceSheet{T}) where {T<:AbstractFloat}
         )
 
         if iter % options.printout_every == 0
-            @show extrema(state.basalstress_x)
-            @show extrema(state.drivingstress_x)
-
             @show extrema(dotvel_x)
             @show extrema(ux_old)
             @show extrema(ux)
