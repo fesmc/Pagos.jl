@@ -11,10 +11,8 @@ Struct containing the state variables of the ice sheet model, which contains:
 - `β_acy::Matrix{T}`: ?
 - `ux::Matrix{T}`: ice velocity in x.
 - `uy::Matrix{T}`: ice velocity in y.
-- `pseudo_ux::Matrix{T}`: pseudo transient ice velocity in x.
-- `pseudo_uy::Matrix{T}`: pseudo transient ice velocity in y.
-- `pseudo_ux_old::Matrix{T}`: pseudo transient ice velocity in x at last iteration.
-- `pseudo_uy_old::Matrix{T}`: pseudo transient ice velocity in y at last iteration.
+- `ux_old::Matrix{T}`: pseudo transient ice velocity in x at last iteration.
+- `uy_old::Matrix{T}`: pseudo transient ice velocity in y at last iteration.
 - `ux_x::Matrix{T}`: dux/dx.
 - `ux_y::Matrix{T}`: dux/dy.
 - `uy_x::Matrix{T}`: duy/dx.
@@ -44,10 +42,8 @@ mutable struct State{T<:AbstractFloat}
     β_acy::Matrix{T}
     ux::Matrix{T}
     uy::Matrix{T}
-    pseudo_ux::Matrix{T}
-    pseudo_uy::Matrix{T}
-    pseudo_ux_old::Matrix{T}
-    pseudo_uy_old::Matrix{T}
+    ux_old::Matrix{T}
+    uy_old::Matrix{T}
     dotvel_x::Matrix{T}
     dotvel_y::Matrix{T}
     ux_x::Matrix{T}
@@ -68,6 +64,7 @@ mutable struct State{T<:AbstractFloat}
     c_bed::Matrix{T}
     f_ice::Matrix{T}
     mu::Matrix{T}
+    N_ab::Matrix{T}
     prealloc::Matrix{T}
 end
 # TODO should use lazy maps instead of large structs

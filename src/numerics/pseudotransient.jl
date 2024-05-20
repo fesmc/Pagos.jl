@@ -6,13 +6,18 @@ end
 
 function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
     options::Options{T}) where {T<:AbstractFloat}
-    (; ux, uy, ux_x, ux_y, uy_x, uy_y, H, z_b, mu) = state
+    (; ux, uy, ux_b, uy_b) = state
+    (; ux_x, ux_y, uy_x, uy_y) = state
+    (; H, z_b, mu, N_ab) = state
     (; strainrate_xx, strainrate_xy, strainrate_yy) = state
     (; shearstress_x, shearstress_y, dotvel_x, dotvel_y) = state
     (; basalstress_x, basalstress_y, β_acx, β_acy) = state
     (; drivingstress_x, drivingstress_y, prealloc) = state
     (; dx, dy, nx, ny) = domain
     (; rho_ice, g) = params
+
+    stagger_beta!(state, domain)
+    vintegrated_viscosity!(N_ab, prealloc, mu, H, nx, ny)
 
     velocitygradients!(ux_x, ux_y, uy_x, uy_y, ux, uy, dx, dy, nx, ny)
     if options.debug
@@ -21,47 +26,70 @@ function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
         end
     end
 
-    strainrate!(strainrate_xx, strainrate_xy, strainrate_yy, ux_x, ux_y, uy_x, uy_y, mu, H)
+    scaledstrainrate!(strainrate_xx, strainrate_xy, strainrate_yy, ux_x, ux_y,
+        uy_x, uy_y, N_ab)
     if options.debug
         if hasnan(strainrate_xx) || hasnan(strainrate_xy) || hasnan(strainrate_yy)
-        throw(ArgumentError("NaNs in strain rate"))
+            throw(ArgumentError("NaNs in strain rate"))
         end
     end
 
     shearstress!(shearstress_x, shearstress_y, strainrate_xx, strainrate_xy, strainrate_yy,
         prealloc, dx, dy, nx, ny)
     if options.debug
-            if hasnan(shearstress_x) || hasnan(shearstress_y)
-        throw(ArgumentError("NaNs in shear stress"))
+        if hasnan(shearstress_x) || hasnan(shearstress_y)
+            throw(ArgumentError("NaNs in shear stress"))
         end
     end
 
-    basalstress!(basalstress_x, basalstress_y, β_acx, β_acy, ux, uy)
+    # TODO: basalvelocity!(state, domain, params, options)
+    ux_b .= ux
+    uy_b .= uy
+    basalstress!(basalstress_x, basalstress_y, β_acx, β_acy, ux_b, uy_b)
     if options.debug
         if hasnan(basalstress_x) || hasnan(basalstress_y)
-        throw(ArgumentError("NaNs in basal stress"))
+            throw(ArgumentError("NaNs in basal stress"))
         end
     end
 
     drivingstress!(drivingstress_x, drivingstress_y, prealloc, rho_ice, g, H, z_b, dx, dy, nx, ny)
     if options.debug
         if hasnan(drivingstress_x) || hasnan(drivingstress_y)
-        throw(ArgumentError("NaNs in driving stress"))
+            throw(ArgumentError("NaNs in driving stress"))
         end
     end
 
-    # @. dotvel_x = ( shearstress_x - basalstress_x ) / (rho_ice * H) - drivingstress_x
-    # @. dotvel_y = ( shearstress_y - basalstress_y ) / (rho_ice * H) - drivingstress_y
+    # @show extrema(strainrate_xx)
+    # @show extrema(strainrate_xy)
+    # @show extrema(strainrate_yy)
+
+    # @show extrema(shearstress_x)
+    # @show extrema(basalstress_x)
+    # @show extrema(drivingstress_x)
+
+    # @show extrema(shearstress_y)
+    # @show extrema(basalstress_y)
+    # @show extrema(drivingstress_y)
 
     dotvel!(dotvel_x, shearstress_x, basalstress_x, drivingstress_x, rho_ice, H, nx, ny)
     dotvel!(dotvel_y, shearstress_y, basalstress_y, drivingstress_y, rho_ice, H, nx, ny)
     if options.debug
         if hasnan(dotvel_x) || hasnan(dotvel_y)
-        throw(ArgumentError("NaNs in dotvel"))
+            throw(ArgumentError("NaNs in dotvel"))
         end
     end
 
     return nothing
+end
+
+function vintegrated_viscosity!(N_ab, prealloc, mu, H, nx, ny)
+    @. prealloc = H * mu
+    for i in 1:nx, j in 1:ny
+        ip1 = periodic_bc_plusindex(i, nx)
+        jp1 = periodic_bc_plusindex(j, ny)
+        N_ab[i, j] = 0.25 * (prealloc[i, j] + prealloc[ip1, j] + prealloc[i, jp1] +
+            prealloc[ip1, jp1])
+    end
 end
 
 function dotvel!(dotvel, shearstress, basalstress, drivingstress, rho_ice::T,
@@ -69,8 +97,10 @@ function dotvel!(dotvel, shearstress, basalstress, drivingstress, rho_ice::T,
 
     @inbounds for i in 1:nx, j in 1:ny
         if H[i, j] > 0
-            dotvel[i, j] = ( shearstress[i, j] - basalstress[i, j] ) /
-                (rho_ice * H[i, j]) - drivingstress[i, j]
+            # dotvel[i, j] = ( shearstress[i, j] - basalstress[i, j] ) /
+            #     (rho_ice * H[i, j]) - drivingstress[i, j]
+            dotvel[i, j] = (shearstress[i, j] - basalstress[i, j] - drivingstress[i, j]) /
+                (rho_ice * H[i, j])
         else
             dotvel[i, j] = T(0.0)
         end
@@ -91,16 +121,12 @@ end
 function pseudo_transient!(icesheet::IceSheet{T}) where {T<:AbstractFloat}
     # Unpack structs
     (; state, domain, params, options) = icesheet
-    (; pseudo_ux, pseudo_uy, pseudo_ux_old, pseudo_uy_old, ux, uy) = state
+    (; ux, uy, ux_old, uy_old, ux, uy) = state
     (; dotvel_x, dotvel_y, mu) = state
     (; rho_ice, muB) = params
     (; dx, dy, nx, ny) = domain
 
-    (; theta_v, abstol, maxiter) = options
-
-    # Assign initial values
-    pseudo_ux .= ux
-    pseudo_uy .= uy
+    (; theta_v, abstol, maxiter, dtau_scaling) = options
 
     # Init PT loop
     err = fill(2 * abstol, maxiter)
@@ -110,30 +136,35 @@ function pseudo_transient!(icesheet::IceSheet{T}) where {T<:AbstractFloat}
     # PT loop following Sandip et al. (2024)
     while err[max(iter, 1)] > abstol && iter + 1 < maxiter
         iter += 1
-        pseudo_ux_old .= pseudo_ux
-        pseudo_uy_old .= pseudo_uy
+        ux_old .= ux
+        uy_old .= uy
 
         pseudo_dotvel!(state, domain, params, options)
-        @show extrema(dotvel_x)
 
-        dtau = pseudo_dt(rho_ice, dx, mu, muB)
+        dtau = dtau_scaling * pseudo_dt(rho_ice, dx, mu, muB)
 
-        pseudo_vel!(pseudo_ux, pseudo_ux_old, dotvel_x, dtau, theta_v)
-        pseudo_vel!(pseudo_uy, pseudo_uy_old, dotvel_y, dtau, theta_v)
-        @show extrema(pseudo_ux_old)
-        @show extrema(pseudo_ux)
+        pseudo_vel!(ux, ux_old, dotvel_x, dtau, theta_v)
+        pseudo_vel!(uy, uy_old, dotvel_y, dtau, theta_v)
+
         
         err[iter] = max(
-            maximum(abs.(pseudo_ux - pseudo_ux_old)),
-            maximum(abs.(pseudo_uy - pseudo_uy_old)),
+            maximum(abs.(ux - ux_old)),
+            maximum(abs.(uy - uy_old)),
         )
 
-        if iter % options.compute_residual_every == 0
+        if iter % options.printout_every == 0
+            @show extrema(state.basalstress_x)
+            @show extrema(state.drivingstress_x)
+
+            @show extrema(dotvel_x)
+            @show extrema(ux_old)
+            @show extrema(ux)
+
             @show iter
             @show dtau
             @show err[iter]
+            println("------------------")
         end
-        println("------------------")
     end
     
     return nothing

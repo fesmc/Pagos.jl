@@ -27,7 +27,7 @@ function Slab(; H = 1000.0, mu = 1e5, beta = 1e3, alpha = 1e-3, rho = 910.0, g =
     return Slab(H, mu, beta, alpha, rho, g, eta, F2, ub, u)
 end
 
-function solve_slab(slab, dx; nx = 11, ny = 3)
+function solve_slab(slab, dx; nx = 11, ny = 3, dtau_scaling = 1.0)
 
     T = Float64
     lx = nx * dx
@@ -36,7 +36,7 @@ function solve_slab(slab, dx; nx = 11, ny = 3)
     domain = Domain(T, lx, ly, dx, dy)
     state = State(domain)
     params = Params{T}()
-    options = Options{T}(maxiter = 100, compute_residual_every = 1)
+    options = Options{T}(maxiter = 100_000, printout_every = 1000, dtau_scaling = dtau_scaling)
     icesheet = IceSheet(state, domain, params, options)
     
     (; state, domain, params, options) = icesheet
@@ -46,8 +46,6 @@ function solve_slab(slab, dx; nx = 11, ny = 3)
     for j = 1:ny
         state.z_b[:, j] = [(10000.0 - slab.alpha * x) for x in domain.x]
     end
-
-    stagger_beta!(icesheet)
     pseudo_transient!(icesheet)
     return icesheet
 end
@@ -65,12 +63,12 @@ end
 
 # Case 1 #
 slab1 = Slab()
-sol1 = solve_slab(slab1, 5e3)
-#plot_var2D(strm1["ux"])
+sol1 = solve_slab(slab1, 5e3, dtau_scaling = 1.0)
+# plot_var2D(strm1["ux"])
 
 # Case 2 #
-# slab2 = Slab(H = 500.0, mu = 4e5, beta = 30.0, alpha = 1e-3)
-# sol2 = solve_slab(slab2, 5e3)
-#plot_var2D(strm2["ux"])
+slab2 = Slab(H = 500.0, mu = 4e5, beta = 30.0, alpha = 1e-3)
+sol2 = solve_slab(slab2, 5e3, dtau_scaling = 1e1)
+# plot_var2D(strm2["ux"])
 
 ######################################

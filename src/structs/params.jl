@@ -18,6 +18,6 @@ params = Params{Float64}(910.0, 0.5, 9.81)
 """
 @kwdef struct Params{T<:AbstractFloat}
     rho_ice::T = T(910.0)       # ice density
-    muB::T = T(0.5)             # bulk viscosity of ice
+    muB::T = T(1e2)             # bulk viscosity of ice
     g::T = T(9.81)              # gravitational acceleration
 end

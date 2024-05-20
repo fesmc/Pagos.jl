@@ -25,7 +25,7 @@ state.β_acy .= state.β
 # 3.360 ms (0 allocations: 0 bytes)
 
 dtau = 1.0
-@btime pseudo_vel!($state.pseudo_ux, $state.pseudo_ux_old,
+@btime pseudo_vel!($state.ux, $state.ux_old,
     $state.dotvel_x, $dtau, $options.theta_v)
 # 51.840 μs (0 allocations: 0 bytes)
 
