@@ -4,11 +4,9 @@
 Struct containing the state variables of the ice sheet model, which contains:
 - `H::Matrix{T}`: ice thickness.
 - `z_b::Matrix{T}`: bed elevation.
-- `taud_acx::Matrix{T}`: x-component of the shear stress.
-- `taud_acy::Matrix{T}`: y-component of the shear stress.
-- `β::Matrix{T}`: friction coefficient.
-- `β_acx::Matrix{T}`: ?
-- `β_acy::Matrix{T}`: ?
+- `beta::Matrix{T}`: friction coefficient.
+- `beta_acx::Matrix{T}`: friction coefficient staggered in x-direction.
+- `beta_acy::Matrix{T}`: friction coefficient staggered in y-direction.
 - `ux::Matrix{T}`: ice velocity in x.
 - `uy::Matrix{T}`: ice velocity in y.
 - `ux_old::Matrix{T}`: pseudo transient ice velocity in x at last iteration.
@@ -29,17 +27,17 @@ Struct containing the state variables of the ice sheet model, which contains:
 - `drivingstress_x::Matrix{T}`: x-component of the driving stress.
 - `drivingstress_y::Matrix{T}`: y-component of the driving stress.
 - `c_bed::Matrix{T}`: friction coefficient at bed.
-- `f_ice::Matrix{T}`: ?
+- `f_ice::Matrix{T}`: fraction of ice.
 - `mu::Matrix{T}`: ice viscosity.
+- `N_ab::Matrix{T}`: effective viscosity.
+- `prealloc::Matrix{T}`: temporary storage for calculations.
 """
 mutable struct State{T<:AbstractFloat}
     H::Matrix{T}
     z_b::Matrix{T}
-    taud_acx::Matrix{T}
-    taud_acy::Matrix{T}
-    β::Matrix{T}
-    β_acx::Matrix{T}
-    β_acy::Matrix{T}
+    beta::Matrix{T}
+    beta_acx::Matrix{T}
+    beta_acy::Matrix{T}
     ux::Matrix{T}
     uy::Matrix{T}
     ux_old::Matrix{T}

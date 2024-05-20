@@ -18,7 +18,7 @@ function solve_slab(slab, dx; nx = 11, ny = 3, dtau_scaling = 1.0)
     (; state, domain, params, options) = icesheet
     state.H .= slab.H
     state.mu .= slab.mu
-    state.β .= slab.beta
+    state.beta .= slab.beta
     for j = 1:ny
         state.z_b[:, j] = [(10000.0 - slab.alpha * x) for x in domain.x]
     end

@@ -2,7 +2,6 @@
 """
     stagger_beta!(icesheet)
     stagger_beta!(state, domain)
-    stagger_beta!(β_acx, β_acy, β, nx, ny)
 
 Stagger the basal friction coefficient to the ab-nodes.
 """
@@ -13,21 +12,24 @@ function stagger_beta!(icesheet)
 end
 
 function stagger_beta!(state, domain)
-    (; β, β_acx, β_acy) = state
+    (; beta, beta_acx, beta_acy) = state
     (; nx, ny) = domain
-    stagger_beta!(β_acx, β_acy, β, nx, ny)
+    stagger!(beta_acx, beta_acy, beta, nx, ny)
     return nothing
 end
 
-function stagger_beta!(β_acx, β_acy, β, nx, ny)
-    for i = 1:nx
-        for j = 1:ny
-            ip1 = periodic_bc_plusindex(i, nx)
-            jp1 = periodic_bc_plusindex(j, ny)
+"""
+    stagger!(outx, outy, in, nx, ny)
 
-            β_acx[i, j] = 0.5 * (β[i, j] + β[ip1, j])
-            β_acy[i, j] = 0.5 * (β[i, j] + β[i, jp1])
-        end
+Stagger the input field to the ab-nodes.
+"""
+function stagger!(outx, outy, in, nx, ny)
+    for i = 1:nx, j = 1:ny
+        ip1 = periodic_bc_plusindex(i, nx)
+        jp1 = periodic_bc_plusindex(j, ny)
+
+        outx[i, j] = 0.5 * (in[i, j] + in[ip1, j])
+        outy[i, j] = 0.5 * (in[i, j] + in[i, jp1])
     end
     return nothing
 end

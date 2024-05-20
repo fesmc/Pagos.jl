@@ -1,3 +1,8 @@
+"""
+    periodic_bc_minusindex(i::Int, n::Int)
+
+Return the index of the previous cell with periodic boundary condition.
+"""
 function periodic_bc_minusindex(i::Int, n::Int)
     im1 = i - 1
     if im1 == 0
@@ -6,6 +11,11 @@ function periodic_bc_minusindex(i::Int, n::Int)
     return im1
 end
 
+"""
+    periodic_bc_plusindex(i::Int, n::Int)
+
+Return the index of the next cell with periodic boundary condition.
+"""
 function periodic_bc_plusindex(i::Int, n::Int)
     ip1 = i + 1
     if ip1 == n + 1
@@ -14,6 +24,11 @@ function periodic_bc_plusindex(i::Int, n::Int)
     return ip1
 end
 
+"""
+    periodic_bc_indices(i::Int, n::Int)
+
+Return the indices of the previous and next cells with periodic boundary condition.
+"""
 periodic_bc_indices(i, n) = periodic_bc_minusindex(i, n)..., periodic_bc_plusindex(i, n)...
 periodic_bc_indices(ix, iy, nx, ny) =
     periodic_bc_indices(ix, nx)..., periodic_bc_indices(iy, ny)...

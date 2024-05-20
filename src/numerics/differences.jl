@@ -1,3 +1,9 @@
+"""
+    delx(u, dx)
+    delx(u, dx, nx)
+
+Compute the derivative of `u` with respect to `x` using a central difference scheme.
+"""
 function delx(u, dx)
     nx = size(u, 1)
     return delx(u, dx, nx)
@@ -9,6 +15,12 @@ function delx(u, dx, nx)
     return du
 end
 
+"""
+    delx!(du, u, dx, nx)
+
+Update `du` (in place), the derivative of `u` with respect to `x` using a central
+difference scheme.
+"""
 function delx!(du::Matrix{T}, u::Matrix{T}, dx::T, nx::Int) where {T<:AbstractFloat}
     @inbounds for j in axes(du, 2)
         for i in axes(du, 1)[2:nx-1]
@@ -19,6 +31,12 @@ function delx!(du::Matrix{T}, u::Matrix{T}, dx::T, nx::Int) where {T<:AbstractFl
     end
 end
 
+"""
+    dely(u, dy)
+    dely(u, dy, ny)
+
+Compute the derivative of `u` with respect to `y` using a central difference scheme.
+"""
 function dely(u, dy)
     ny = size(u, 2)
     return dely(u, dy, ny)
@@ -30,6 +48,12 @@ function dely(u, dy, ny)
     return du
 end
 
+"""
+    dely!(du, u, dy, ny)
+
+Update `du` (in place), the derivative of `u` with respect to `y` using a central
+difference scheme.
+"""
 function dely!(du::Matrix{T}, u::Matrix{T}, dy::T, ny::Int) where {T<:AbstractFloat}
     @inbounds for i in axes(du, 1)
         for j in axes(du, 2)[2:ny-1]

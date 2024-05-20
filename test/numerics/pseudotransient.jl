@@ -20,8 +20,8 @@ state.H = ice_cap(domain, 3000, 1000)
 
 state.f_ice .= T.(state.H .> 0)
 state.mu .= 1e5
-state.β .= 1e3
-state.β_acx .= state.β
-state.β_acy .= state.β
+state.beta .= 1e3
+state.beta_acx .= state.beta
+state.beta_acy .= state.beta
 
 pseudo_transient!(icesheet)

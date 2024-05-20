@@ -2,10 +2,8 @@
 """
     calc_beta_aa_power_plastic(ux_b,uy_b,c_bed,f_ice,q,u_0)
 
-    Calculate basal friction coefficient (beta) that
-    enters the SSA solver as a function of basal velocity
-    using a power-law form following Bueler and van Pelt (2015)
-    
+Calculate basal friction coefficient (beta) that enters the SSA solver as a function
+of basal velocity using a power-law form following Bueler and van Pelt (2015).    
 """
 function calc_beta_aa_power_plastic(
     ux_b::Matrix{T},

@@ -22,6 +22,5 @@ struct IceSheet{T<:AbstractFloat}
     state::State{T}
     domain::Domain{T}
     params::Params{T}
-    # tools::Tools{T}
     options::Options{T}
 end

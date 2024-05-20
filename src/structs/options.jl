@@ -4,8 +4,11 @@
 Determine the options for the ice sheet model, which includes:
  - `theta_v::T = T(0.6)`: the velocity relaxation parameter of the PT method.
  - `theta_mu::T = T(0.1)`: the viscosity relaxation parameter of the PT method.
- - `reltol::T = T(1e-3)`: the relative tolerance of the PT method.
+ - `abstol::T = T(1e-8)`: the absolute tolerance of the PT method.
  - `maxiter::Int = 100`: the maximum number of iterations of the PT method.
+ - `debug::Bool = false`: whether to print debug information.
+ - `printout_every::Int = 10`: the frequency of printing debug information.
+ - `dtau_scaling::T = T(1)`: the scaling factor of the pseudo-time step.
 
 To initialize with default values:
 ```julia
@@ -14,7 +17,7 @@ options = Options{Float64}()
 
 To initialize with custom values:
 ```julia
-options = Options{Float64}(theta_v=0.5, theta_mu=0.1, reltol=1e-4, maxiter=200)
+options = Options{Float64}(theta_v=0.5, theta_mu=0.1, abstol=1e-4, maxiter=200)
 ```
 """
 @kwdef struct Options{T<:AbstractFloat}

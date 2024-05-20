@@ -1,3 +1,12 @@
+"""
+    pseudo_dotvel!(icesheet::IceSheet)
+    pseudo_dotvel!(state::State, domain::Domain, params::Params, options::Options)
+
+Calculate the pseudo-transient velocity field. This is an implementation
+of the pseudo-transient method, where the velocity field is updated until the
+change in the velocity field is below a certain threshold. The method is based
+on the work of Sandip et al. (2024).
+"""
 function pseudo_dotvel!(icesheet::IceSheet)
     (; state, domain, params, options) = icesheet
     pseudo_dotvel!(state, domain, params, options)
@@ -11,7 +20,7 @@ function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
     (; H, z_b, mu, N_ab) = state
     (; strainrate_xx, strainrate_xy, strainrate_yy) = state
     (; shearstress_x, shearstress_y, dotvel_x, dotvel_y) = state
-    (; basalstress_x, basalstress_y, β_acx, β_acy) = state
+    (; basalstress_x, basalstress_y, beta_acx, beta_acy) = state
     (; drivingstress_x, drivingstress_y, prealloc) = state
     (; dx, dy, nx, ny) = domain
     (; rho_ice, g) = params
@@ -45,7 +54,7 @@ function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
     # TODO: basalvelocity!(state, domain, params, options)
     ux_b .= ux
     uy_b .= uy
-    basalstress!(basalstress_x, basalstress_y, β_acx, β_acy, ux_b, uy_b)
+    basalstress!(basalstress_x, basalstress_y, beta_acx, beta_acy, ux_b, uy_b)
     if options.debug
         if hasnan(basalstress_x) || hasnan(basalstress_y)
             throw(ArgumentError("NaNs in basal stress"))
@@ -80,6 +89,11 @@ function vintegrated_viscosity!(N_ab, prealloc, mu, H, nx, ny)
     end
 end
 
+"""
+    dotvel!(dotvel, shearstress, basalstress, drivingstress, rho_ice, H, nx, ny)
+
+Calculate the rate of pseudo-transient velocity change.
+"""
 function dotvel!(dotvel, shearstress, basalstress, drivingstress, rho_ice::T,
     H, nx, ny) where {T<:AbstractFloat}
 
@@ -96,16 +110,31 @@ function dotvel!(dotvel, shearstress, basalstress, drivingstress, rho_ice::T,
     return nothing
 end
 
+"""
+    pseudo_dt(rho, dx, mu, muB)
+
+Calculate the pseudo-transient time step based on Sandip et al. (2024).
+"""
 function pseudo_dt(rho, dx, mu, muB)
     scaling = rho * dx^2 / (4 * (1 + muB) * 4.1)
     return minimum( scaling ./ mu )
 end
 
+"""
+    pseudo_vel!(v, v_old, pseudo_dotvel, dtau, theta_v)
+
+Update the pseudo-transient velocity field.
+"""
 function pseudo_vel!(v, v_old, pseudo_dotvel, dtau, theta_v)
     @. v = v_old + theta_v * pseudo_dotvel * dtau
     return nothing
 end
 
+"""
+    pseudo_transient!(icesheet::IceSheet)
+
+Perform the pseudo-transient method to update the velocity field.
+"""
 function pseudo_transient!(icesheet::IceSheet{T}) where {T<:AbstractFloat}
     # Unpack structs
     (; state, domain, params, options) = icesheet

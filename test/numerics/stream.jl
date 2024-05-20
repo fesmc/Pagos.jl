@@ -18,7 +18,7 @@ function solve_stream(stream, dx; nx = 11, ny = 3, dtau_scaling = 1.0)
     (; state, domain, params, options) = icesheet
     state.H .= stream.H
     state.mu .= stream.mu
-    state.β .= stream.beta
+    state.beta .= stream.beta
     for j = 1:ny
         state.z_b[:, j] = [(10000.0 - stream.alpha * x) for x in domain.x]
     end
