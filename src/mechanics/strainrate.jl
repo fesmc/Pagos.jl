@@ -1,7 +1,7 @@
 """
     scaledstrainrate!(strainrate_xx, strainrate_xy, strainrate_yy, ux_x, ux_y, uy_x, uy_y, N_ab)
 
-Compute the strain rate tensor components scaled by $$ 2 \, \mu \, H $$.
+Compute the strain rate tensor components scaled by `` 2 \\, \\mu \\, H ``.
 """
 function scaledstrainrate!(strainrate_xx::M, strainrate_xy::M, strainrate_yy::M,
     ux_x::M, ux_y::M, uy_x::M, uy_y::M, N_ab::M) where {T<:AbstractFloat, M<:Matrix{T}}
