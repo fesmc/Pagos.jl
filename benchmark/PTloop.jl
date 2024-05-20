@@ -22,12 +22,9 @@ state.β_acx .= state.β
 state.β_acy .= state.β
 
 @btime pseudo_dotvel!($state, $domain, $params, $options)
-# 3.360 ms (0 allocations: 0 bytes)
+# 4.638 ms (0 allocations: 0 bytes)
 
 dtau = 1.0
 @btime pseudo_vel!($state.ux, $state.ux_old,
     $state.dotvel_x, $dtau, $options.theta_v)
-# 51.840 μs (0 allocations: 0 bytes)
-
-@time pseudo_transient!(icesheet)
-# Without printing: 4.735306 seconds (32.85 k allocations: 1.872 MiB)
+# 47.941 μs (0 allocations: 0 bytes)
