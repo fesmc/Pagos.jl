@@ -1,0 +1,56 @@
+# Standard stuff
+cd(@__DIR__)
+CI = get(ENV, "CI", nothing) == "true" || get(ENV, "GITHUB_TOKEN", nothing) !== nothing
+using CairoMakie, Documenter, Literate
+using DocumenterTools: Themes
+using DocumenterCitations
+ENV["JULIA_DEBUG"] = "Documenter"
+
+# Packages specific to these docs
+using Pagos
+
+# bib = CitationBibliography(
+#     joinpath(@__DIR__, "src", "refs.bib");
+#     style=:authoryear
+# )
+
+# Literate.markdown("src/examples/tutorial.jl", "src/examples"; credit = false)
+# Literate.markdown("src/examples/glacialcycle.jl", "src/examples"; credit = false)
+# Literate.markdown("src/examples/inversion.jl", "src/examples"; credit = false)
+
+# example_pages = ["examples/glacialcycle.md", "examples/inversion.md"]
+ref_pages = ["APIref.md"] #, "fortran.md", "references.md"]
+
+# %% Build docs
+PAGES = [
+    "index.md",
+    # "introGIA.md",
+    # "examples/tutorial.md",
+    # "Examples" => example_pages,
+    "References" => ref_pages,
+]
+
+include("style.jl")
+
+makedocs(
+    modules = [Pagos],
+    format = Documenter.HTML(
+        prettyurls = CI,
+        assets = [
+            asset("https://fonts.googleapis.com/css?family=Montserrat|Source+Code+Pro&display=swap", class=:css),
+        ],
+        collapselevel = 2,
+        ),
+    sitename = "Pagos.jl",
+    authors = "Jan Swierczek-Jereczek, Alexander Robinson",
+    pages = PAGES,
+    doctest = CI,
+    draft = false,
+    # plugins = [bib],
+    checkdocs = :none,
+    warnonly = true,
+)
+
+deploydocs(;
+    repo="https://github.com/JanJereczek/Pagos.jl",
+)
