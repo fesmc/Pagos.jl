@@ -1,7 +1,9 @@
 /Manifest.toml
 src/old
-/test/Manifest.toml
-/docs/Manifest.toml
-/docs/build/
-/docs/src/index.md
-/benchmark/Manifest.toml
+benchmark/Manifest.toml
+test/Manifest.toml
+docs/Manifest.toml
+docs/build/
+docs/src/index.md
+benchmark/plots/*
+benchmark/data/*
