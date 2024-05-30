@@ -2,7 +2,7 @@ using NCDatasets
 include("PTloop.jl")
 
 Lx = 6000e3
-power_vec, dx, nx = sample_resolutions((2, 5), Lx)
+power_vec, dx, nx = sample_resolutions((1, 5), Lx)
 dtau = nx ./ nx[2]
 slab = TestSlab()
 runtime = rand(length(dx))
