@@ -9,9 +9,14 @@ runtime = rand(length(dx))
 
 for i in eachindex(dx)
     icesheet = slab_icesheet(slab, dx[i]; nx = nx[i], ny = nx[i], dtau_scaling = dtau[i])
-    pseudo_transient!(icesheet)
+    # Make a first run to avoid any precompilation time included
+    if i == 1
+        pseudo_transient!(icesheet)
+        icesheet.state.ux .= 0.0
+        icesheet.state.uy .= 0.0
+    end
+    _, _, solve_time = time_slab_problem(icesheet)
     @show extrema(icesheet.state.ux)
-    pseudodotvel_time, pseudovel_time, solve_time = time_slab_problem(icesheet)
     @show solve_time
     println("------------------")
     runtime[i] = solve_time
