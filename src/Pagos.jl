@@ -21,6 +21,7 @@ include("mechanics/stress.jl")
 include("mechanics/strainrate.jl")
 include("mechanics/friction/plastic.jl")
 include("mechanics/friction/stagger.jl")
+include("mechanics/advection.jl")
 
 include("numerics/differences.jl")
 include("numerics/picard.jl")
@@ -31,5 +32,6 @@ include("thermodynamics/viscosity.jl")
 export Domain, State, Params, Options, IceSheet
 export stagger_beta!
 export pseudo_dotvel!, pseudo_vel!, pseudo_transient!
+export delx, dely, advect!
 
 end
