@@ -138,11 +138,10 @@ Perform the pseudo-transient method to update the velocity field.
 function pseudo_transient!(icesheet::IceSheet{T}) where {T<:AbstractFloat}
     # Unpack structs
     (; state, domain, params, options) = icesheet
-    (; ux, uy, ux_old, uy_old, ux, uy) = state
+    (; ux, uy, ux_old, uy_old) = state
     (; dotvel_x, dotvel_y, mu) = state
     (; rho_ice, muB) = params
     (; dx, dy, nx, ny) = domain
-
     (; theta_v, abstol, maxiter, dtau_scaling) = options
 
     # Init PT loop
@@ -157,12 +156,41 @@ function pseudo_transient!(icesheet::IceSheet{T}) where {T<:AbstractFloat}
         uy_old .= uy
 
         pseudo_dotvel!(state, domain, params, options)
+        if options.debug
+            if hasnan(dotvel_x) || hasnan(dotvel_y)
+                throw(ArgumentError("NaNs in dotvel"))
+            end
+        end
 
         dtau = dtau_scaling * pseudo_dt(rho_ice, dx, mu, muB)
+        if options.debug
+            if isnan(dtau)
+                throw(ArgumentError("NaNs in dtau"))
+            end
+        end
 
+        if options.debug
+            if hasnan(ux) || hasnan(uy)
+                throw(ArgumentError("NaNs in u"))
+            end
+        end
+        if options.debug
+            if hasnan(ux_old) || hasnan(uy_old)
+                throw(ArgumentError("NaNs in u_old"))
+            end
+        end
+        if options.debug
+            if hasnan(dotvel_x) || hasnan(dotvel_y)
+                throw(ArgumentError("NaNs in dotvel"))
+            end
+        end
         pseudo_vel!(ux, ux_old, dotvel_x, dtau, theta_v)
         pseudo_vel!(uy, uy_old, dotvel_y, dtau, theta_v)
-
+        if options.debug
+            if hasnan(ux) || hasnan(uy)
+                throw(ArgumentError("NaNs in pseudovel"))
+            end
+        end
         
         err[iter] = max(
             maximum(abs.(ux - ux_old)),
