@@ -42,13 +42,12 @@ state.mu .= 1e5     # / SEC_PER_YEAR
 state.beta .= 1e3
 dt = 1.0
 
-pseudo_transient!(icesheet)
+t1 = @elapsed pseudo_transient!(icesheet)
 logvel1 = copy(logvel(state.ux, state.uy))
 advect!(icesheet)
 icesheet.state.H[H .<= 0] .= 0
-# options.dtau_scaling = 1e-8
 logvel1_old = logvel(state.ux_old, state.uy_old)
-pseudo_transient!(icesheet)
+t2 = @elapsed pseudo_transient!(icesheet)
 logvel2 = copy(logvel(state.ux, state.uy))
 
 nrows, ncols = 2, 3
