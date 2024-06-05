@@ -39,8 +39,8 @@ function Domain(T, lx, ly, dx, dy)
 end
 
 function Domain(lx::T, ly::T, dx::T, dy::T) where {T<:AbstractFloat}
-    x = collect(range(T(dx/2), step=dx, stop=lx-dx/2)) .- lx/2
-    y = collect(range(T(dy/2), step=dy, stop=ly-dy/2)) .- ly/2
+    x = collect(range(T(0), step=dx, stop=lx)) .- lx/2
+    y = collect(range(T(0), step=dy, stop=ly)) .- ly/2
     nx = length(x)
     ny = length(y)
     null = zeros(T, nx, ny)
