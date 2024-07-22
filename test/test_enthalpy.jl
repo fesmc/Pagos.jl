@@ -1,7 +1,8 @@
 using Revise
 
 
-include("numerics/enthalpy.jl")
-using IceEnthalpy
+include("numerics/IceEnthalpy.jl")
+using .IceEnthalpy
+
 
 
