@@ -7,4 +7,4 @@ docs/build/
 docs/src/index.md
 benchmark/plots/*
 benchmark/data/*
-ice_data/
+ice_data

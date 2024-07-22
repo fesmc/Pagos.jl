@@ -1,6 +1,7 @@
 using NCDatasets
 using Pagos
 using CairoMakie
+using Statistics
 
 logvel(ux, uy) = log10.(sqrt.(ux .^ 2 .+ uy .^ 2) .+ 1e-10)
 
@@ -21,7 +22,7 @@ function get_xy(X, Y; km2m = true)
 end
 
 T = Float64
-ds = NCDataset("../ice_data/ANT-32KM_TOPO-RTOPO-2.0.1.nc", "r")
+ds = NCDataset("ice_data/Antarctica/ANT-32KM/ANT-32KM_TOPO-RTOPO-2.0.1.nc", "r")
 H = T.(ds["H_ice"][:, :])
 zb = T.(ds["z_bed"][:, :])
 X = T.(ds["x2D"][:, :])
