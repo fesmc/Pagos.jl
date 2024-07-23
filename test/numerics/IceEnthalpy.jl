@@ -2,7 +2,10 @@
 
 module IceEnthalpy
 
-mutable struct icecolumn_params{T<:AbstractFloat}
+export IceColumnParams
+export IceColumn
+
+@kwdef struct IceColumnParams{T<:AbstractFloat}
     nz::Integer
     omega_max::T    # [-] Maximum allowed water fraction inside ice, typically omega_max=0.02 
     T0::T           # [K or degreesCelcius] Reference melting temperature  
@@ -12,33 +15,43 @@ mutable struct icecolumn_params{T<:AbstractFloat}
     sec_year::T
 end
 
-mutable struct icecolumn{T<:AbstractFloat}
+mutable struct IceColumn{T<:AbstractFloat}
     ζ::Vector{T}
     ζac::Vector{T}
-    H::Vector{T}
-    cp::Vector{T}
-    kt::Vector{T}
-    Qxy::Vector{T}
-    uz::Vector{T}
-    T_pmp::Vector{T}
-    Q_strn::Vector{T}
-    Q_b::T
-    Q_rock::T
-    bmb_grnd::T
-    H_ice::T
-    H_w::T
-    f_grnd::T
-    T_srf::T
-    T_shlf::T
-
     dζa::Vector{T}
     dζb::Vector{T}
 
-    # Diagnostic output variables
-    T::Vector{T}
-    ω::Vector{T}
-    Q_ice_b::T
-    H_cts::T
+    # H::Vector{T}
+    # cp::Vector{T}
+    # kt::Vector{T}
+    # Qxy::Vector{T}
+    # uz::Vector{T}
+    # T_pmp::Vector{T}
+    # Q_strn::Vector{T}
+    # Q_b::T
+    # Q_rock::T
+    # bmb_grnd::T
+    # H_ice::T
+    # H_w::T
+    # f_grnd::T
+    # T_srf::T
+    # T_shlf::T
+
+    
+    # # Diagnostic output variables
+    # T::Vector{T}
+    # ω::Vector{T}
+    # Q_ice_b::T
+    # H_cts::T
 end
+
+function IceColumn(T,nz::Int64)
+    ζ   = zeros(T, nz)
+    ζac = zeros(T, nz)
+    dζa = zeros(T, nz)
+    dζb = zeros(T, nz)
+    return IceColumn(ζ,ζac,dζa,dζb)
+end
+
 
 end
