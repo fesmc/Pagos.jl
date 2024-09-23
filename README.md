@@ -121,7 +121,7 @@ milestones of the code since they are not standard in ice-sheet modelling yet:
 
 # Structure
 
-![](./structure.drawio.png)
+![](/docs/src/structure.drawio.png)
 
 # Benchmark tests
 
