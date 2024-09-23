@@ -3,14 +3,14 @@
 
 <!-- [![Build Status](https://github.com/JanJereczek/Pagos.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JanJereczek/Pagos.jl/actions/workflows/CI.yml?query=branch%3Amain) -->
 
-A pure Julia ice-sheet model.
-
 # Aim
 
-Pagos.jl is designed to be accessible, modular and performant. We believe that
-these are the key aspects of a model made for research since it allows a widespread use,
-a simplified permutation of parameters and laws and a reduced time-to-first-paper.
-If you want to go to multi-GPU computation and unlock very high resolution, we recommend
+Pagos.jl is an ice-sheet model written in pure Julia. It is designed to be accessible,
+modular and performant. We believe that these are the key aspects of a research model
+since it allows a widespread use, a participative development, a simplified permutation
+of parameters and laws and a reduced time-to-first-paper.
+
+If you want to go to multi-GPU computation and unlock very high resolutions, we recommend
 to look at [FastIce.jl](https://github.com/PTsolvers/FastIce.jl). If you want to apply
 autodifferentiation (AD), we recommend to look at [dJuice](https://github.com/DJ4Earth/dJUICE.jl).
 Although these two projects comply with specific requirements, they might lack
@@ -28,20 +28,24 @@ scales.
 ### Accesibility
 
 Accessibility is the absolute priority of Pagos. This means that the code should be:
-- legible: use of long and unambiguous names for functions, variables and structs.
-If commands can be broken down into several steps without performance loss, it should
-be implemented so.
-- documented: each function or struct comes with extensive docstrings, where references
-to papers are cited with DocumenterCitations.jl and formulas are well formatted.
-- examplified: each use case should be illustrated through at least one example.
-- commented: anything that is not easily understandable or documented should be
+
+- **Legible**
+  - Use of long and unambiguous names for functions, variables and structs.
+  - Commands should be broken down into steps if it does not imply a performance loss.
+
+- **Documented**
+  - Each function or struct comes with extensive docstrings.
+  - Reference to papers should be clearly provided using DocumenterCitations.jl.
+  - Formulas should be formatted in Latex.
+  - Each use case should be illustrated through at least one example.
+  - Anything that is not easily understandable or documented should be
 explained in greater detail.
 
-Of course, the code is open source (distributed under X) and easy to install:
-
-```julia
-]add Pagos
-```
+- **Open source and open development**
+  - The code is open source (distributed under X).
+  - The code is easy to install by running `]add Pagos` in the Julia REPL.
+  - The development is structured around GitHub issues, which allows people to easily
+  request features, join the development process and track past changes.
 
 We emphasise that while modularity and performance can sometimes lead to trade-off
 decisions, accessibility can and should always be complied with. In particular, we
@@ -119,6 +123,11 @@ milestones of the code since they are not standard in ice-sheet modelling yet:
 - Wavelet transform?
 - FFT-based Picard iteration?
 
+### Note for devs
+
+Any new functionality should be described, tested and documented. If not, the pull request
+(PR) will not be prioritized.
+
 # Structure
 
 ![](/docs/src/structure.drawio.png)
@@ -132,9 +141,9 @@ As seen in Robinson et al. (2022).
 Test 1 should give a uniform x-velocity of `ux = 8.93` m/yr. 
 Test 2 should give a uniform x-velocity of `ux = 149` m/yr. 
 
-```
-using Pkg; Pkg.activate(".")
-
+```julia
+using Pkg
+Pkg.activate(".")
 include("test/slab.jl")
 ```
 
@@ -143,9 +152,9 @@ include("test/slab.jl")
 As seen in Schoof (2006), and reproduced with different parameter values
 in Lipscomb et al. (2019) and Berends et al. (2022). 
 
-```
-using Pkg; Pkg.activate(".")
-
+```julia
+using Pkg
+Pkg.activate(".")
 include("test/stream.jl")
 ```
 
