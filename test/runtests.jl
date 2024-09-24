@@ -1,6 +1,10 @@
 using Pagos
 using Test
+using NCDatasets
 
-@testset "Pagos.jl" begin
-    # Write your tests here.
-end
+include("helpers/sigmatransform.jl")
+include("dynamics/velocities3D.jl")
+
+# @testset "Pagos.jl" begin
+#     # Write your tests here.
+# end

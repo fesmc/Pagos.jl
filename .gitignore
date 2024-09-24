@@ -8,3 +8,5 @@ docs/src/index.md
 benchmark/plots/*
 benchmark/data/*
 ice_data/
+notes.md
+questions.md
