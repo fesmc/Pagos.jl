@@ -1,35 +1,141 @@
 """
-    aggregate_viscosity_integral!(Fm, mu, H, m, sigma, l)
+    basal_velocity_from_depthavg_velocity!(vb, v, beta, F2, mask_incides)
 
-Aggregate the viscosity integral for the `l`-th layer to the final result `Fm`.
+Compute the basal velocity `vb` from the depth-avergaed velocity field `v`.
 
 # Arguments
-- `Fm::Matrix{T}`: Final viscosity integral.
-- `mu::Array{T, 3}`: Viscosity tensor.
-- `H::Matrix{T}`: Ice thickness.
-- `m::Int`: Exponent.
-- `sigma::Vector{T}`: Vertical (transformed) coordinate.
-- `l::Int`: Layer index.
+- `vb::Matrix{T}`: Basal velocity.
+- `v::Matrix{T}`: Velocity field.
+- `beta::Matrix{T}`: Friction coefficient.
+- `F2::Matrix{T}`: Generalized viscosity integral with `m=2`.
+- `mask_incides::Vector{CartesianIndex{2}}`: Mask indices.
 """
-# TODO: we should apply a nicer numerical integration scheme here.
-# The current implementation is a simple Riemann sum. Gauss-Legendre quadrature
-# is already available but would imply the assumption of a linear interpolation
-# over z. This might slow down the computation.
-function aggregate_viscosity_integral!(
-    Fm::Matrix{T},
-    mu::Array{T, 3},
-    H::Matrix{T},
-    m::Int,
-    sigma::Vector{T},
-    l::Int,
+function basal_velocity_from_depthavg_velocity!(
+    vb::Matrix{T},
+    v::Matrix{T},
+    beta::Matrix{T},
+    F2::Matrix{T},
+    mask_incides::Vector{CartesianIndex{2}},
 ) where {T<:AbstractFloat}
-    s_minus_z_over_H = 1-sigma[l]
-    if l == 1
-        dsigma = sigma[l]
-    else
-        dsigma = sigma[l] - sigma[l-1]
+    for I in mask_incides
+        vb[I] = v[I] / (1 + beta[I] * F2[I])
     end
-    @. Fm += ( s_minus_z_over_H ^ m * view(dsigma, l) * H ) / view(mu, :, :, l)
+    return nothing
+end
+
+"""
+    basal_velocity_from_surface_velocity!(vb, v, beta, F2, mask_incides)
+
+Compute the basal velocity `vb` from the surface velocity `v`.
+
+# Arguments
+- `vb::Matrix{T}`: Basal velocity.
+- `v::Matrix{T}`: Surface velocity.
+- `beta::Matrix{T}`: Friction coefficient.
+- `F2::Matrix{T}`: Generalized viscosity integral with `m=2`.
+- `mask_incides::Vector{CartesianIndex{2}}`: Mask indices.
+"""
+function basal_velocity_from_surface_velocity!(
+    vb::Matrix{T},
+    vs::Matrix{T},
+    beta::Matrix{T},
+    F1::Matrix{T},
+    mask_incides::Vector{CartesianIndex{2}},
+) where {T<:AbstractFloat}
+    for I in mask_incides
+        vb[I] = vs[I] / (1 + beta[I] * F1[I])
+    end
+    return nothing
+end
+
+"""
+    surface_velocity!(vs, vb, beta, F1, mask_incides)
+
+Compute the surface velocity `vs` from the basal velocity `vb`.
+
+# Arguments
+- `vs::Matrix{T}`: Surface velocity.
+- `vb::Matrix{T}`: Basal velocity.
+- `beta::Matrix{T}`: Friction coefficient.
+- `F1::Matrix{T}`: Generalized viscosity integral with `m=1`.
+- `mask_incides::Vector{CartesianIndex{2}}`: Mask indices.
+"""
+function surface_velocity!(
+    vs::Matrix{T},
+    vb::Matrix{T},
+    beta::Matrix{T},
+    F1::Matrix{T},
+    mask_incides::Vector{CartesianIndex{2}},
+) where {T<:AbstractFloat}
+    for I in mask_incides
+        vs[I] = vb[I] * (1 + beta[I] * F1[I])
+    end
+    return nothing
+end
+
+"""
+    depthavg_velocity!(v, vb, beta, F2, mask_incides)
+
+Compute the depth-averaged velocity `v` from the basal velocity `vb`.
+
+# Arguments
+- `v::Matrix{T}`: Depth-averaged velocity.
+- `vb::Matrix{T}`: Basal velocity.
+- `beta::Matrix{T}`: Friction coefficient.
+- `F2::Matrix{T}`: Generalized viscosity integral with `m=2`.
+- `mask_incides::Vector{CartesianIndex{2}}`: Mask indices.
+"""
+function depthavg_velocity!(
+    v::Matrix{T},
+    vb::Matrix{T},
+    beta::Matrix{T},
+    F2::Matrix{T},
+    mask_incides::Vector{CartesianIndex{2}},
+) where {T<:AbstractFloat}
+    for I in mask_incides
+        v[I] = vb[I] * (1 + beta[I] * F2[I])
+    end
+    return nothing
+end
+
+"""
+    velocities3D!(F1, vx3D, vy, vz, mu, beta, H, sigma)
+
+Compute the 3D velocity field.
+
+# Arguments
+- `F1::Matrix{T}`: Generalized viscosity integral with `m=1`.
+- `vx3D::Array{T, 3}`: x-component of the velocity field.
+- `vy::Array{T, 3}`: y-component of the velocity field.
+- `vz::Array{T, 3}`: z-component of the velocity field.
+- `mu::Array{T, 3}`: Viscosity tensor.
+- `beta::Matrix{T}`: Friction coefficient.
+- `H::Matrix{T}`: Ice thickness.
+- `sigma::Vector{T}`: Vertical (transformed) coordinate.
+"""
+function velocities3D!(
+    F1::Matrix{T},
+    vx3D::Array{T, 3},
+    vy3D::Array{T, 3},
+    vz3D::Array{T, 3},
+    vb_x::Matrix{T},
+    vb_y::Matrix{T},
+    mu::Array{T, 3},
+    beta::Matrix{T},
+    H::Matrix{T},
+    sigma::Vector{T},
+    mask_incides::Vector{CartesianIndex{2}},
+) where {T<:AbstractFloat}
+
+    F1 .= T(0)
+    for l in eachindex(sigma)
+        aggregate_viscosity_integral!(F1, mu, H, 1, sigma, l, mask_incides)
+        layer_velocity!(vx3D, l, vb_x, beta, H, F1, mask_incides)
+        layer_velocity!(vy3D, l, vb_y, beta, H, F1, mask_incides)
+        # vz[:, :, l] .= tau_b_x * (s - z) / (eta(z) * H)
+    end
+    
+    return nothing
 end
 
 """
@@ -43,6 +149,7 @@ Aggregate the viscosity integral for all layers to the final result `Fm`.
 - `H::Matrix{T}`: Ice thickness.
 - `m::Int`: Exponent.
 - `sigma::Vector{T}`: Vertical (transformed) coordinate.
+- `mask_incides::Vector{CartesianIndex{2}}`: Mask indices.
 """
 function aggregated_viscosity_integral!(
     Fm::Matrix{T},
@@ -50,143 +157,86 @@ function aggregated_viscosity_integral!(
     H::Matrix{T},
     m::Int,
     sigma::Vector{T},
+    mask_incides::Vector{CartesianIndex{2}},
 ) where {T<:AbstractFloat}
 
     Fm .= T(0)
     for l in eachindex(sigma)
-        aggregate_viscosity_integral!(Fm, mu, H, m, sigma, l)
+        aggregate_viscosity_integral!(Fm, mu, H, m, sigma, l, mask_incides)
     end
     return nothing
 end
 
 """
-    layer_velocity(ub, beta, H, F1)
+    aggregate_viscosity_integral!(Fm, mu, H, m, sigma, l, mask_indices)
 
-Compute the 2D velocity field for a given layer, which is represented by the `F1` integral.
-
-# Arguments
-- `ub::Matrix{T}`: Basal velocity.
-- `beta::Matrix{T}`: Friction coefficient.
-- `H::Matrix{T}`: Ice thickness.
-- `F1::Matrix{T}`: Generalized viscosity integral at layer `l`.
-"""
-layer_velocity(ub, beta, H, F1) = ub .+ beta .* ub .* F1 ./ H
-
-"""
-    velocities3D!(F1, vx, vy, vz, mu, beta, H, sigma)
-
-Compute the 3D velocity field.
+Aggregate the viscosity integral for the `l`-th layer to the final result `Fm`.
 
 # Arguments
-- `F1::Matrix{T}`: Generalized viscosity integral.
-- `vx::Array{T, 3}`: x-component of the velocity field.
-- `vy::Array{T, 3}`: y-component of the velocity field.
-- `vz::Array{T, 3}`: z-component of the velocity field.
+- `Fm::Matrix{T}`: Final viscosity integral.
 - `mu::Array{T, 3}`: Viscosity tensor.
+- `H::Matrix{T}`: Ice thickness.
+- `m::Int`: Exponent.
+- `sigma::Vector{T}`: Vertical (transformed) coordinate.
+- `l::Int`: Layer index.
+- `mask_incides::Vector{CartesianIndex{2}}`: Mask indices.
+"""
+# TODO: we should apply a nicer numerical integration scheme here.
+# The current implementation is a simple Riemann sum. Gauss-Legendre quadrature
+# is already available but would imply the assumption of a linear interpolation
+# over z. This might slow down the computation.
+function aggregate_viscosity_integral!(
+    Fm::Matrix{T},
+    mu::Array{T, 3},
+    H::Matrix{T},
+    m::Int,
+    sigma::Vector{T},
+    l::Int,
+    mask_incides::Vector{CartesianIndex{2}},
+) where {T<:AbstractFloat}
+    if l == 1
+        dsigma = sigma[l]
+    else
+        dsigma = sigma[l] - sigma[l-1]
+    end
+
+    s_minus_z_over_H = 1-sigma[l]+dsigma/2
+
+    for I in mask_incides
+        Fm[I] += ( s_minus_z_over_H ^ m * dsigma * H[I] ) / mu[I, l]    # dsigma * H = dz
+    end
+end
+
+"""
+    layer_velocity!(v, l, vb, beta, H, F1, mask_incides)
+
+Compute the velocity field for a given layer, which is represented by the `F1` integral.
+To obtain the velocity field in `x` and `y` direction, provide the basal velocity `vb_x`
+and `vb_y` respectively.
+
+# Arguments
+- `v::Array{T, 3}`: 3D velocity field.
+- `l::Int`: Layer index.
+- `vb::Matrix{T}`: Basal velocity.
 - `beta::Matrix{T}`: Friction coefficient.
 - `H::Matrix{T}`: Ice thickness.
-- `sigma::Vector{T}`: Vertical (transformed) coordinate.
+- `F1::Matrix{T}`: Generalized viscosity integral at layer `l` with `m=1`.
+- `mask_incides::Vector{CartesianIndex{2}}`: Mask indices.
 """
-function velocities3D!(
-    F1::Matrix{T},
-    vx::Array{T, 3},
-    vy::Array{T, 3},
-    vz::Array{T, 3},
-    mu::Array{T, 3},
+function layer_velocity!(
+    v::Array{T, 3},
+    l::Int,
+    vb::Matrix{T},
     beta::Matrix{T},
     H::Matrix{T},
-    sigma::Vector{T},
+    F1::Matrix{T},
+    mask_incides::Vector{CartesianIndex{2}},
 ) where {T<:AbstractFloat}
-
-    F1 .= T(0)
-    for l in eachindex(sigma)
-        aggregate_viscosity_integral!(F1, mu, H, 1, sigma, l)
-        vx[:, :, l] .= layer_velocity(vx[:, :, l], beta, H, F1)
-        vy[:, :, l] .= layer_velocity(vy[:, :, l], beta, H, F1)
-        # vz[:, :, l] .= tau_b_x * (s - z) / (eta(z) * H)
+    for I in mask_incides
+        v[I, l] = vb[I] + beta[I] * vb[I] * F1[I]
     end
-    
     return nothing
 end
-
-
-"""
-    surface_velocity!(u_s, u_b, beta, F1)
-    surface_velocity(u_b, beta, F1)
-
-Compute the surface velocity `u_s` from the basal velocity `u_b` and the friction
-coefficient `beta`. If possible, use the in-place version `surface_velocity!` to
-avoid unnecessary memory allocations.
-
-# Arguments
-- `u_s::Matrix{T}`: Surface velocity.
-- `u_b::Matrix{T}`: Basal velocity.
-- `beta::Matrix{T}`: Friction coefficient.
-- `F1::Matrix{T}`: Generalized viscosity integral.
-"""
-
-function surface_velocity!(
-    u_s::Matrix{T},
-    u_b::Matrix{T},
-    beta::Matrix{T},
-    F1::Matrix{T},
-) where {T<:AbstractFloat}
-    @. u_s = u_b * ( 1 + beta * F1 )
-    return nothing
-end
-
-function surface_velocity(
-    u_b::Matrix{T},
-    beta::Matrix{T},
-    F1::Matrix{T},
-) where {T<:AbstractFloat}
-
-    nx, ny = size(u_b)
-    u_s = zeros(T, nx, ny)
-    surface_velocity!(u_s, u_b, beta, F1)
-
-    return u_s
-end
-
-"""
-
-    depthaveraged_velocity!(u_d, u_b, beta, F2)
-    depthaveraged_velocity(u_b, beta, F2)
-
-Compute the depth-averaged velocity `u_d` from the basal velocity `u_b` and the friction
-coefficient `beta`. If possible, use the in-place version `depthaveraged_velocity!` to
-avoid unnecessary memory allocations.
-
-# Arguments
-- `u_d::Matrix{T}`: Depth-averaged velocity.
-- `u_b::Matrix{T}`: Basal velocity.
-- `beta::Matrix{T}`: Friction coefficient.
-- `F2::Matrix{T}`: Generalized viscosity integral.
-"""
-function depthaveraged_velocity!(
-    u_d::Matrix{T},
-    u_b::Matrix{T},
-    beta::Matrix{T},
-    F2::Matrix{T},
-) where {T<:AbstractFloat}
-    @. u_d = u_b * ( 1 + beta * F2 )
-    return nothing
-end
-
-function depthaveraged_velocity(
-    u_b::Matrix{T},
-    beta::Matrix{T},
-    F2::Matrix{T},
-) where {T<:AbstractFloat}
-
-    nx, ny = size(u_b)
-    u_d = zeros(T, nx, ny)
-    depthaveraged_velocity!(u_d, u_b, beta, F2)
-
-    return u_d
-end
-
-
 
 
 
