@@ -1,3 +1,5 @@
+# Variables
+
 | Long name                             | Variable name                         |
 | ------------------------------------- | ------------------------------------- |
 | 1st planar coordinate (east-west)     | `x`                                   |
@@ -12,3 +14,10 @@
 | Ice thickness                         | `H`                                   |
 | Elevation of ice base                 | `z_base`                              |
 | Elevation of ice surface              | `z_surface`                           |
+
+# Functions
+
+Functions should be performing the operations in place. For example `delx!(dudx)`
+updates the derivate dudx. We omit the use of a prefix (e.g. `update_delx!`) since
+the exclamation at the end of the function name is implicitly understood as an update
+of the first argument taken by the function.
