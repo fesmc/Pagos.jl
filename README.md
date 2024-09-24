@@ -111,12 +111,15 @@ the first major release (v1.0).
 Interplexity is achieved by using:
 - DIVA instead of SIA/SSA vs. Stokes,
 - FastIsostasy instead of ELRA/ELVA vs. 3D GIA model,
-- Laddie instead of QNL/PICO vs. cavity resolving ocean model.
+- Laddie instead of QNL/PICO vs. cavity resolving ocean model,
+- ML techniques can be plugged in easily due to the high modularity of the model,
+- Wide range of simple subglacial hydrology models,
+- Wide range of fracture models.
 
-### Numerical milestones
+### Numerical bread and butter
 
-Performance is achieved through some important techniques that can be considered as
-milestones of the code since they are not standard in ice-sheet modelling yet:
+Performance is achieved through some important techniques that constitute the bread
+and butter of the code since they are not standard in ice-sheet modelling yet:
 - Pseudo-transient method
 - High-order adaptive time stepping (Tsit5)
 - FFT-based isostasy
