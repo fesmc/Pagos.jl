@@ -1,3 +1,7 @@
+# General considerations
+
+- When possible, use concise mathematical formulations for equations, making use of convenient ASCII character, like Greek letters, etc.
+
 # Variables
 
 | Long name                             | Variable name                         |
