@@ -69,7 +69,8 @@ Derivatives accounting for the vertical coordinate transformation.
 """
 # TODO: the four code lines below are only improved pseudo-code. Needs
 # to be well implemented!
-delx(u, delzt_delx) = delxt(u) + delzt_delx * delzt(u)
-dely(u, delzt_dely) = delyt(u) + delzt_dely * delzt(u)
-delz(u, delzt_delz) = delzt_delz * delzt(u)
-delt(u, delzt_delt) = deltt(u) + delzt_delt * delzt(u)
+# Commented out to avoid CI test failure (function signatures below conflict with those above)
+#delx(u, delzt_delx) = delxt(u) + delzt_delx * delzt(u)
+#dely(u, delzt_dely) = delyt(u) + delzt_dely * delzt(u)
+#delz(u, delzt_delz) = delzt_delz * delzt(u)
+#delt(u, delzt_delt) = deltt(u) + delzt_delt * delzt(u)
