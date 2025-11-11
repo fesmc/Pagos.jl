@@ -18,8 +18,7 @@ using Pagos
 # Literate.markdown("src/examples/glacialcycle.jl", "src/examples"; credit = false)
 # Literate.markdown("src/examples/inversion.jl", "src/examples"; credit = false)
 
-# example_pages = ["examples/glacialcycle.md", "examples/inversion.md"]
-ref_pages = ["APIref.md"] #, "fortran.md", "references.md"]
+ref_pages = ["APIref.md", "fortran.md", "references.md"]
 
 # %% Build docs
 PAGES = [
@@ -27,7 +26,7 @@ PAGES = [
     # "introGIA.md",
     # "examples/tutorial.md",
     # "Examples" => example_pages,
-    "References" => ref_pages,
+    # "References" => ref_pages,
 ]
 
 include("style.jl")
@@ -52,5 +51,5 @@ makedocs(
 )
 
 deploydocs(;
-    repo="https://github.com/JanJereczek/Pagos.jl",
+    repo="https://github.com/fesmc/Pagos.jl",
 )
