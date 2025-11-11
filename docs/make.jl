@@ -52,4 +52,5 @@ makedocs(
 
 deploydocs(;
     repo="https://github.com/fesmc/Pagos.jl",
+    push_preview = true,
 )
