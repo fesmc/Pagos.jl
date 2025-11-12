@@ -14,7 +14,7 @@ using Pagos
 #     style=:authoryear
 # )
 
-# Literate.markdown("src/examples/tutorial.jl", "src/examples"; credit = false)
+Literate.markdown("src/viscosity.jl", "src"; credit = false)
 # Literate.markdown("src/examples/glacialcycle.jl", "src/examples"; credit = false)
 # Literate.markdown("src/examples/inversion.jl", "src/examples"; credit = false)
 
@@ -23,6 +23,11 @@ ref_pages = ["APIref.md", "fortran.md", "references.md"]
 # %% Build docs
 PAGES = [
     "index.md",
+    "viscosity.md",
+    "Guidelines" => [
+        "guidelines/naming.md",
+        "guidelines/performance.md",
+    ],
     # "introGIA.md",
     # "examples/tutorial.md",
     # "Examples" => example_pages,
@@ -52,5 +57,4 @@ makedocs(
 
 deploydocs(;
     repo="https://github.com/fesmc/Pagos.jl",
-    push_preview = true,
 )

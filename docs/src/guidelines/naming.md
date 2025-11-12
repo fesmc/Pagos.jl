@@ -1,8 +1,10 @@
-# General considerations
+# Naming
+
+## General considerations
 
 - When possible, use concise mathematical formulations for equations, making use of convenient ASCII character, like Greek letters, etc.
 
-# Variables
+## Variables
 
 | Long name                             | Variable name                         |
 | ------------------------------------- | ------------------------------------- |
@@ -19,9 +21,6 @@
 | Elevation of ice base                 | `z_base`                              |
 | Elevation of ice surface              | `z_surface`                           |
 
-# Functions
+## Functions
 
-Functions should be performing the operations in place. For example `delx!(dudx)`
-updates the derivate dudx. We omit the use of a prefix (e.g. `update_delx!`) since
-the exclamation at the end of the function name is implicitly understood as an update
-of the first argument taken by the function.
+Functions should be performing the operations in place. For example `delx!(dudx)` updates the derivate dudx. We omit the use of a prefix (e.g. `update_delx!`) since the exclamation at the end of the function name is implicitly understood as an update of the first argument taken by the function.

@@ -4,12 +4,12 @@ Pagos.jl is an ice-sheet model written in pure Julia. It is designed to be acces
 modular and performant. To install it, please run:
 
 ```
-]add https://github.com/JanJereczek/Pagos.jl
+]add https://github.com/fesmc/Pagos.jl
 ```
 
 !!! warning 
-Pagos is currently work in progress and is therefore not fully functional and subject to
-major changes in near future.
+    Pagos is currently work in progress and is therefore not fully functional and subject to
+    major changes in near future.
 
 ## Modular architecture
 
