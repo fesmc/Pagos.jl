@@ -1,6 +1,9 @@
 module Pagos
 
+using DocStringExtensions
+using Downloads
 using LinearAlgebra
+using StatsBase
 # using LinearSolve
 # using SparseArrays
 # using CUDA
@@ -37,7 +40,22 @@ include("numerics/pseudotransient.jl")
 export stagger_beta!
 export pseudo_dotvel!, pseudo_vel!, pseudo_transient!
 
-include("thermodynamics/viscosity.jl")
 export delx, dely, advect!
+
+include("material/viscosity.jl")
+export AbstractViscosity, GlenNyeViscosity, RegularizedGlenNyeViscosity, ConstantViscosity
+export get_viscosity
+
+include("material/rate_factor.jl")
+export AbstractRateFactor, ConstantRateFactor, ArrheniusRateFactor, SmithMorlandRateFactor
+export update_rate_factor!, get_rate_factor
+
+include("material/pressure_melting_point.jl")
+export AbstractPressureMeltingPoint, LinearPressureMeltingPoint
+export get_melting_point, update_melting_point!
+export get_relative_temperature, update_relative_temperature!
+
+
+include("plots.jl")
 
 end
