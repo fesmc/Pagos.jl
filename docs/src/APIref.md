@@ -1,19 +1,75 @@
 # API reference
 
-## Basic structs
+## Dynamics
+
+### Effective Pressure
 
 ```@docs
-Domain
-Params
-Options
-State
-IceSheet
+AbstractEffectivePressure
+ConstantEffectivePressure
+OverburdenEffectivePressure
+effective_pressure
 ```
 
-## Solving DIVA
+### Friction
 
 ```@docs
-pseudo_dotvel!
-pseudo_vel!
-pseudo_transient!
+AbstractBasalFriction
+ConstantBetaBasalFriction
+LinearBetaBasalFriction
+PseudoPlasticPowerBasalFriction
+RegularizedCoulombBasalFriction
+basal_shear_stress
+basal_shear_stress!
+```
+
+## Material
+
+### Pressure melting point
+
+```@docs
+AbstractPressureMeltingPoint
+LinearPressureMeltingPoint
+```
+
+### Rate factor
+
+```@docs
+AbstractRateFactor
+ConstantRateFactor
+ArrheniusRateFactor
+SmithMorlandRateFactor
+rate_factor
+rate_factor!
+```
+
+### Creep function
+
+```@docs
+AbstractCreepFunction
+GlenNyeCreepFunction
+RegularizedGlenNyeCreepFunction
+SmithMorlandCreepFunction
+creep_function
+creep_function!
+```
+
+### Flow law
+
+```@docs
+AbstractFlowLaw
+ConstantViscosityFlowLaw
+RateCreepFlowLaw
+GlenNyeFlowLaw
+RegularizedGlenNyeFlowLaw
+SmithMorlandFlowLaw
+```
+
+## Plots
+
+```@docs
+plot_rate_factor
+plot_melting_point
+plot_ice_viscosity
+plot_basal_shear_stress
 ```
