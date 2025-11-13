@@ -1,38 +1,36 @@
-pressure_column(ρ, g, h) = ρ * g * h
-
 """
 $(TYPEDSIGNATURES)
 
 An abstract type to multiple dispatch the pressure melting point computation
-via [`get_melting_point`](@ref), [`update_melting_point`](@ref), [`get_relative_temperature`](@ref) and
+via [`melting_point`](@ref), [`update_melting_point`](@ref), [`get_relative_temperature`](@ref) and
 [`update_relative_temperature!`](@ref).
 """
 abstract type AbstractPressureMeltingPoint{T<:AbstractFloat} end
 
-@doc raw"""
+"""
 $(TYPEDSIGNATURES)
 
 A linear pressure melting point parameterization:
 
 ```math
-\begin{align}
-T_{m} = T_{0} - \beta p
-\end{align}
+\\begin{align}
+T_{m} = T_{0} - \\beta p
+\\end{align}
 ```
 
-where ``T_{0}`` is the melting point at standard pressure (273.15 K), ``\beta`` is the Clausius-Clapeyron constant, and ``p`` is the pressure. The temperature relative to the pressure melting point is then given by:
+where ``T_{0}`` is the melting point at standard pressure (273.15 K), ``\\beta`` is the Clausius-Clapeyron constant, and ``p`` is the pressure. The temperature relative to the pressure melting point is then given by:
 
 ```math
-\begin{align}
-T' = T + \beta p
-\end{align}
+\\begin{align}
+T' = T + \\beta p
+\\end{align}
 ```
 
-For pure ice, the Clausius-Clapeyron constant yields ``\beta = 7.42 \times 10^{-8} \, \mathrm{K Pa^{-1}}``, but under realistic conditions, the value for air-saturated ice is closer to ``\beta = 9.8 \times 10^{-8} \, \mathrm{K Pa^{-1}}`` ([greve_dynamics_2009](@citet), p. 53-54). Therefore, we use the latter as default value.
+For pure ice, the Clausius-Clapeyron constant yields ``\\beta = 7.42 \\times 10^{-8} \\, \\mathrm{K Pa^{-1}}``, but under realistic conditions, the value for air-saturated ice is closer to ``\\beta = 9.8 \\times 10^{-8} \\, \\mathrm{K Pa^{-1}}`` ([greve_dynamics_2009](@citet), p. 53-54). Therefore, we use the latter as default value.
 
 # Fields
- - `T_0::T=273.15`: melting point at standard pressure (``\mathrm{K}``).
- - `β::T=9.8e-8`: Clausius-Clapeyron constant (``\mathrm{K \, Pa^{-1}}``).
+ - `T_0::T=273.15`: melting point at standard pressure (``\\mathrm{K}``).
+ - `β::T=9.8e-8`: Clausius-Clapeyron constant (``\\mathrm{K \\, Pa^{-1}}``).
 """
 @kwdef struct LinearPressureMeltingPoint{T} <: AbstractPressureMeltingPoint{T}
     T_0::T = 273.15     # K, melting point at standard pressure
@@ -44,12 +42,17 @@ $(TYPEDSIGNATURES)
 
 Get the melting point `T_m` at pressure `p` based on the pressure melting point parameterization `apmp<:AbstractPressureMeltingPoint`.
 """
-function get_melting_point(p, apmp::LinearPressureMeltingPoint)
+function melting_point(p, apmp::LinearPressureMeltingPoint)
     return apmp.T_0 - apmp.β * p
 end
 
-function update_melting_point!(Tm, p, apmp::LinearPressureMeltingPoint)
-    map!(x -> get_melting_point(x, apmp), Tm, p)
+"""
+$(TYPEDSIGNATURES)
+
+Same as [`melting_point`](@ref) but operates in place.
+"""
+function melting_point!(Tm, p, apmp::LinearPressureMeltingPoint)
+    map!(x -> melting_point(x, apmp), Tm, p)
     return
 end
 
