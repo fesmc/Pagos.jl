@@ -1,7 +1,8 @@
 
 # Pagos.jl - Πάγος
 
-<!-- [![Build Status](https://github.com/fesmc/Pagos.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/fesmc/Pagos.jl/actions/workflows/CI.yml?query=branch%3Amain) -->
+[![Build Status](https://github.com/fesmc/Pagos.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/fesmc/Pagos.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Documentation](https://img.shields.io/badge/docs-dev-blue.svg)](https://fesmc.github.io/Pagos.jl/dev/)
 
 ## Aim
 
@@ -54,7 +55,7 @@ the user should be able to do:
 
 ```julia
 using Pagos
-rcf = RegularizedCoulombFriction(params...)
+rcf = RegularizedCoulombBasalFriction(params...)
 ais = IceSheet(args..., friction_law = rcf)
 ```
 
