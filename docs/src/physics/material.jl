@@ -1,6 +1,6 @@
 #=
 
-# [Flow law](@id flow_law)
+# [Material](@id material)
 
 The deformation of polycrystalline ice under shear stress ``\tau`` can be described by a flow law that depends on the ice viscosity ``\eta`` and yields the shear (deformation) rate ``\dot{\gamma}``, which can be expressed as:
 
@@ -24,13 +24,11 @@ where ``A(T, p)`` is the rate factor, and ``f(|\tau|)`` is the creep function. L
 
 The rate factor ``A(T, p)`` captures the dependence of ice deformation on temperature and pressure. It typically increases with temperature and decreases with pressure, reflecting the fact that warmer ice deforms more easily, while higher pressure tends to inhibit deformation.
 
-### [Arrhenius Law](@id arrhenius_law)
-
 The rate factor ``A(T, p)`` is typically modeled using an Arrhenius law:
 
 ```math
 \begin{aligned}
-A(T, p) = A_0 \, e^{-\frac{Q}{R T'}}
+A(T, p) = A_0 \, e^{-\frac{Q}{R T'(T, p)}}
 \end{aligned}
 ```
 
@@ -38,7 +36,7 @@ where:
 - ``A_0`` is the pre-exponential factor,
 - ``Q`` is the activation energy,
 - ``R`` is the universal gas constant,
-- ``T'`` is the temperature relative to the pressure melting point.
+- ``T'`` is the temperature relative to the pressure melting point, which depends on both ``T`` and ``p``. The computation of ``T'`` is described in the section [Temperature relative to pressure melting point](@ref melting_point).
 
 For ice, the rate factor is defined in a piecewise manner based on temperature ranges:
 ```math
@@ -56,9 +54,9 @@ To define this behaviour in Pagos.jl, use [`ArrheniusRateFactor`](@ref):
 
 using Pagos, CairoMakie
 arrhenius_rate_factor = ArrheniusRateFactor()
-Tprime = range(-50, stop = 10, length = 121) .+ 273.15
-A = map(x -> get_rate_factor(x, arrhenius_rate_factor), Tprime)
-fig = plot_rate_factor(Tprime .- 273.15, A)
+T_relative_kelvin = range(-50, stop = 10, step = 0.1) .+ 273.15
+A = rate_factor(T_relative_kelvin, arrhenius_rate_factor)
+fig = plot_rate_factor(T_relative_kelvin .- 273.15, A)
 
 #=
 
@@ -74,9 +72,7 @@ f(|\tau|) = |\tau|^{n - 1}
 \end{aligned}
 ```
 
-where ``n`` is the creep exponent, typically around 3 for ice. This means that the viscosity decreases with increasing shear stress, leading to non-linear deformation behavior.
-
-To ease the implementation regardless of the coordinate system, the effective stress ``\sigma_e`` is often used. It is defined as the square root of the second invariant of the stress tensor and simplifies the creep function to:
+where ``n`` is the creep exponent, typically around 3 for ice. This means that the viscosity decreases with increasing shear stress, leading to non-linear deformation behavior. To ease the implementation regardless of the coordinate system, the effective stress ``\sigma_e`` is often used. It is defined as the square root of the second invariant of the stress tensor and simplifies the creep function to:
 
 ```math
 \begin{aligned}
@@ -84,50 +80,47 @@ f(\sigma_e) = \sigma_e^{n - 1}
 \end{aligned}
 ```
 
-Thus, the viscosity equation can be rewritten as:
-```math
-\begin{aligned}
-\eta(T', \sigma_e) = \frac{1}{2 \, A(T') \, \sigma_e^{n - 1}}
-\end{aligned}
-```
-
-However, this is diverges for ``\sigma_e \to 0``. To avoid this, a regularization parameter ``\sigma_0`` is often introduced:
+To prevent singularities at low stresses, a regularized version of the Glen-Nye creep function is often employed:
 
 ```math
 \begin{aligned}
-\eta(T', \sigma_e) = \frac{1}{2 \, A(T') \, (\sigma_e + \sigma_0)^{n - 1}}
+f(\sigma_e) = \sigma_e^{n - 1} + \sigma_0^{n - 1}
 \end{aligned}
 ```
 
-This is known as the Regularized Glen-Nye flow law, and is implemented in Pagos.jl as [`RegularizedGlenNyeViscosity`](@ref):
+where ``\sigma_0`` is a small regularization parameter. This is implemented in Pagos.jl as [`RegularizedGlenNyeCreepFunction`](@ref):
 =#
 
-glennye_flowlaw = RegularizedGlenNyeViscosity()
-A = 1e-24
-σ_e = 100f3
-η_ice = get_viscosity(A, σ_e, glennye_flowlaw)
+glennye_creepfunction = RegularizedGlenNyeCreepFunction()
 
-#=
-This exemplifies the computation for a single value of effective stress and rate factor. Let's now look at how the viscosity varies with effective stress for different temperatures and reproduce Fig. 4.6 of [greve_dynamics_2009](@citet).
-=#
-
-T = (0, -10, -20)
-A = map(x -> get_rate_factor(x + 273.15, arrhenius_rate_factor), T)
+# Example computation with typical values
 σ_e = range(0, stop = 100, step = 0.1) .* 1f3
-η_ice = [map(x -> get_viscosity(AA, x, glennye_flowlaw), σ_e) for AA in A]
-fig = plot_ice_viscosity(η_ice, σ_e, T)
+cf = creep_function(σ_e, glennye_creepfunction)
+lines(σ_e ./ 1f3, cf)
 
 #=
-In [`AbstractViscosity`](@ref), we show other options, as well as how to implement your own viscosity models.
+## [Flow law](@id flow_law)
 
-## [Temperature relative to pressure melting point](@id melting_point)
+By combining the rate factor and creep function, we can compute the ice viscosity using the [`RateCreepFlowLaw`](@ref):
+=#
+
+flowlaw = RateCreepFlowLaw(arrhenius_rate_factor, glennye_creepfunction)
+T = [0, -10, -20]
+A = rate_factor(T .+ 273.15, arrhenius_rate_factor)
+η = [viscosity(a, cf, flowlaw) for a in A]
+fig = plot_ice_viscosity(η, σ_e, T)
+
+#=
+In [`AbstractFlowLaw`](@ref), we show convenience constructors, other options, as well as how to implement your own flow law.
+
+## [Pressure melting point](@id melting_point)
 
 For some computations, it is necessary to determine the temperature relative to the pressure melting point, ``T'``. The pressure melting point decreases with increasing pressure, and can be approximated using a linear relation:
 =#
 
 lpmp = LinearPressureMeltingPoint()
 p = range(0, stop = 50f6, length = 1000)
-Tm = map(x -> get_melting_point(x, lpmp), p)
+Tm = map(x -> melting_point(x, lpmp), p)
 fig_tm = plot_melting_point(p, Tm)
 
 #=
