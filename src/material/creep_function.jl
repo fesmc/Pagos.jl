@@ -1,133 +1,111 @@
-"""
-$(TYPEDSIGNATURES)
-
-An abstract type to multiple dispatch the viscosity computation via [`get_viscosity`](@ref) and [`update_ice_viscosity!`](@ref).
-"""
-abstract type AbstractViscosity{T<:AbstractFloat} end
-
-@doc raw"""
-$(TYPEDSIGNATURES)
-
-A constant viscosity model for ice.
-    
-# Fields
- - `η::T=1e16`: constant viscosity value (``\mathrm{Pa \, s}``).
-"""
-@kwdef struct ConstantViscosity{T} <: AbstractViscosity{T}
-    η::T=1e16
-end
+###########################################################
+# Structs
+###########################################################
 
 """
 $(TYPEDSIGNATURES)
 
-Flow law for ice viscosity following the Glen-Nye flow law (1955, 1957).
+An abstract type to multiple dispatch the creep function computation via [`creep_function`](@ref) and [`creep_function!`](@ref).
+"""
+abstract type AbstractCreepFunction{T<:AbstractFloat} end
+
+"""
+$(TYPEDSIGNATURES)
+
+Creep function following Glen-Nye (1955, 1957).
 
 # Fields
 - `n::T=3.0`: Glen-Nye's flow law exponent.
 """
-@kwdef struct GlenNyeViscosity{T} <: AbstractViscosity{T}
+@kwdef struct GlenNyeCreepFunction{T} <: AbstractCreepFunction{T}
     n::T = 3.0
 end
 
-@doc raw"""
+"""
 $(TYPEDSIGNATURES)
 
-Regularized Glen-Nye's flow law for ice viscosity.
+Regularized creep function following Glen-Nye (1955, 1957).
 
 # Fields
  - `n::T=3.0`: Glen-Nye's flow law exponent.
- - `σ_0::T=1e-6`: regularization stress (``\mathrm{Pa}``).
+ - `σ_0::T=1e-6`: regularization stress (``\\mathrm{Pa}``).
 """
-@kwdef struct RegularizedGlenNyeViscosity{T} <: AbstractViscosity{T}
+@kwdef struct RegularizedGlenNyeCreepFunction{T} <: AbstractCreepFunction{T}
     n::T = 3.0
     σ_0::T = 1e-6
 end
 
-function get_viscosity(
-    A,
-    σ_e,
-    flowlaw::ConstantViscosity,
-)
-    return flowlaw.η
+"""
+$(TYPEDSIGNATURES)
+
+Smith-Morland creep function.
+
+# Fields
+ - `p1::T=0.3336`
+ - `p2::T=0.3200`
+ - `p3::T=0.02963`
+"""
+@kwdef struct SmithMorlandCreepFunction{T} <: AbstractCreepFunction{T}
+    p0::T = 0.3336
+    p2::T = 0.3200
+    p4::T = 0.02963
+    D_0::T = 3.169e-8
+    σ_0::T = 1e5
 end
 
-function get_viscosity(
-    A,
-    σ_e,
-    flowlaw::GlenNyeViscosity,
-)
-    return 0.5 / (A * σ_e^(flowlaw.n - 1))
+###########################################################
+# Dispatch
+###########################################################
+
+"""
+$(TYPEDSIGNATURES)
+
+Compute the creep function value based on the effective stress `σ_e` and the creep function parameterization `flowlaw<:AbstractCreepFunction`.
+"""
+function creep_function(
+    σ_e::T,
+    smcf::SmithMorlandCreepFunction,
+) where {T<:Real}
+    (; p0, p2, p4, D_0, σ_0) = smcf
+    return D_0 / σ_0 * (p0 + p2 * (σ_e / σ_0)^2 + p4 * (σ_e / σ_0)^4)
 end
 
-function get_viscosity(
-    A,
-    σ_e,
-    flowlaw::RegularizedGlenNyeViscosity,
-)
+function creep_function(
+    σ_e::T,
+    flowlaw::GlenNyeCreepFunction,
+) where {T<:Real}
+    return σ_e^(flowlaw.n - 1)
+end
+
+function creep_function(
+    σ_e::T,
+    flowlaw::RegularizedGlenNyeCreepFunction,
+) where {T<:Real}
     (; n, σ_0) = flowlaw
-    return 0.5 / (A * (σ_e^(n - 1) + σ_0^(n - 1)))
+    return σ_e^(n - 1) + σ_0^(n - 1)
+end
+
+function creep_function(
+    σ_e::M,
+    flowlaw,
+) where {M<:AbstractArray}
+    cf = similar(σ_e)
+    creep_function!(cf, σ_e, flowlaw)
+    return cf
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Same as [`creep_function`](@ref) but operates in place.
+"""
+function creep_function!(cf, σ_e, flowlaw)
+    map!(s -> creep_function(s, flowlaw), cf, σ_e)
+    return nothing
 end
 
 
-# @kwdef struct SmithMorlandViscosity{T} <: AbstractViscosity{T}
-#     p1::T = 0.3336
-#     p2::T = 0.3200
-#     p3::T = 0.02963
-# end
-
-# function update_ice_viscosity!(
-#     η::Array{T, 3},
-#     A::Array{T, 3},
-#     σ_e::Array{T, 3},
-#     flowlaw::ConstantViscosity{T},
-#     idx::Matrix{CartesianIndex{2}},
-# ) where {T<:AbstractFloat}
-
-#     for i in idx
-#         for l in axes(η, 3)
-#             η[i, l] .= flowlaw.η
-#         end
-#     end
-#     return
-# end
-
-# function update_ice_viscosity!(
-#     η::Array{T, 3},
-#     A::Array{T, 3},
-#     σ_e::Array{T, 3},
-#     flowlaw::GlenViscosity{T},
-#     idx::Matrix{CartesianIndex{2}},
-# ) where {T<:AbstractFloat}
-
-#     for i in idx
-#         for l in axes(η, 3)
-#             η[i, l] = 0.5 / (A[i, l] * σ_e[i, l]^(flowlaw.n-1))
-#         end
-#     end
-# end
-
-# function update_ice_viscosity!(
-#     η::Array{T, 3},
-#     A::Array{T, 3},
-#     σ_e::Array{T, 3},
-#     flowlaw::RegularizedGlenViscosity{T},
-#     idx::Matrix{CartesianIndex{2}},
-# ) where {T<:AbstractFloat}
-
-#     (; n, σ_0) = flowlaw
-#     for i in idx
-#         for l in axes(η, 3)
-#             η[i, l] = 0.5 / (A[i, l] * (σ_e[i, l]^(n-1) + σ_0^(n-1)))
-#         end
-#     end
-# end
-
-
-
-
-
-
-
+#=
 function calc_visc_eff_2D_aa(
     ux,
     uy,
@@ -296,3 +274,4 @@ function calc_visc_eff_2D_nodes(
     #println("eps: ", extrema(eps_aa))
     return visc
 end
+=#
