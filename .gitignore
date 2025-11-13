@@ -4,6 +4,7 @@ benchmark/Manifest.toml
 test/Manifest.toml
 docs/Manifest.toml
 docs/build/
+docs/src/physics/*.md
 benchmark/plots/*
 benchmark/data/*
 ice_data/
