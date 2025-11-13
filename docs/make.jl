@@ -9,26 +9,25 @@ ENV["JULIA_DEBUG"] = "Documenter"
 # Packages specific to these docs
 using Pagos
 
-# bib = CitationBibliography(
-#     joinpath(@__DIR__, "src", "refs.bib");
-#     style=:authoryear
-# )
+bib = CitationBibliography(
+    joinpath(@__DIR__, "src/assets", "pagos.bib");
+    style=:authoryear
+)
 
-Literate.markdown("src/viscosity.jl", "src"; credit = false)
-# Literate.markdown("src/examples/glacialcycle.jl", "src/examples"; credit = false)
-# Literate.markdown("src/examples/inversion.jl", "src/examples"; credit = false)
-
-ref_pages = ["APIref.md", "fortran.md", "references.md"]
+Literate.markdown("src/physics/material.jl", "src/physics"; credit = false)
+Literate.markdown("src/physics/basal_friction.jl", "src/physics"; credit = false)
 
 # %% Build docs
 PAGES = [
     "index.md",
-    "viscosity.md",
+    "physics/material.md",
+    "physics/basal_friction.md",
     "Guidelines" => [
         "guidelines/naming.md",
         "guidelines/performance.md",
     ],
-    # "introGIA.md",
+    "APIref.md",
+    "references.md",
     # "examples/tutorial.md",
     # "Examples" => example_pages,
     # "References" => ref_pages,
@@ -50,7 +49,7 @@ makedocs(
     pages = PAGES,
     doctest = CI,
     draft = false,
-    # plugins = [bib],
+    plugins = [bib],
     checkdocs = :none,
     warnonly = true,
 )
