@@ -1,13 +1,8 @@
 module PagosMakieExt
 
-using Pagos, Makie
+using Pagos, Makie, LinearAlgebra
 using DocStringExtensions
 
-"""
-$(TYPEDSIGNATURES)
-
-Plot the rate factor A as a function of temperature T using Makie.
-"""
 function Pagos.plot_rate_factor(T, A)
     set_theme!(theme_latexfonts())
     fig = Figure(size = (500, 400))
@@ -27,28 +22,18 @@ function Pagos.plot_rate_factor(T, A)
     return fig
 end
 
-"""
-$(TYPEDSIGNATURES)
-
-Plot the melting point T_m as a function of pressure p using Makie.
-"""
 function Pagos.plot_melting_point(p, Tm)
     set_theme!(theme_latexfonts())
     fig = Figure(size = (500, 400))
     ax = Axis(fig[1, 1],
         xlabel = L"Pressure $p$ (MPa)",
-        ylabel = L"Melting Point $T_m$ (°C)",
+        ylabel = L"Melting Point $T_m$ (K)",
         title = "Pressure Melting Point of Ice"
     )
     lines!(ax, p ./ 1f6, Tm, linewidth = 2)
     return fig
 end
 
-"""
-$(TYPEDSIGNATURES)
-
-Plot the ice viscosity η as a function of effective stress σ_e using Makie.
-"""
 function Pagos.plot_ice_viscosity(η_ice, σ_e, T;
     rate_factor_str = "Arrhenius",
     flow_law_str = "Regularized Glen-Nye",
@@ -72,6 +57,21 @@ function Pagos.plot_ice_viscosity(η_ice, σ_e, T;
     ylims!(ax, 1e13, 1e17)
     axislegend(ax, position = :rt)
 
+    return fig
+end
+
+function Pagos.plot_basal_shear_stress(v_basal, τ_basal, labels)
+    set_theme!(theme_latexfonts())
+    fig = Figure(size = (600, 400))
+    ax = Axis(fig[1, 1];
+        xlabel = L"Basal sliding speed $v_b$ (m/a)",
+        ylabel = L"Basal shear stress $\tau_b$ (kPa)",
+        title = "Basal shear stress vs basal sliding speed",
+    )
+    for i in eachindex(τ_basal)
+        lines!(ax, [norm(v) for v in v_basal], [norm(τ) for τ in τ_basal[i]], label = labels[i])
+    end
+    axislegend(ax, position = :rb)
     return fig
 end
 
