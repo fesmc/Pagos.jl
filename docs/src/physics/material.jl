@@ -113,6 +113,20 @@ fig = plot_ice_viscosity(η, σ_e, T)
 #=
 In [`AbstractFlowLaw`](@ref), we show convenience constructors, other options, as well as how to implement your own flow law.
 
+## [Enhancement factor](@id enhancement_factor)
+
+In glaciology, an enhancement factor ``E`` is often introduced to account for deviations from the standard flow law due to factors such as impurities, crystal orientation, or other microstructural effects. The modified flow law incorporating the enhancement factor can be expressed as:
+
+```math
+\begin{aligned}
+A(T') \rightarrow E A(T')
+\end{aligned}
+```
+
+The enhancement factor ``E`` is typically a dimensionless quantity greater than 1, indicating that the ice deforms more easily than predicted by the standard flow law. It can vary depending on the specific conditions and characteristics of the ice being studied.
+
+This will soon be implemented in Pagos.jl!
+
 ## [Pressure melting point](@id melting_point)
 
 For some computations, it is necessary to determine the temperature relative to the pressure melting point, ``T'``. The pressure melting point decreases with increasing pressure, and can be approximated using a linear relation:
