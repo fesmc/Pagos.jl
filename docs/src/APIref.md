@@ -23,6 +23,15 @@ basal_shear_stress
 basal_shear_stress!
 ```
 
+## Calving
+
+```@docs
+AbstractCalving
+LipscombCalving
+LevermannCalving
+calving_rate
+```
+
 ## Material
 
 ### Pressure melting point

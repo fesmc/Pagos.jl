@@ -50,6 +50,15 @@ include("dynamics/friction/stagger.jl")
 include("dynamics/advection.jl")
 
 ###########################################################
+# Topography
+###########################################################
+
+include("topography/calving.jl")
+export AbstractCalving, RelaxedCalving, ThicknessCalving, LipscombCalving
+export LevermannCalving, CrawfordCalving, BassisCalving, BedStddevCalving
+export calving_rate
+
+###########################################################
 # Material
 ###########################################################
 
