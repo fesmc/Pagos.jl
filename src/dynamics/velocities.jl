@@ -1,26 +1,47 @@
-using LinearSolve
-using SparseArrays
-
+"""
+$(TYPEDSIGNATURES)
+"""
 abstract type AbstractDynamics end
 
-struct SIA <: AbstractDynamics
+"""
+$(TYPEDSIGNATURES)
+"""
+struct SIADynamics <: AbstractDynamics
 end
 
-struct SSA <: AbstractDynamics
+"""
+$(TYPEDSIGNATURES)
+"""
+struct SSADynamics <: AbstractDynamics
 end
 
+"""
+$(TYPEDSIGNATURES)
+"""
 struct HybridDynamics <: AbstractDynamics
 end
 
+"""
+$(TYPEDSIGNATURES)
+"""
 struct L1L2Dynamics <: AbstractDynamics
 end
 
-struct DIVA <: AbstractDynamics
+"""
+$(TYPEDSIGNATURES)
+"""
+struct DIVADynamics <: AbstractDynamics
 end
 
+"""
+$(TYPEDSIGNATURES)
+"""
 struct BlatterPattynDynamics <: AbstractDynamics
 end
 
+"""
+$(TYPEDSIGNATURES)
+"""
 struct StokesDynamics <: AbstractDynamics
 end
 
