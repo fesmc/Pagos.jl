@@ -26,7 +26,7 @@ PAGES = [
         "guidelines/naming.md",
         "guidelines/performance.md",
     ],
-    "APIref.md",
+    "API_public.md",
     "references.md",
     # "examples/tutorial.md",
     # "Examples" => example_pages,
