@@ -26,6 +26,10 @@ scatterlines!(ax, quadratic_layering.ζ_ac, label = labels[4])
 axislegend(ax, position = :rb)
 fig
 
+#=
+After corrections:
+=#
+
 linear_layering = CorrectedVerticalLayering(T, PowerSigmaTransform(10, 1))
 quadratic_layering = CorrectedVerticalLayering(T, PowerSigmaTransform(10, 2))
 fig, ax, _ = scatterlines(linear_layering.ζ_aa, label = labels[1])

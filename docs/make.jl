@@ -16,12 +16,16 @@ bib = CitationBibliography(
 
 Literate.markdown("src/physics/material.jl", "src/physics"; credit = false)
 Literate.markdown("src/physics/basal_friction.jl", "src/physics"; credit = false)
+Literate.markdown("src/physics/calving.jl", "src/physics"; credit = false)
+Literate.markdown("src/physics/topography.jl", "src/physics"; credit = false)
 
 # %% Build docs
 PAGES = [
     "index.md",
     "physics/material.md",
     "physics/basal_friction.md",
+    "physics/calving.md",
+    "physics/topography.md",
     "Guidelines" => [
         "guidelines/naming.md",
         "guidelines/performance.md",
