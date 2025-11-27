@@ -1,25 +1,19 @@
 ###########################################################
 # Structs
 ###########################################################
-
 """
 $(TYPEDSIGNATURES)
 
 An abstract type to multiple dispatch the effective pressure computation via [`effective_pressure`](@ref).
 """
-abstract type AbstractEffectivePressure{T<:AbstractFloat} end
+abstract type AbstractEffectivePressure end
 
 """
 $(TYPEDSIGNATURES)
 
-A struct that passes an externally computed field effective pressure field via [`effective_pressure`](@ref).
-
-# Fields
- - `p::Matrix{T}`: effective pressure field (Pa).
+A struct that prevents the update of effective pressure via [`effective_pressure`](@ref).
 """
-struct ExternalEffectivePressure{T} <: AbstractEffectivePressure{T}
-    p::Matrix{T}
-end
+struct ManualEffectivePressure{T} <: AbstractEffectivePressure end
 
 """
 $(TYPEDSIGNATURES)
@@ -27,10 +21,10 @@ $(TYPEDSIGNATURES)
 A struct that passes a constant effective pressure value via [`effective_pressure`](@ref).
 
 # Fields
- - `p::T`: effective pressure value (Pa).
+ - `p::M`: effective pressure value (Pa). Can be a scalar or an array.
 """
-struct ConstantEffectivePressure{T} <: AbstractEffectivePressure{T}
-    p::T
+struct ConstantEffectivePressure{M} <: AbstractEffectivePressure
+    p::M
 end
 
 """
@@ -41,7 +35,7 @@ A struct that computes the overburden pressure as effective pressure via [`effec
 # Fields
  - `ρ::T`: ice density (``\\mathrm{kg \\, m^{-3}}``).
 """
-@kwdef struct OverburdenEffectivePressure{T} <: AbstractEffectivePressure{T}
+@kwdef struct OverburdenEffectivePressure{T} <: AbstractEffectivePressure
     ρ::T = 918.0      # ice density
     g::T = 9.81       # gravitational acceleration
 end
@@ -54,7 +48,7 @@ A struct that computes the Leguy et al. (2020) effective pressure via [`effectiv
 # Fields
  - `p::T`: marine connectivity exponent (0: none, 1: full).
 """
-struct LeguyEffectivePressure{T} <: AbstractEffectivePressure{T}
+struct LeguyEffectivePressure{T} <: AbstractEffectivePressure
     p::T
     overburden::OverburdenEffectivePressure{T}
 end
@@ -71,7 +65,7 @@ A struct that computes the till pressure via [`effective_pressure`](@ref), follo
  - `e0::T=0.69`: reference void ratio at N0.
  - `Cc::T=0.12`: till compressibility.
 """
-@kwdef struct TillEffectivePressure{T} <: AbstractEffectivePressure{T}
+@kwdef struct TillEffectivePressure{T} <: AbstractEffectivePressure
     H_w_max::T = 2.0        # saturation water thickness
     N0::T = 1e3             # reference effective pressure
     delta::T = 0.04         # fraction of overburden pressure for saturated till
@@ -92,24 +86,16 @@ Compute the effective pressure using the specified effective pressure model `eff
 function effective_pressure(
     H_ice,
     H_water,
-    eff_pressure::ExternalEffectivePressure,
+    eff_pressure::ConstantEffectivePressure,
 )
     return eff_pressure.p
 end
 
 function effective_pressure(
-    H_ice::R1,
-    H_water::R2,
-    eff_pressure::ConstantEffectivePressure,
-) where {R1<:Real, R2<:Real}
-    return eff_pressure.p
-end
-
-function effective_pressure(
-    H_ice::R1,
-    H_water::R2,
+    H_ice,
+    H_water,
     eff_pressure::OverburdenEffectivePressure,
-) where {R1<:Real, R2<:Real}
+)
     return eff_pressure.ρ * eff_pressure.g * H_ice
 end
 
@@ -127,4 +113,21 @@ function effective_pressure(
     eff_pressure::TillEffectivePressure,
 )
     error("Not implemented yet")
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Same as [`effective_pressure`](@ref) but operates in place.
+"""
+function effective_pressure!(N_eff, H_ice, H_water, eff_pressure::ManualEffectivePressure)
+    return nothing
+end
+function effective_pressure!(N_eff, H_ice, H_water, eff_pressure::ConstantEffectivePressure)
+    N_eff .= eff_pressure.p
+end
+function effective_pressure!(N_eff, H_ice, H_water, eff_pressure)
+    map!(
+        (h_ice, h_water) -> effective_pressure(h_ice, h_water, eff_pressure),
+        N_eff, H_ice, H_water)
 end

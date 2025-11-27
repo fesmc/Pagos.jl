@@ -5,7 +5,7 @@ An abstract type to multiple dispatch the pressure melting point computation
 via [`melting_point`](@ref), [`update_melting_point`](@ref), [`get_relative_temperature`](@ref) and
 [`update_relative_temperature!`](@ref).
 """
-abstract type AbstractPressureMeltingPoint{T<:AbstractFloat} end
+abstract type AbstractPressureMeltingPoint end
 
 """
 $(TYPEDSIGNATURES)
@@ -32,7 +32,7 @@ For pure ice, the Clausius-Clapeyron constant yields ``\\beta = 7.42 \\times 10^
  - `T_0::T=273.15`: melting point at standard pressure (``\\mathrm{K}``).
  - `β::T=9.8e-8`: Clausius-Clapeyron constant (``\\mathrm{K \\, Pa^{-1}}``).
 """
-@kwdef struct LinearPressureMeltingPoint{T} <: AbstractPressureMeltingPoint{T}
+@kwdef struct LinearPressureMeltingPoint{T} <: AbstractPressureMeltingPoint
     T_0::T = 273.15     # K, melting point at standard pressure
     β::T = 9.8e-8       # K Pa^-1, Greve and Blatter (2009), p. 54, (Hooke 2005)
 end
@@ -40,38 +40,38 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Get the melting point `T_m` at pressure `p` based on the pressure melting point parameterization `apmp<:AbstractPressureMeltingPoint`.
+Get the melting point `T_m` at pressure `p` based on the pressure melting point parameterization `pmp<:AbstractPressureMeltingPoint`.
 """
-function melting_point(p, apmp::LinearPressureMeltingPoint)
-    return apmp.T_0 - apmp.β * p
+function pressure_melting_point(p, pmp::LinearPressureMeltingPoint)
+    return pmp.T_0 - pmp.β * p
 end
 
 """
 $(TYPEDSIGNATURES)
 
-Same as [`melting_point`](@ref) but operates in place.
+Same as [`pressure_melting_point`](@ref) but operates in place.
 """
-function melting_point!(Tm, p, apmp::LinearPressureMeltingPoint)
-    map!(x -> melting_point(x, apmp), Tm, p)
+function pressure_melting_point!(Tm, p, pmp::LinearPressureMeltingPoint)
+    map!(x -> pressure_melting_point(x, pmp), Tm, p)
     return
 end
 
 """
 $(TYPEDSIGNATURES)
 
-Get the relative temperature `T'` based on the absolute temperature `T` and pressure `p` using the pressure melting point parameterization `apmp<:AbstractPressureMeltingPoint`.
+Get the relative temperature `T'` based on the absolute temperature `T` and pressure `p` using the pressure melting point parameterization `pmp<:AbstractPressureMeltingPoint`.
 """
-function get_relative_temperature(T, p, apmp::LinearPressureMeltingPoint)
-    return T + apmp.β * p
+function relative_temperature(T, p, pmp::LinearPressureMeltingPoint)
+    return T + pmp.β * p
 end
 
 """
 $(TYPEDSIGNATURES)
 
-Update the relative temperature `T'` based on the absolute temperature `T` and pressure `p` using the pressure melting point parameterization `apmp<:AbstractPressureMeltingPoint`.
+Update the relative temperature `T'` based on the absolute temperature `T` and pressure `p` using the pressure melting point parameterization `pmp<:AbstractPressureMeltingPoint`.
 """
-function update_relative_temperature!(Tprime, T, p, apmp::LinearPressureMeltingPoint)
-    map!(x -> get_relative_temperature(x[1], x[2], apmp), Tprime, T, p)
+function relative_temperature!(Tprime, T, p, pmp::LinearPressureMeltingPoint)
+    map!(x -> relative_temperature(x[1], x[2], pmp), Tprime, T, p)
     return
 end
 

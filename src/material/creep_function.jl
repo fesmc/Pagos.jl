@@ -7,7 +7,7 @@ $(TYPEDSIGNATURES)
 
 An abstract type to multiple dispatch the creep function computation via [`creep_function`](@ref) and [`creep_function!`](@ref).
 """
-abstract type AbstractCreepFunction{T<:AbstractFloat} end
+abstract type AbstractCreepFunction end
 
 """
 $(TYPEDSIGNATURES)
@@ -17,7 +17,7 @@ Creep function following Glen-Nye (1955, 1957).
 # Fields
 - `n::T=3.0`: Glen-Nye's flow law exponent.
 """
-@kwdef struct GlenNyeCreepFunction{T} <: AbstractCreepFunction{T}
+@kwdef struct GlenNyeCreepFunction{T} <: AbstractCreepFunction
     n::T = 3.0
 end
 
@@ -30,7 +30,7 @@ Regularized creep function following Glen-Nye (1955, 1957).
  - `n::T=3.0`: Glen-Nye's flow law exponent.
  - `σ_0::T=1e-6`: regularization stress (``\\mathrm{Pa}``).
 """
-@kwdef struct RegularizedGlenNyeCreepFunction{T} <: AbstractCreepFunction{T}
+@kwdef struct RegularizedGlenNyeCreepFunction{T} <: AbstractCreepFunction
     n::T = 3.0
     σ_0::T = 1e-6
 end
@@ -45,7 +45,7 @@ Smith-Morland creep function.
  - `p2::T=0.3200`
  - `p3::T=0.02963`
 """
-@kwdef struct SmithMorlandCreepFunction{T} <: AbstractCreepFunction{T}
+@kwdef struct SmithMorlandCreepFunction{T} <: AbstractCreepFunction
     p0::T = 0.3336
     p2::T = 0.3200
     p4::T = 0.02963

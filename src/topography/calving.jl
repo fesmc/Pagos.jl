@@ -7,8 +7,11 @@ $(TYPEDSIGNATURES)
 
 An abstract type to dispatch calving laws via [`calving_rate`](@ref).
 """
-abstract type AbstractCalving{T<:AbstractFloat} end
+abstract type AbstractCalving end
 
+# TODO: Decide whether we should use this distinction
+abstract type AbstractGroundedCalving <: AbstractCalving end
+abstract type AbstractFloatingCalving <: AbstractCalving end
 """
 $(TYPEDSIGNATURES)
 
@@ -23,7 +26,7 @@ Struct to specify a constant calving rate:
 # Fields
  - `rate::T`: Constant calving rate
 """
-@kwdef struct ConstantCalving{T} <: AbstractCalving{T}
+@kwdef struct ConstantCalving{T} <: AbstractCalving
     rate::T = 0.0           # m yr-1
 end
 
@@ -43,7 +46,7 @@ Calving law based on a relaxation `timescale`:
  - `timescale::T`: Calving time scale
  - `max_rate::T`: Maximum calving rate
 """
-@kwdef struct RelaxedCalving{T} <: AbstractCalving{T}
+@kwdef struct RelaxedCalving{T} <: AbstractCalving
     H_critical::T = 0.0         # m
     timescale::T = 1.0          # yr
     max_rate::T = Inf           # m yr-1
@@ -65,7 +68,7 @@ Calving law based on a threshold thickness `H_critical` and a `timescale` as in 
  - `timescale::T`: Calving time scale
  - `max_rate::T`: Maximum calving rate
 """
-@kwdef struct ThicknessCalving{T} <: AbstractCalving{T}
+@kwdef struct ThicknessCalving{T} <: AbstractCalving
     H_critical::T = 100.0       # m
     timescale::T = 1.0          # yr
     max_rate::T = Inf           # m yr-1
@@ -95,7 +98,7 @@ with `\\tau_{eff}` the effective calving stress, and `k_{\\tau}` an empirical ca
  - `timescale::T`: Calving time scale
  - `max_rate::T`: Maximum calving rate
 """
-@kwdef struct LipscombCalving{T} <: AbstractCalving{T}
+@kwdef struct LipscombCalving{T} <: AbstractCalving
     k_τ::T = 0.0025             # m yr-1 Pa-1
     w2::T = 25                  # 1
     timescale::T = 1.0          # yr
@@ -116,7 +119,7 @@ Calving law based on the principal strain rate `ε_eff` as in [levermann_calving
  - `k2::T`: Empirical calving coefficient
  - `max_rate::T`: Maximum calving rate
 """
-@kwdef struct LevermannCalving{T} <: AbstractCalving{T}
+@kwdef struct LevermannCalving{T} <: AbstractCalving
     k2::T = 0.00025             # m yr-1 Pa-1
     max_rate::T = Inf           # m yr-1
 end
@@ -140,7 +143,7 @@ Calving law based on the ice thickness above sea level `H_c` as in [crawford_mar
 !!! warning
     This does not depend on the flow regime for now and only represents an upper bound on MICI.
 """
-@kwdef struct CrawfordCalving{T} <: AbstractCalving{T}
+@kwdef struct CrawfordCalving{T} <: AbstractCalving
     I::T = 1.9e-16              # m
     α::T = 7.3                  # 1
     H_critical::T = 135.0         # m
@@ -163,7 +166,7 @@ Calving law based on the formulation by [bassis_upper_2012](@citet):
  - `r::T`: Crevasse parameter
  - `max_rate::T`: Maximum calving rate
 """
-@kwdef struct BassisCalving{T} <: AbstractCalving{T}
+@kwdef struct BassisCalving{T} <: AbstractCalving
     C0::T = 1f6                 # Pa
     α::T = 0.0                  # 1
     r::T = 0.0                  # 1
@@ -186,7 +189,7 @@ Calving law based on the bedrock standard deviation.
  - `timescale::T`: Calving time scale
  - `max_rate::T`: Maximum calving rate
 """
-@kwdef struct BedStddevCalving{T} <: AbstractCalving{T}
+@kwdef struct BedStddevCalving{T} <: AbstractCalving
     sd_min::T = 50.0            # m
     sd_max::T = 300.0           # m
     timescale::T = 1.0          # yr

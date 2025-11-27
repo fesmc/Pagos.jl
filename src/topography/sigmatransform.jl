@@ -7,14 +7,14 @@ An abstract type to multiple dispatch the sigma transform.
  - [`PowerSigmaTransform`](@ref)
  - [`ArctanSigmaTransform`](@ref)
 """
-abstract type AbstractSigmaTransform{T<:Real} end
+abstract type AbstractSigmaTransform end
 
 """
 $(TYPEDSIGNATURES)
 
 A sigma transform that uses a power distribution of sigma levels.
 """
-struct PowerSigmaTransform{T} <: AbstractSigmaTransform{T}
+struct PowerSigmaTransform{T} <: AbstractSigmaTransform
     n::Int
     exponent::T
 end

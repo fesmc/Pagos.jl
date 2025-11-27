@@ -7,7 +7,7 @@ $(TYPEDSIGNATURES)
 
 An abstract type to multiple dispatch the rate factor computation via [`rate_factor`](@ref).
 """
-abstract type AbstractRateFactor{T<:AbstractFloat} end
+abstract type AbstractRateFactor end
 
 """
 $(TYPEDSIGNATURES)
@@ -17,7 +17,7 @@ Rate factor for ice viscosity following a constant value.
 # Fields
 - `A::T=1e-16`: rate factor.
 """
-@kwdef struct ConstantRateFactor{T} <: AbstractRateFactor{T}
+@kwdef struct ConstantRateFactor{T} <: AbstractRateFactor
     A::T = 1e-16
 end
 
@@ -34,7 +34,7 @@ Rate factor for ice viscosity following Arrhenius' law.
  - `Q_a_p1::T=60e3`: "J mol^-1" activation energy.
  - `Q_a_p2::T=139e3`: piecewise definition following Patterson (1994).
 """
-@kwdef struct ArrheniusRateFactor{T} <: AbstractRateFactor{T}
+@kwdef struct ArrheniusRateFactor{T} <: AbstractRateFactor
     E_f::T = 1.0
     T_p1_p2::T = 263.15     # breakpoint temperature following Patterson (1994)
     A_0_p1::T = 3.985e-13   # "s^-1 Pa^-3" pre-exponential factor
@@ -57,7 +57,7 @@ Rate factor for ice viscosity following Smith and Morland (1981).
  - `e1::T=11.9567`
  - `e2::T=2.9494`
 """
-@kwdef struct SmithMorlandRateFactor{T} <: AbstractRateFactor{T}
+@kwdef struct SmithMorlandRateFactor{T} <: AbstractRateFactor
     p1::T = 0.7242
     p2::T = 0.3438
     e1::T = 11.9567
@@ -120,16 +120,6 @@ function rate_factor!(
     arf::AbstractRateFactor,
 )
     map!(x -> rate_factor(x, arf), A, T_relative)
-    return
-end
-
-function rate_factor!(
-    A,
-    T_relative,
-    arf::AbstractRateFactor,
-    mask,
-)
-    map!( x -> rate_factor(x, arf), view(A, mask), view(T_relative, mask))
     return
 end
 
