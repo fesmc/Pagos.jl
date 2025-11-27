@@ -84,32 +84,36 @@ $(TYPEDSIGNATURES)
 Compute the effective pressure using the specified effective pressure model `eff_pressure<:AbstractEffectivePressure`.
 """
 function effective_pressure(
-    H_ice,
-    H_water,
+    H_eff,
+    f_ground,
+    eff_pressure::AbstractEffectivePressure,
+)
+    if f_ground > 0.0
+        return effective_pressure(H_eff, eff_pressure)
+    else
+        return 0
+    end
+end
+function effective_pressure(
+    H_eff,
     eff_pressure::ConstantEffectivePressure,
 )
     return eff_pressure.p
 end
-
 function effective_pressure(
-    H_ice,
-    H_water,
+    H_eff,
     eff_pressure::OverburdenEffectivePressure,
 )
-    return eff_pressure.ρ * eff_pressure.g * H_ice
+    return eff_pressure.ρ * eff_pressure.g * H_eff
 end
-
 function effective_pressure(
-    H_ice,
-    H_water,
+    H_eff,
     eff_pressure::LeguyEffectivePressure,
 )
     error("Not implemented yet")
 end
-
 function effective_pressure(
-    H_ice,
-    H_water,
+    H_eff,
     eff_pressure::TillEffectivePressure,
 )
     error("Not implemented yet")
@@ -120,14 +124,12 @@ $(TYPEDSIGNATURES)
 
 Same as [`effective_pressure`](@ref) but operates in place.
 """
-function effective_pressure!(N_eff, H_ice, H_water, eff_pressure::ManualEffectivePressure)
+function effective_pressure!(N_eff, H_eff, eff_pressure::ManualEffectivePressure)
     return nothing
 end
-function effective_pressure!(N_eff, H_ice, H_water, eff_pressure::ConstantEffectivePressure)
+function effective_pressure!(N_eff, H_eff, eff_pressure::ConstantEffectivePressure)
     N_eff .= eff_pressure.p
 end
-function effective_pressure!(N_eff, H_ice, H_water, eff_pressure)
-    map!(
-        (h_ice, h_water) -> effective_pressure(h_ice, h_water, eff_pressure),
-        N_eff, H_ice, H_water)
+function effective_pressure!(N_eff, H_eff, eff_pressure)
+    map!((h_eff) -> effective_pressure(h_eff, eff_pressure), N_eff, H_eff)
 end
