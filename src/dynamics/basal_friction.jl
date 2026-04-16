@@ -98,7 +98,7 @@ A struct that defines a constant basal friction coefficient ``\beta``. When pass
 
 ```math
 \\begin{aligned}
-\\beta = \mathrm{const.}
+\\beta = \\mathrm{const.}
 \\end{aligned}
 ```
 
@@ -150,7 +150,7 @@ $(TYPEDSIGNATURES)
 function basal_beta(
     c_bed,
     v_basal,
-    bb::HomogeneousBasalBeta,
+    bb::ConstantBasalBeta,
 )
     return bb.beta
 end
@@ -293,6 +293,9 @@ function saturate_basal_beta(β, f_ground, β_min)
         return 0
     end
 end
+
+abstract type Topography end
+abstract type Constants end
 
 """
 $(TYPEDSIGNATURES)
@@ -513,7 +516,7 @@ function basal_shear_stress!(
     τ_basal,
     v_basal,
     c_basal,
-    friction::AbstractBasalFriction,
+    friction::BasalFriction,
 )
     map!((v, c) -> basal_shear_stress(v, c, friction), τ_basal, v_basal, c_basal)
     return nothing
