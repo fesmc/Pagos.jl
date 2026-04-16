@@ -3,47 +3,18 @@ $(TYPEDSIGNATURES)
 """
 abstract type AbstractDynamics end
 
-"""
-$(TYPEDSIGNATURES)
-"""
-struct SIADynamics <: AbstractDynamics
-end
-
-"""
-$(TYPEDSIGNATURES)
-"""
-struct SSADynamics <: AbstractDynamics
-end
-
-"""
-$(TYPEDSIGNATURES)
-"""
-struct HybridDynamics <: AbstractDynamics
-end
-
-"""
-$(TYPEDSIGNATURES)
-"""
-struct L1L2Dynamics <: AbstractDynamics
-end
-
-"""
-$(TYPEDSIGNATURES)
-"""
-struct DIVADynamics <: AbstractDynamics
-end
-
-"""
-$(TYPEDSIGNATURES)
-"""
-struct BlatterPattynDynamics <: AbstractDynamics
-end
-
-"""
-$(TYPEDSIGNATURES)
-"""
-struct StokesDynamics <: AbstractDynamics
-end
+struct SIADynamicsXY <: AbstractDynamics end
+struct SIADynamicsXZ <: AbstractDynamics end
+struct SSADynamicsXY <: AbstractDynamics end
+struct SSADynamicsXZ <: AbstractDynamics end
+struct HybridDynamicsXY <: AbstractDynamics end
+struct HybridDynamicsXZ <: AbstractDynamics end
+struct DIVADynamicsXY <: AbstractDynamics end
+struct DIVADynamicsXZ <: AbstractDynamics end
+struct BlatterPattynDynamicsXYZ <: AbstractDynamics end
+struct BlatterPattynDynamicsXZ <: AbstractDynamics end
+struct StokesDynamicsXYZ <: AbstractDynamics end
+struct StokesDynamicsXZ <: AbstractDynamics end
 
 # Functions to calculate velocity 
 function calc_F_integral(visc_eff,H_ice,f_ice,zeta_aa,n)
