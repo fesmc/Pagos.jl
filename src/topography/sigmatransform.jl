@@ -22,7 +22,7 @@ end
 LinearSigmaTransform(T, n) = PowerSigmaTransform{T}(n, 1)
 QuadraticSigmaTransform(T, n) = PowerSigmaTransform{T}(n, 2)
 
-struct ArctanSigmaTransform{T} <: AbstractSigmaTransform{T}
+struct ArctanSigmaTransform{T} <: AbstractSigmaTransform
     n::Int
     stretch_factor::T
 end
