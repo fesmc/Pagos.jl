@@ -9,25 +9,32 @@ ENV["JULIA_DEBUG"] = "Documenter"
 # Packages specific to these docs
 using Pagos
 
-# bib = CitationBibliography(
-#     joinpath(@__DIR__, "src", "refs.bib");
-#     style=:authoryear
-# )
+bib = CitationBibliography(
+    joinpath(@__DIR__, "src/assets", "pagos.bib");
+    style=:authoryear
+)
 
-# Literate.markdown("src/examples/tutorial.jl", "src/examples"; credit = false)
-# Literate.markdown("src/examples/glacialcycle.jl", "src/examples"; credit = false)
-# Literate.markdown("src/examples/inversion.jl", "src/examples"; credit = false)
-
-# example_pages = ["examples/glacialcycle.md", "examples/inversion.md"]
-ref_pages = ["APIref.md"] #, "fortran.md", "references.md"]
+Literate.markdown("src/physics/material.jl", "src/physics"; credit = false)
+Literate.markdown("src/physics/basal_friction.jl", "src/physics"; credit = false)
+Literate.markdown("src/physics/calving.jl", "src/physics"; credit = false)
+Literate.markdown("src/physics/topography.jl", "src/physics"; credit = false)
 
 # %% Build docs
 PAGES = [
     "index.md",
-    # "introGIA.md",
+    "physics/material.md",
+    "physics/basal_friction.md",
+    "physics/calving.md",
+    "physics/topography.md",
+    "Guidelines" => [
+        "guidelines/naming.md",
+        "guidelines/performance.md",
+    ],
+    "API_public.md",
+    "references.md",
     # "examples/tutorial.md",
     # "Examples" => example_pages,
-    "References" => ref_pages,
+    # "References" => ref_pages,
 ]
 
 include("style.jl")
@@ -46,11 +53,11 @@ makedocs(
     pages = PAGES,
     doctest = CI,
     draft = false,
-    # plugins = [bib],
+    plugins = [bib],
     checkdocs = :none,
     warnonly = true,
 )
 
 deploydocs(;
-    repo="https://github.com/JanJereczek/Pagos.jl",
+    repo="https://github.com/fesmc/Pagos.jl",
 )
