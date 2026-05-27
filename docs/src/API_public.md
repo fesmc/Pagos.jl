@@ -1,4 +1,4 @@
-# API reference
+# Public API
 
 ## Dynamics
 
@@ -42,11 +42,11 @@ effective_pressure!
 ### Friction
 
 ```@docs
-AbstractBasalFriction
-ConstantBetaBasalFriction
-LinearBetaBasalFriction
-PseudoPlasticPowerBasalFriction
-RegularizedCoulombBasalFriction
+AbstractBasalBeta
+ConstantBasalBeta
+LinearBasalBeta
+PseudoPlasticPowerBasalBeta
+RegularizedCoulombBasalBeta
 basal_shear_stress
 basal_shear_stress!
 ```
@@ -57,8 +57,10 @@ basal_shear_stress!
 
 ```@docs
 AbstractSigmaTransform
+PowerSigmaTransform
+ArctanSigmaTransform
 LinearSigmaTransform
-ExponentialSigmaTransform
+QuadraticSigmaTransform
 sigma_transform
 ```
 
@@ -99,12 +101,12 @@ rate_factor!
 ### Creep function
 
 ```@docs
-AbstractCreepFunction
-GlenNyeCreepFunction
-RegularizedGlenNyeCreepFunction
-SmithMorlandCreepFunction
-creep_function
-creep_function!
+AbstractCreep
+GlenNyeCreep
+RegularizedGlenNyeCreep
+SmithMorlandCreep
+creep
+creep!
 ```
 
 ### Flow law
