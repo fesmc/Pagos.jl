@@ -10,3 +10,4 @@ benchmark/data/*
 ice_data/
 notes.md
 questions.md
+src/legacy
