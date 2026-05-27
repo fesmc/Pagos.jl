@@ -1,6 +1,6 @@
-############################################################################
+##########################################################################
 # Structs
-############################################################################
+##########################################################################
 
 """
 $(TYPEDSIGNATURES)
@@ -9,9 +9,6 @@ An abstract type to dispatch calving laws via [`calving_rate`](@ref).
 """
 abstract type AbstractCalving end
 
-# TODO: Decide whether we should use this distinction
-abstract type AbstractGroundedCalving <: AbstractCalving end
-abstract type AbstractFloatingCalving <: AbstractCalving end
 """
 $(TYPEDSIGNATURES)
 
@@ -37,13 +34,13 @@ Calving law based on a relaxation `timescale`:
 
 ```math
 \\begin{aligned}
-\\dot{c} = -\\dfrac{H}{\\tau_c}
+\\dot{c} = -\\dfrac{H}{\\tau_{\\mathrm{c}}} \\quad \\text{if } H > H_{\\mathrm{crit}}
 \\end{aligned}
 ```
 
 # Fields
- - `H_critical::T`: Critical thickness for calving
- - `timescale::T`: Calving time scale
+ - `H_critical::T`: Critical thickness ``H_{\\mathrm{crit}}`` for calving
+ - `timescale::T`: Calving timescale ``\\tau_{\\mathrm{c}}``
  - `max_rate::T`: Maximum calving rate
 """
 @kwdef struct RelaxedCalving{T} <: AbstractCalving
@@ -59,7 +56,7 @@ Calving law based on a threshold thickness `H_critical` and a `timescale` as in 
 
 ```math
 \\begin{aligned}
-\\dot{c} = -\\dfrac{H - H_{ref}}{\\tau}
+\\dot{c} = -\\dfrac{H_{\\mathrm{eff}} - H_{\\mathrm{crit}}}{\\tau} \\quad \\text{if } H_{\\mathrm{eff}} > H_{\\mathrm{crit}}
 \\end{aligned}
 ```
 
@@ -77,18 +74,38 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Calving law based on the Von Mises stress criterion as in [lipscomb_description_2019](@citet), Eq. 73-75:
+Calving law that removes all ice at or below flotation:
 ```math
 \\begin{aligned}
-\\dot{c} = -\\dfrac{H_{eff} k_{\\tau} \\tau_{eff}}{\\sqrt{\\Delta x \\Delta y}}
+\\dot{c} = -\\dfrac{H}{\\tau_{\\mathrm{c}}} \\quad \\text{if } H_{\\mathrm{eff}} \\leq 0
 \\end{aligned}
 ```
 
-with `\\tau_{eff}` the effective calving stress, and `k_{\\tau}` an empirical calving coefficient. The former is computed as:
+# Fields
+ - `timescale::T`: Calving timescale (``\\mathrm{yr}``).
+ - `max_rate::T`: Maximum calving rate (``\\mathrm{m}\\,\\mathrm{yr}^{-1}``).
+"""
+@kwdef struct FlotationCalving{T} <: AbstractCalving
+    timescale::T = 1.0       # yr
+    max_rate::T = Inf        # m yr-1
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Calving law based on the Von Mises stress criterion as in [lipscomb_description_2019](@citet), Eq. 73-75:
 
 ```math
 \\begin{aligned}
-\\tau_{eff} = max(\\tau_1, 0)^2 + w_2 max(\\tau_2, 0)^2
+\\dot{c} = -\\dfrac{H_{\\mathrm{eff}} \\, k_{\\tau} \\, \\tau_{\\mathrm{eff}}}{\\sqrt{\\Delta x \\, \\Delta y}}
+\\end{aligned}
+```
+
+with ``\\tau_{\\mathrm{eff}}`` the effective calving stress, and ``k_{\\tau}`` an empirical calving coefficient. The former is computed as:
+
+```math
+\\begin{aligned}
+\\tau_{\\mathrm{eff}} = \\max(\\tau_1, 0)^2 + w_2 \\, \\max(\\tau_2, 0)^2
 \\end{aligned}
 ```
 
@@ -108,10 +125,10 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Calving law based on the principal strain rate `ε_eff` as in [levermann_calving_2012](@citet), Eq. 2:
+Calving law based on the principal strain rate `ε_eff` as in [levermann_kinematic_2012](@citet), Eq. 2:
 ```math
 \\begin{aligned}
-\\dot{c} = -\\dfrac{H_{eff} k_2 ε_{eff}}{\\sqrt{\\Delta x \\Delta y}}
+\\dot{c} = -\\dfrac{H_{\\mathrm{eff}} \\, k_2 \\, \\varepsilon_{\\mathrm{eff}}}{\\sqrt{\\Delta x \\, \\Delta y}}
 \\end{aligned}
 ```
 
@@ -130,15 +147,21 @@ $(TYPEDSIGNATURES)
 Calving law based on the ice thickness above sea level `H_c` as in [crawford_marine_2021](@citet), Eq. 1:
 ```math
 \\begin{aligned}
-\\dot{c} = I H_c^{\\alpha}
+\\dot{c} = -I \\, H_{\\mathrm{c}}^{\\alpha}
+\\quad \\text{if } H_{\\mathrm{c}} > H_{\\mathrm{crit}} \\text{ and } z_{\\mathrm{bed}} < z_{\\mathrm{sl}}
 \\end{aligned}
 ```
 
+where ``H_{\\mathrm{c}} = z_{\\mathrm{srf}} - z_{\\mathrm{sl}}`` is the subaerial cliff height.
+The large exponent ``\\alpha \\approx 7.3`` encodes the structural fragility of tall
+ice cliffs: calving is negligible for modest cliff heights but grows explosively once
+``H_{\\mathrm{c}}`` exceeds the critical threshold.
+
 # Fields
- - `I::T`: Calving coefficient
- - `α::T`: Exponent
- - `H_critical::T`: Critical ice thickness above sea level for calving to occur
- - `max_rate::T`: Maximum calving rate
+ - `I::T`: Calving coefficient (``\\mathrm{m}^{1-\\alpha}\\,\\mathrm{yr}^{-1}``).
+ - `α::T`: Power-law exponent (dimensionless).
+ - `H_critical::T`: Critical subaerial cliff height ``H_{\\mathrm{crit}}`` (``\\mathrm{m}``).
+ - `max_rate::T`: Maximum calving rate (``\\mathrm{m}\\,\\mathrm{yr}^{-1}``).
 
 !!! warning
     This does not depend on the flow regime for now and only represents an upper bound on MICI.
@@ -156,7 +179,7 @@ $(TYPEDSIGNATURES)
 Calving law based on the formulation by [bassis_upper_2012](@citet):
 ```math
 \\begin{aligned}
-\\dot{c} = \\dfrac{f_{ice} max(H_{eff} - H_{max}, 0)}{\\tau_c}
+\\dot{c} = \\dfrac{f_{\\mathrm{ice}} \\, \\max(H_{\\mathrm{eff}} - H_{\\mathrm{max}}, 0)}{\\tau_{\\mathrm{c}}}
 \\end{aligned}
 ```
 
@@ -176,24 +199,50 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Calving law based on the bedrock standard deviation.
+Calving law based on the eigencalving criterion by [winkelmann_analytical_2011](@citet):
 ```math
 \\begin{aligned}
-\\dot{c} = \\mathrm{min}\\left(c_{max} f_{scale}, \\dfrac{H_{eff}}{\\tau_c}\\right)
+\\dot{c} = K \\, \\max(\\dot{\\varepsilon}_1, 0) \\, \\max(\\dot{\\varepsilon}_2, 0)
+\\end{aligned}
+```
+where ``\\dot{\\varepsilon}_1, \\dot{\\varepsilon}_2`` are the two principal horizontal strain rates.
+The calving rate vanishes wherever either principal strain rate is compressive.
+
+# Fields
+ - `K::T`: Eigencalving coefficient (``\\mathrm{m}\\,\\mathrm{yr}``).
+ - `max_rate::T`: Maximum calving rate (``\\mathrm{m}\\,\\mathrm{yr}^{-1}``).
+"""
+@kwdef struct EigenCalving{T} <: AbstractCalving
+    K::T = 1e7               # m yr
+    max_rate::T = Inf        # m yr-1
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Calving law following [deconto_contribution_2016](@citet)
+and [pollard_potential_2015](@citet). When the subaerial cliff height
+``H_{\\mathrm{s}} = z_{\\mathrm{srf}} - z_{\\mathrm{sl}}`` exceeds the critical threshold ``H_{\\mathrm{c}}`` (set by the
+structural yield strength of ice, \\approx 90\\text{--}100\\,\\text{m}), the cliff fails and
+calves at a rate proportional to the excess height:
+
+```math
+\\begin{aligned}
+\\dot{c} = -\\dfrac{\\max(H_{\\mathrm{s}} - H_{\\mathrm{c}},\\, 0)}{\\tau_{\\mathrm{c}}}
+\\quad \\text{if } z_{\\mathrm{bed}} < z_{\\mathrm{sl}}
 \\end{aligned}
 ```
 
 # Fields
- - `sd_min::T`: Minimum bedrock standard deviation
- - `sd_max::T`: Maximum bedrock standard deviation
- - `timescale::T`: Calving time scale
- - `max_rate::T`: Maximum calving rate
+ - `H_c::T`: Critical cliff height above sea level (``\\mathrm{m}``).
+ - `timescale::T`: Calving timescale (``\\mathrm{yr}``).
+ - `max_rate::T`: Maximum calving rate (``\\mathrm{m}\\,\\mathrm{yr}^{-1}``).
 """
-@kwdef struct BedStddevCalving{T} <: AbstractCalving
-    sd_min::T = 50.0            # m
-    sd_max::T = 300.0           # m
-    timescale::T = 1.0          # yr
-    max_rate::T = Inf           # m yr-1
+@kwdef struct PollardDeContoCalving{T} <: AbstractCalving
+    H_c::T = 100.0           # m
+    timescale::T = 1.0       # yr
+    max_rate::T = Inf        # m yr-1
 end
 
 ############################################################################
@@ -205,12 +254,11 @@ $(TYPEDSIGNATURES)
 
 Calculate the calving flux based on the ice thickness `H` and the calving law `calving<:AbstractCalving`.
 """
-function calving_rate(H, calving::ConstantCalving)
+function calving_rate(calving::ConstantCalving)
     return -calving.rate
 end
 
 function calving_rate(H, calving::RelaxedCalving)
-
     (; H_critical, timescale, max_rate) = calving
     if H > H_critical
         rate = H / timescale
@@ -221,15 +269,13 @@ function calving_rate(H, calving::RelaxedCalving)
 end
 
 function calving_rate(H, H_eff, calving::ThicknessCalving)
-
     (; H_critical, timescale, max_rate) = calving
     H_eff_dt = (H_eff - H_critical) ./ timescale
     rate = min(H / H_eff, 1) * H_eff_dt
     return -saturate(rate, 0, max_rate)
 end
 
-function calving_rate(H_eff, tau1, tau2, calving::LipscombCalving)
-    
+function calving_rate(H, H_eff, tau1, tau2, calving::LipscombCalving)
     (; k_τ, w2, max_rate) = calving
     tau_eff = sqrt(max(tau1, 0)^2 + w2 * max(tau2, 0)^2)
     rate = H_eff * k_τ * tau_eff / sqrt(dx * dy)
@@ -237,15 +283,13 @@ function calving_rate(H_eff, tau1, tau2, calving::LipscombCalving)
 end
 
 function calving_rate(H_eff, eps_eff, calving::LevermannCalving)
-
     (; k2, max_rate) = calving
     calving_ref = max(k2 * eps_eff, 0)
     rate = H_eff * calving_ref / sqrt(dx * dy)
     return -saturate(rate, 0, max_rate)
 end
 
-function calving_rate(H, calving::CrawfordCalving)
-
+function calving_rate(z_srf, z_sl, z_bed, calving::CrawfordCalving)
     (; I, α, H_critical, max_rate) = calving
     H_c = z_srf - z_sl
     if H_c > H_critical && z_bed < z_sl
@@ -256,12 +300,15 @@ function calving_rate(H, calving::CrawfordCalving)
     return -saturate(c_dt, 0, max_rate)
 end
 
-function calving_rate(H, calving::BassisCalving)
+function calving_rate(H_eff, z_sl, z_bed, f_ice, c, calving::BassisCalving)
     (; C0, α, r, max_rate) = calving
-    H_ocn_now = seawater_depth(ρ_seawater__div__ρ_ice, H_ocn)
-    timescale = C0 + 0.5 * α * ρ_ice__tim__g * H_eff
-    H_max = (1 - r) * timescale / ρ_ice__tim__g +
-        sqrt((1 - r)^2 * (timescale / ρ_ice__tim__g)^2 + ρ_seawater__div__ρ_ice * H_ocn ^ 2)
+    (; ρ_ice, ρ_seawater, g) = c
+
+    # TODO: this needs to be checked and seawater depth should be removed
+    H_ocn = seawater_depth(ρ_seawater / ρ_ice, z_sl - z_bed)
+    timescale = C0 + 0.5 * α * ρ_ice * g * H_eff
+    H_max = (1 - r) * timescale / ρ_ice * g +
+        sqrt((1 - r)^2 * (timescale / ρ_ice * g)^2 + ρ_seawater / ρ_ice * H_ocn ^ 2)
 
     if H_eff <= H_max
         return 0.0
@@ -270,35 +317,81 @@ function calving_rate(H, calving::BassisCalving)
     end
 end
 
-function calving_rate(H, calving::BedStddevCalving)
-    (; sd_min, sd_max, max_rate, timescale) = calving
-    f_scale = (z_bed_stddev - sd_min) / (sd_max - sd_min)
-    if f_scale < 0
-        f_scale = 0.0
-    elseif f_scale > 1
-        f_scale = 1.0
-    end
-    c_dt = min(c_max * f_scale, H_eff / timescale)
-    return -saturate(
-        c_dt,
-        0,
-        calving.max_rate,
-    )
+function calving_rate(eps1, eps2, calving::EigenCalving)
+    (; K, max_rate) = calving
+    rate = K * max(eps1, 0.0) * max(eps2, 0.0)
+    return -saturate(rate, 0.0, max_rate)
 end
 
-function calving_rate(H::A, c::AbstractCalving) where {A<:AbstractArray}
-    c_dt = similar(H)
-    calving_rate!(H, c_dt, c)
-    return c_dt
+function calving_rate(H, H_eff, calving::FlotationCalving)
+    (; timescale, max_rate) = calving
+    rate = H_eff <= 0 ? H / timescale : 0.0
+    return -saturate(rate, 0.0, max_rate)
 end
 
-
+# TODO: this should simply take the current state as input instead of the individual fields. This however requires to have a clear definition of the state.
 """
 $(TYPEDSIGNATURES)
 
 Update the calving flux `c_dt` based on the calving law `calving<:AbstractCalving` and the ice thickness `H`.
 """
-function calving_rate!(H, c_dt, calving::AbstractCalving)
+function calving_rate!(c_dt, calving::ConstantCalving)
+    map!(_ -> calving_rate(calving), c_dt, c_dt)
+    return nothing
+end
+
+function calving_rate!(c_dt, H, calving::RelaxedCalving)
     map!(h -> calving_rate(h, calving), c_dt, H)
+    return nothing
+end
+
+function calving_rate!(c_dt, H, H_eff, calving::ThicknessCalving)
+    map!(h, h_eff -> calving_rate(h, h_eff, calving), c_dt, H, H_eff)
+    return nothing
+end
+
+function calving_rate!(c_dt, H, H_eff, tau1, tau2, calving::LipscombCalving)
+    map!(h, h_eff, t1, t2 -> calving_rate(h, h_eff, t1, t2, calving), c_dt, H, H_eff, tau1, tau2)
+    return nothing
+end
+
+function calving_rate!(c_dt, H_eff, eps_eff, calving::LevermannCalving)
+    map!(h_eff, eps_e -> calving_rate(h_eff, eps_e, calving), c_dt, H_eff, eps_eff)
+    return nothing
+end
+
+function calving_rate!(c_dt, z_srf, z_sl, z_bed, calving::CrawfordCalving)
+    map!(srf, sl, bed -> calving_rate(srf, sl, bed, calving), c_dt, z_srf, z_sl, z_bed)
+    return nothing
+end
+
+function calving_rate!(c_dt, H_eff, z_sl, z_bed, f_ice, c, calving::BassisCalving)
+    map!(h_eff, sl, bed, fi -> calving_rate(h_eff, sl, bed, fi, c, calving), c_dt, H_eff, z_sl, z_bed, f_ice)
+    return nothing
+end
+
+function calving_rate!(c_dt, eps1, eps2, calving::EigenCalving)
+    map!((e1, e2) -> calving_rate(e1, e2, calving), c_dt, eps1, eps2)
+    return nothing
+end
+
+function calving_rate!(c_dt, H, H_eff, calving::FlotationCalving)
+    map!((h, h_eff) -> calving_rate(h, h_eff, calving), c_dt, H, H_eff)
+    return nothing
+end
+
+function calving_rate(z_srf, z_sl, z_bed, calving::PollardDeContoCalving)
+    (; H_c, timescale, max_rate) = calving
+    H_s = z_srf - z_sl
+    if H_s > H_c && z_bed < z_sl
+        rate = (H_s - H_c) / timescale
+    else
+        rate = 0.0
+    end
+    return -saturate(rate, 0.0, max_rate)
+end
+
+function calving_rate!(c_dt, z_srf, z_sl, z_bed, calving::PollardDeContoCalving)
+    map!((srf, sl, bed) -> calving_rate(srf, sl, bed, calving), c_dt, z_srf, z_sl, z_bed)
     return nothing
 end
