@@ -16,7 +16,7 @@ A struct that encapsulates all basal friction related models and allows for easy
 \\end{aligned}
 ```
 """
-struct BasalFriction{
+struct BasalBeta{
     BB,     # <: AbstractBasalBeta
     BBGZ,   # <: AbstractBasalBetaGroundingZone
     BRS,    # <: AbstractBedRoughnessSampling
@@ -33,7 +33,7 @@ end
 """
 $(TYPEDSIGNATURES)
 """
-function basal_friction!(dyn_now, dyn_ref, topo_now, bf::BasalFriction)
+function basal_friction!(dyn_now, dyn_ref, topo_now, bf::BasalBeta)
     (; τ_basal, v_basal, β_basal, c_bed, N_eff) = dyn_now
     (; c_bed_ref) = dyn_ref
     (; z_bed, z_bed_σ, z_sl) = topo_now
@@ -50,7 +50,7 @@ function basal_friction!(
     z_bed,
     z_bed_σ,
     z_sl,
-    bf::BasalFriction,
+    bf::BasalBeta,
 )
 
     c_bed!(c_bed, c_bed_ref, N_eff, bf.c_bed)
@@ -94,16 +94,17 @@ abstract type AbstractBasalBeta end
 """
 $(TYPEDSIGNATURES)
 
-A struct that defines a constant basal friction coefficient ``\beta``. When passed to [`basal_beta`](@ref), the basal shear stress is calculated as:
+Constant basal friction coefficient. The basal shear stress is linear in the
+sliding velocity:
 
 ```math
 \\begin{aligned}
-\\beta = \\mathrm{const.}
+\\boldsymbol{\\tau}_{\\mathrm{b}} = -\\beta \\, \\mathbf{v}_{\\mathrm{b}}
 \\end{aligned}
 ```
 
-# Fields:
- - `beta::M`: The constant basal friction coefficient. Can be a scalar or an array.
+# Fields
+ - `beta::M`: Basal friction coefficient ``\\beta`` (scalar or array).
 """
 struct ConstantBasalBeta{M} <: AbstractBasalBeta
     beta::M
@@ -112,15 +113,26 @@ end
 """
 $(TYPEDSIGNATURES)
 
-A struct that defines the pseudo-plastic power law for basal sliding.
-When passed to [`basal_shear_stress!`](@ref), the basal shear stress is calculated
-following Eq. (24) of [robinson_description_2020](@citet). This covers plastic friction
-(q = 0), linear friction (q = 1), and power-law friction (q > 1).
+Pseudo-plastic power-law basal sliding following Eq. (24) of [robinson_description_2020](@citet):
 
-# Fields:
- - `v_0::T`: Reference velocity (m/yr).
- - `v_reg::T`: Regularization velocity (m/yr).
- - `q::T`: Exponent (1).
+```math
+\\begin{aligned}
+\\boldsymbol{\\tau}_{\\mathrm{b}} = -c_{\\mathrm{b}}
+\\left(\\frac{|\\mathbf{v}_{\\mathrm{b}}| + v_{\\mathrm{reg}}}{v_0}\\right)^{\\!q}
+\\frac{\\mathbf{v}_{\\mathrm{b}}}{|\\mathbf{v}_{\\mathrm{b}}| + v_{\\mathrm{reg}}}
+\\end{aligned}
+```
+
+Setting ``q = 0`` recovers perfectly plastic (Coulomb) sliding where the stress
+magnitude equals ``c_{\\mathrm{b}}`` everywhere; ``q = 1`` gives linear (viscous)
+sliding. Intermediate values represent sub-plastic flow typical of soft-bedded
+ice streams. The regularization velocity ``v_{\\mathrm{reg}}`` prevents a singularity
+at ``|\\mathbf{v}_{\\mathrm{b}}| = 0``.
+
+# Fields
+ - `v_0::T`: Reference velocity (``\\mathrm{m}\\,\\mathrm{yr}^{-1}``).
+ - `v_reg::T`: Regularization velocity (``\\mathrm{m}\\,\\mathrm{yr}^{-1}``).
+ - `q::T`: Sliding exponent (dimensionless).
 """
 @kwdef struct PseudoPlasticPowerBasalBeta{T} <: AbstractBasalBeta
     v_0::T = 1e2
@@ -129,18 +141,36 @@ following Eq. (24) of [robinson_description_2020](@citet). This covers plastic f
 end
 
 """
-    CoulombBasalBeta{T}
+$(TYPEDSIGNATURES)
 
-A struct that defines the regularized Coulomb friction law for basal sliding.
-When passed to [`basal_shear_stress!`](@ref), the basal shear stress is calculated
-following Eq. (25) of [robinson_description_2020](@citet).
+Regularized Coulomb basal sliding following Eq. (25) of [robinson_description_2020](@citet),
+with optional near-zero regularization following [zoet_slip_2020](@citet):
 
-# Fields:
- - `v_0::T`: Reference (and regularization) velocity (m/yr).
- - `q::T`: Exponent (1).
+```math
+\\begin{aligned}
+\\boldsymbol{\\tau}_{\\mathrm{b}} = -c_{\\mathrm{b}}
+\\left(\\frac{|\\mathbf{v}_{\\mathrm{b}}| + v_{\\mathrm{reg}}}{|\\mathbf{v}_{\\mathrm{b}}| + v_{\\mathrm{reg}} + v_0}\\right)^{\\!q}
+\\frac{\\mathbf{v}_{\\mathrm{b}}}{|\\mathbf{v}_{\\mathrm{b}}| + v_{\\mathrm{reg}}}
+\\end{aligned}
+```
+
+Unlike [`PseudoPlasticPowerBasalBeta`](@ref), the stress magnitude saturates to
+``c_{\\mathrm{b}}`` at high sliding velocities, recovering the classical Coulomb
+friction limit ``|\\boldsymbol{\\tau}_{\\mathrm{b}}| \\leq c_{\\mathrm{b}}``.
+The velocity ``v_0`` sets the transition between the low-velocity growing regime
+and the Coulomb plateau. Setting ``v_{\\mathrm{reg}} = 0`` (default) recovers
+Eq. (25) of [robinson_description_2020](@citet); a small positive ``v_{\\mathrm{reg}}``
+regularizes both the stress magnitude and the sliding direction at
+``|\\mathbf{v}_{\\mathrm{b}}| = 0`` following [zoet_slip_2020](@citet).
+
+# Fields
+ - `v_0::T`: Transition velocity (``\\mathrm{m}\\,\\mathrm{yr}^{-1}``).
+ - `v_reg::T`: Regularization velocity (``\\mathrm{m}\\,\\mathrm{yr}^{-1}``).
+ - `q::T`: Sliding exponent (dimensionless).
 """
 @kwdef struct CoulombBasalBeta{T} <: AbstractBasalBeta
     v_0::T = 1e2
+    v_reg::T = 0.0
     q::T = 0.2
 end
 
@@ -168,8 +198,8 @@ function basal_beta(
     v_basal,
     bb::CoulombBasalBeta,
 )
-    (; v_0, q) = bb
-    v_basal_norm = norm(v_basal)
+    (; v_0, v_reg, q) = bb
+    v_basal_norm = norm(v_basal) + v_reg
     return c_bed * (v_basal_norm / (v_basal_norm + v_0)) ^ q / v_basal_norm
 end
 
@@ -475,7 +505,7 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Compute the basal shear stress `τ_basal` based on the basal velocity `v_basal`, the basal friction coefficient `c_basal`, and the basal friction model `friction<:AbstractBasalFriction`.
+Compute the basal shear stress `τ_basal` based on the basal velocity `v_basal`, the basal friction coefficient `c_basal`, and the basal friction model `friction<:AbstractBasalBeta`.
 """
 function basal_shear_stress(
     v_basal::V,
@@ -492,8 +522,8 @@ function basal_shear_stress(
     c_basal,
     friction::CoulombBasalBeta,
 ) where {V<:AbstractVector{<:Real}}
-    (; v_0, q) = friction
-    v_basal_norm = norm(v_basal)
+    (; v_0, v_reg, q) = friction
+    v_basal_norm = norm(v_basal) + v_reg
     return - c_basal * (v_basal_norm / (v_basal_norm + v_0)) ^ q * v_basal / v_basal_norm
 end
 
@@ -516,7 +546,7 @@ function basal_shear_stress!(
     τ_basal,
     v_basal,
     c_basal,
-    friction::BasalFriction,
+    friction::BasalBeta,
 )
     map!((v, c) -> basal_shear_stress(v, c, friction), τ_basal, v_basal, c_basal)
     return nothing
@@ -530,204 +560,3 @@ This will implement Eq. 2 of Zoet & Iverson (2020).
 function ut_with_clast()
     error("Not implemented yet")
 end
-#=
-function basal_shear_stress!(
-    v_basal_norm::Matrix{T},
-    c_basal::Matrix{T},
-    stress_basal_x::Matrix{T},
-    stress_basal_y::Matrix{T},
-    v_basal_x::Matrix{T},
-    v_basal_y::Matrix{T},
-    friction::CoulombBasalBeta{T},
-    mask::AbstractBitMask,
-) where {T<:AbstractFloat}
-    coulomb_basal_shear!(v_basal_norm, stress_basal_x, stress_basal_y, v_basal_x, v_basal_y,
-        friction, c_basal, c_basal, mask)
-    return nothing
-end
-
-function basal_shear_stress!(
-    v_basal_norm::Matrix{T},
-    c_basal_x::Matrix{T},
-    c_basal_y::Matrix{T},
-    stress_basal_x::Matrix{T},
-    stress_basal_y::Matrix{T},
-    v_basal_x::Matrix{T},
-    v_basal_y::Matrix{T},
-    friction::AnisotropicRegularizedCoulombFriction{T},
-    mask::AbstractBitMask,
-) where {T<:AbstractFloat}
-    coulomb_basal_shear!(v_basal_norm, stress_basal_x, stress_basal_y, v_basal_x, v_basal_y,
-        friction, c_basal_x, c_basal_y, mask)
-    return nothing
-end
-
-function coulomb_basal_shear!(
-    v_basal_norm::Matrix{T},
-    stress_basal_x::Matrix{T},
-    stress_basal_y::Matrix{T},
-    v_basal_x::Matrix{T},
-    v_basal_y::Matrix{T},
-    friction::AbstractBasalFriction{T},
-    c_basal_x::Matrix{T},
-    c_basal_y::Matrix{T},
-    mask::AbstractBitMask,
-) where {T<:AbstractFloat}
-    (; v_0, q) = friction
-    @inbounds for I in view(mask)
-        v_basal_norm[I] = norm(v_basal_x[I], v_basal_y[I])
-        stress_basal_x[I] = coulomb_basal_shear(c_basal_x[I], v_basal_x[I],
-            v_basal_norm[I], v_0, q)
-        stress_basal_y[I] = coulomb_basal_shear(c_basal_y[I], v_basal_y[I],
-            v_basal_norm[I], v_0, q)
-    end
-end
-
-coulomb_basal_shear(c_basal, v_basal, v_basal_norm, v_0, q) = 
-    - c_basal * (v_basal_norm / (v_basal_norm + v_0)) ^ q * v_basal / v_basal_norm
-
-###############################################
-
-
-"""
-    calc_beta_aa_power_plastic(ux_b,uy_b,c_bed,f_ice,q,u_0)
-
-Calculate basal friction coefficient (beta) that enters the SSA solver as a function
-of basal velocity using a power-law form following Bueler and van Pelt (2015).    
-"""
-function calc_beta_aa_power_plastic(
-    ux_b::Matrix{T},
-    uy_b::Matrix{T},
-    c_bed::Matrix{T},
-    f_ice::Matrix{T},
-    q,
-    u_0,
-) where {T}
-
-    # Local variables
-    ub_min = 1e-3               # [m/yr] Small min. velocity > 0 to avoid divide by 0
-    ub_sq_min = ub_min^2
-    nx, ny = size(ux_b)
-    beta = fill(0.0, nx, ny)    # Initially set friction to zero everywhere
-
-    for i = 1:nx
-        for j = 1:ny
-            im1, jm1 = periodic_minusindex(i, nx), periodic_minusindex(j, ny)
-
-            if f_ice[i, j] == 1.0
-                # Fully ice-covered point with some fully ice-covered neighbors 
-                cb_aa = c_bed[i, j]
-
-                if q == 1.0
-                    # Linear law, no f(ub) term
-                    beta[i, j] = cb_aa / u_0
-                else
-                    # Non-linear law with f(ub) term 
-                    # Unstagger velocity components to aa-nodes 
-                    ux_aa = 0.5 * (ux_b[i, j] + ux_b[im1, j])
-                    uy_aa = 0.5 * (uy_b[i, j] + uy_b[i, jm1])
-                    uxy_aa = sqrt(ux_aa^2 + uy_aa^2 + ub_sq_min)
-
-                    if q == 0
-                        # Plastic law
-                        beta[i, j] = cb_aa * (1.0 / uxy_aa)
-                    else
-                        beta[i, j] = cb_aa * (uxy_aa / u_0)^q * (1.0 / uxy_aa)
-                    end
-                end
-
-            else
-                # Assign minimum velocity value, no staggering for simplicity
-
-                if q == 1.0
-                    # Linear law, no f(ub) term
-                    beta[i, j] = c_bed[i, j] / u_0
-
-                else
-                    uxy_b = ub_min
-
-                    if q == 0.0
-                        # Plastic law
-                        beta[i, j] = c_bed[i, j] * (1.0 / uxy_b)
-                    else
-                        beta[i, j] = c_bed[i, j] * (uxy_b / u_0)^q * (1.0 / uxy_b)
-                    end
-                end
-            end
-        end
-    end
-
-    return beta
-end
-
-function calc_beta_aa_power_plastic_nodes(
-    ux_b::Matrix{T},
-    uy_b::Matrix{T},
-    c_bed::Matrix{T},
-    f_ice::Matrix{T},
-    q,
-    u_0,
-) where {T}
-
-
-    # Local variables
-    ub_min = 1e-3               # [m/yr] Minimum velocity is positive small value to avoid divide by zero
-    ub_sq_min = ub_min^2
-
-    nx, ny = size(ux_b)
-
-    # Initially set friction to zero everywhere
-    beta = fill(0.0, nx, ny)
-
-    wt0 = 1.0 / sqrt(3)
-    xn = [wt0, -wt0, -wt0, wt0]
-    yn = [wt0, wt0, -wt0, -wt0]
-    wtn = [1.0, 1.0, 1.0, 1.0]
-
-    for i = 1:nx
-        for j = 1:ny
-
-            if f_ice[i, j] == 1.0
-                # Fully ice-covered point with some fully ice-covered neighbors 
-                cb_aa = c_bed[i, j]
-
-                if q == 1.0
-                    # Linear law, no f(ub) term
-                    beta[i, j] = cb_aa / u_0
-
-                else
-                    # Non-linear law with f(ub) term 
-                    uxn = acx_to_nodes(ux_b, i, j, xn, yn)
-                    uyn = acy_to_nodes(uy_b, i, j, xn, yn)
-                    uxyn = sqrt.(uxn .^ 2 .+ uyn .^ 2 .+ ub_sq_min)
-
-                    if q == 0
-                        # Plastic law
-                        betan = cb_aa .* (1.0 ./ uxyn)
-                    else
-                        betan = cb_aa .* (uxyn ./ u_0) .^ q .* (1.0 ./ uxyn)
-                    end
-                    beta[i, j] = sum(betan .* wtn) / sum(wtn)
-                end
-
-            else
-                # Assign minimum velocity value, no staggering for simplicity
-                if q == 1.0
-                    # Linear law, no f(ub) term
-                    beta[i, j] = c_bed[i, j] / u_0
-                else
-                    uxy_b = ub_min
-                    if q == 0.0
-                        # Plastic law
-                        beta[i, j] = c_bed[i, j] * (1.0 / uxy_b)
-                    else
-                        beta[i, j] = c_bed[i, j] * (uxy_b / u_0)^q * (1.0 / uxy_b)
-                    end
-                end
-            end
-        end
-    end
-
-    return beta
-end
-=#

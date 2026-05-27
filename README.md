@@ -54,7 +54,7 @@ the user should be able to do:
 
 ```julia
 using Pagos
-rcf = RegularizedCoulombBasalFriction(params...)
+rcf = RegularizedCoulombBasalBeta(params...)
 ais = IceSheet(args..., friction_law = rcf)
 ```
 
