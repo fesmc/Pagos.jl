@@ -27,9 +27,9 @@ The gradients are computed using the central difference scheme. The input veloci
 The grid spacing in x and y-direction is given by `dx` and `dy`.
 """
 function velocitygradients!(ux_x, ux_y, uy_x, uy_y, ux, uy, dx, dy, nx, ny)
-    delx!(ux_x, ux, dx, nx)
-    dely!(ux_y, ux, dy, ny)
-    delx!(uy_x, uy, dx, nx)
-    dely!(uy_y, uy, dy, ny)
+    delx1!(ux_x, ux, dx, nx)
+    delx2!(ux_y, ux, dy, ny)
+    delx1!(uy_x, uy, dx, nx)
+    delx2!(uy_y, uy, dy, ny)
     return nothing
 end

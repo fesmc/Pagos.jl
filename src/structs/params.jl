@@ -21,11 +21,11 @@ params = Params{Float64}(rho_ice = 910.0)
 ```
 """
 @kwdef struct Params{T<:AbstractFloat}
-    ndim1::Int = 2.1
-    ndim2::Int = 4.1
-    ndim3::Int = 6.1
-    rho_ice::T = T(910.0)               # ice density
-    min_bulk_viscosity_ice::T = T(0.5)  # minimal bulk viscosity of ice
-    muB::T = T(1e2)                     # (old) bulk viscosity of ice
-    g::T = T(9.81)                      # gravitational acceleration
+    ndim1::T = 2.1
+    ndim2::T = 4.1
+    ndim3::T = 6.1
+    rho_ice::T = 910.0               # ice density
+    min_bulk_viscosity_ice::T = 0.5  # minimal bulk viscosity of ice
+    muB::T = 1e2                     # (old) bulk viscosity of ice
+    g::T = 9.81                      # gravitational acceleration
 end

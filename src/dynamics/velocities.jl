@@ -65,12 +65,20 @@ function ResolutionParameters(n, nx, ny, dx, dy; T=Float32)
     )
 end
 
+abstract type AbstractDynamicsSolver end
+
+struct InertialSolver <: AbstractDynamicsSolver
+end
+
+struct PseudoTransientSolver <: AbstractDynamicsSolver
+end
+
 struct LinearSolver2D{
     RP,     # <: ResolutionParameters
     T,      # <: AbstractFloat
     AI1,    # <: AbstractIndexing
     AI2,    # <: AbstractIndexing
-}
+} <: AbstractDynamicsSolver
     resolution_params::RP
     n_terms::Int
     n_u::Int
