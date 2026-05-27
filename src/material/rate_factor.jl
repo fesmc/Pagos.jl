@@ -24,15 +24,38 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Rate factor for ice viscosity following Arrhenius' law.
+Rate factor for ice viscosity following the piecewise Arrhenius law of [paterson_physics_1994](@citet):
+
+```math
+\\begin{aligned}
+A(T') =
+\\begin{cases}
+E_f \\, A_{0,1} \\, e^{-Q_1 / (R \\, T')} & T' \\leq T^* \\\\
+E_f \\, A_{0,2} \\, e^{-Q_2 / (R \\, T')} & T' > T^*
+\\end{cases}
+\\end{aligned}
+```
+
+where ``T'`` is the temperature relative to the pressure melting point (see
+[`LinearPressureMeltingPoint`](@ref)) and ``T^*`` is the breakpoint temperature
+below which the lower activation energy ``Q_1`` applies.
 
 # Fields
  - `E_f::T=1.0`: enhancement factor.
- - `T_p1_p2::T=263.15`: breakpoint temperature following Patterson (1994).
- - `A_0_p1::T=3.985e-13`: "s^-1 Pa^-3" pre-exponential factor.
- - `A_0_p2::T=1.916e3`: piecewise definition following Patterson (1994).
- - `Q_a_p1::T=60e3`: "J mol^-1" activation energy.
- - `Q_a_p2::T=139e3`: piecewise definition following Patterson (1994).
+ - `T_p1_p2::T=263.15`: breakpoint temperature ``T^*`` (``\\mathrm{K}``).
+ - `A_0_p1::T=3.985e-13`: pre-exponential factor ``A_{0,1}`` (``\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``).
+ - `A_0_p2::T=1.916e3`: pre-exponential factor ``A_{0,2}`` (``\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``).
+ - `Q_a_p1::T=60e3`: activation energy ``Q_1`` (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
+ - `Q_a_p2::T=139e3`: activation energy ``Q_2`` (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
+ - `R::T=8.314`: universal gas constant (``\\mathrm{J}\\,\\mathrm{K}^{-1}\\,\\mathrm{mol}^{-1}``).
+
+# Examples
+```jldoctest
+arrhenius_rate_factor = ArrheniusRateFactor()
+T_relative_kelvin = range(-50, stop = 10, step = 0.1) .+ 273.15
+A = rate_factor(T_relative_kelvin, arrhenius_rate_factor)
+fig = plot_rate_factor(T_relative_kelvin .- 273.15, A)
+```
 """
 @kwdef struct ArrheniusRateFactor{T} <: AbstractRateFactor
     E_f::T = 1.0
@@ -49,7 +72,7 @@ $(TYPEDSIGNATURES)
 
 Warning: This is not fully supported yet, since the input fields are different than those used in Glen's flow law, which is much more common.
 
-Rate factor for ice viscosity following Smith and Morland (1981).
+Rate factor for ice viscosity following [smith_viscous_1981](@citet).
 
 # Fields
  - `p1::T=0.7242`
@@ -64,6 +87,82 @@ Rate factor for ice viscosity following Smith and Morland (1981).
     e2::T = 2.9494
     T_0::T = 273.15
     ΔT::T = 20.0
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Rate factor for ice viscosity following [hooke_flow_1981](@citet):
+
+```math
+\\begin{aligned}
+A(T') = E_f \\, A_0 \\, \\exp\\!\\left( -\\frac{Q_a}{R \\, T'} + \\frac{3C}{(T_r - T')^k} \\right)
+\\end{aligned}
+```
+
+A single, continuous Arrhenius expression augmented by the proximity-to-melting
+term ``3C/(T_r - T')^k``, which produces a steep upturn as ``T'`` approaches the
+pressure melting point ``T_r``. Avoids the discontinuity of the piecewise
+[`ArrheniusRateFactor`](@ref). Valid for ``T' < T_r``.
+
+# Fields
+ - `E_f::T=1.0`: enhancement factor.
+ - `A_0::T=9.302e-7`: pre-exponential factor (``\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``).
+ - `Q_a::T=78.8e3`: activation energy (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
+ - `C::T=0.16612`: proximity-to-melting coefficient (``\\mathrm{K}^{k}``).
+ - `T_r::T=273.39`: reference melting temperature (``\\mathrm{K}``).
+ - `k::T=1.17`: proximity-to-melting exponent.
+ - `R::T=8.314`: universal gas constant (``\\mathrm{J}\\,\\mathrm{K}^{-1}\\,\\mathrm{mol}^{-1}``).
+"""
+@kwdef struct HookeRateFactor{T} <: AbstractRateFactor
+    E_f::T = 1.0
+    A_0::T = 9.302e-7
+    Q_a::T = 78.8e3
+    C::T = 0.16612
+    T_r::T = 273.39
+    k::T = 1.17
+    R::T = 8.314
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Rate factor for temperate ice following [lliboutry_various_1985](@citet):
+
+```math
+\\begin{aligned}
+A(T', \\omega) = A_{\\mathrm{cold}}(T') \\, (1 + \\gamma \\, \\omega)
+\\end{aligned}
+```
+
+where ``A_{\\mathrm{cold}}(T')`` is the piecewise [`ArrheniusRateFactor`](@ref)
+evaluated at the same breakpoint temperature, and ``\\omega`` is the volumetric
+liquid-water content. At ``\\omega = 0`` the law is identical to
+[`ArrheniusRateFactor`](@ref); increasing ``\\omega`` shifts the entire rate-factor
+curve upward proportionally. Assumes spatially uniform water content; for
+spatially varying fields, call the scalar method pointwise.
+
+# Fields
+ - `ω::T=0.0`: volumetric water content fraction (dimensionless, ``0 \\leq \\omega \\leq 1``).
+ - `γ::T=181.25`: water-content enhancement coefficient following [lliboutry_various_1985](@citet).
+ - `E_f::T=1.0`: additional enhancement factor.
+ - `T_p1_p2::T=263.15`: breakpoint temperature (``\\mathrm{K}``).
+ - `A_0_p1::T=3.985e-13`: pre-exponential factor below breakpoint (``\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``).
+ - `A_0_p2::T=1.916e3`: pre-exponential factor above breakpoint.
+ - `Q_a_p1::T=60e3`: activation energy below breakpoint (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
+ - `Q_a_p2::T=139e3`: activation energy above breakpoint.
+ - `R::T=8.314`: universal gas constant (``\\mathrm{J}\\,\\mathrm{K}^{-1}\\,\\mathrm{mol}^{-1}``).
+"""
+@kwdef struct LliboutryDuvalRateFactor{T} <: AbstractRateFactor
+    ω::T = 0.0
+    γ::T = 181.25
+    E_f::T = 1.0
+    T_p1_p2::T = 263.15
+    A_0_p1::T = 3.985e-13
+    A_0_p2::T = 1.916e3
+    Q_a_p1::T = 60e3
+    Q_a_p2::T = 139e3
+    R::T = 8.314
 end
 
 ###########################################################
@@ -101,6 +200,27 @@ function rate_factor(
 end
 
 function rate_factor(
+    T_relative::T,
+    hrf::HookeRateFactor,
+) where {T<:Real}
+    (; E_f, A_0, Q_a, C, T_r, k, R) = hrf
+    return E_f * A_0 * exp(-Q_a / (R * T_relative) + 3 * C / (T_r - T_relative)^k)
+end
+
+function rate_factor(
+    T_relative::T,
+    ldrf::LliboutryDuvalRateFactor,
+) where {T<:Real}
+    (; ω, γ, E_f, T_p1_p2, A_0_p1, A_0_p2, Q_a_p1, Q_a_p2, R) = ldrf
+    if T_relative <= T_p1_p2
+        A_cold = E_f * A_0_p1 * exp(-Q_a_p1 / (R * T_relative))
+    else
+        A_cold = E_f * A_0_p2 * exp(-Q_a_p2 / (R * T_relative))
+    end
+    return A_cold * (1 + γ * ω)
+end
+
+function rate_factor(
     T_relative::M,
     arf::ARF,
 ) where {M<:AbstractArray, ARF<:AbstractRateFactor}
@@ -122,60 +242,3 @@ function rate_factor!(
     map!(x -> rate_factor(x, arf), A, T_relative)
     return
 end
-
-
-# """
-#     update_rate_factor!(A, T_relative, ae, idx)
-
-# Update the rate factor `A` based on the temperature relative to the pressure melt
-# point `T_relative` and the rate factor `ae<:AbstractRateFactor`.
-# """
-# function update_rate_factor!(
-#     A::Array{T, 3},
-#     T_relative::Array{T, 3},
-#     cae::ConstantRateFactor{T},
-#     idx::Matrix{CartesianIndex{2}},
-# ) where {T<:AbstractFloat}
-
-#     for i in idx
-#         for l in axes(A, 3)
-#             A[i, l] = cae.A
-#         end
-#     end
-#     return
-# end
-
-# function update_rate_factor!(
-#     A::Array{T, 3},
-#     T_relative::Array{T, 3},
-#     aae::ArrheniusRateFactor{T},
-#     idx::Matrix{CartesianIndex{2}},
-# ) where {T<:AbstractFloat}
-
-#     (; E_f, T_p1_p2, A_0_p1, A_0_p2, Q_a_p1, Q_a_p2, R) = aae
-#     for i in idx
-#         for l in axes(A, 3)
-#             if T_relative[i, l] <= T_p1_p2
-#                 A[i, l] = E_f * A_0_p1 * exp(-Q_a_p1 / (R * T_relative[i, l]))
-#             else
-#                 A[i, l] = E_f * A_0_p2 * exp(-Q_a_p2 / (R * T_relative[i, l]))
-#             end
-#         end
-#     end
-# end
-
-# function update_rate_factor!(
-#     A::Array{T, 3},
-#     T_relative::Array{T, 3},
-#     smae::SmithMorlandRateFactor{T},
-#     idx::Matrix{CartesianIndex{2}},
-# ) where {T<:AbstractFloat}
-
-#     (; p1, p2, e1, e2) = smae
-#     for i in idx
-#         for l in axes(A, 3)
-#             A[i, l] = p1 * exp(e1 * T_relative[i, l]) + p2 * exp(e2 * T_relative[i, l])
-#         end
-#     end
-#     return nothing
-# end
