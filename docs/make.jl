@@ -22,15 +22,18 @@ Literate.markdown("src/physics/topography.jl", "src/physics"; credit = false)
 # %% Build docs
 PAGES = [
     "index.md",
-    "physics/material.md",
-    "physics/basal_friction.md",
-    "physics/calving.md",
-    "physics/topography.md",
+    "Quickstart" => [],
+    "Physics" => [
+        "physics/material.md",
+        "physics/basal_friction.md",
+        "physics/calving.md",
+        "physics/topography.md",
+    ],
     "Guidelines" => [
         "guidelines/naming.md",
         "guidelines/performance.md",
     ],
-    "API_public.md",
+    "API reference" => ["API_public.md", "API_private.md"],
     "references.md",
     # "examples/tutorial.md",
     # "Examples" => example_pages,
