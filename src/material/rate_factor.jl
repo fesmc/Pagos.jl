@@ -165,6 +165,120 @@ spatially varying fields, call the scalar method pointwise.
     R::T = 8.314
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+Arrhenius rate factor for the grain-size insensitive (GSI) dislocation-creep
+component of the low-strain (1–2%) multicomponent flow law of
+[fan_flow_2025](@citet):
+
+```math
+\\begin{aligned}
+A_{\\mathrm{GSI}}(T) = A_0 \\, \\exp\\!\\left(-\\frac{Q}{R \\, T}\\right)
+\\end{aligned}
+```
+
+Default parameter values are the posterior medians from Bayesian inference over
+305 low-strain data points (Table 1 of [fan_flow_2025](@citet)), converted from
+MPa to Pa via ``\\log_{10} A_{\\mathrm{Pa}} = \\log_{10} A_{\\mathrm{MPa}} - 6n``.
+
+# Fields
+ - `A_0::T=2.951e-17`: pre-exponential factor (``\\mathrm{Pa}^{-3.6}\\,\\mathrm{s}^{-1}``).
+ - `Q::T=62e3`: activation energy (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
+ - `R::T=8.314`: universal gas constant (``\\mathrm{J}\\,\\mathrm{K}^{-1}\\,\\mathrm{mol}^{-1}``).
+"""
+@kwdef struct FanLowStrainGSIRateFactor{T} <: AbstractRateFactor
+    A_0::T = 2.951e-17   # 10^(5.07 - 6*3.6) Pa^-3.6 s^-1
+    Q::T = 62e3
+    R::T = 8.314
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Arrhenius rate factor for the first grain-size sensitive (GSS1) disGBS component
+of the low-strain (1–2%) multicomponent flow law of [fan_flow_2025](@citet):
+
+```math
+\\begin{aligned}
+A_{\\mathrm{GSS1}}(T) = A_0 \\, \\exp\\!\\left(-\\frac{Q}{R \\, T}\\right)
+\\end{aligned}
+```
+
+Default parameter values are the posterior medians from Bayesian inference over
+305 low-strain data points (Table 1 of [fan_flow_2025](@citet)), converted from
+MPa to Pa.
+
+# Fields
+ - `A_0::T=4.677e-13`: pre-exponential factor (``\\mathrm{Pa}^{-1.9}\\,\\mathrm{m}^{1.2}\\,\\mathrm{s}^{-1}``).
+ - `Q::T=52e3`: activation energy (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
+ - `R::T=8.314`: universal gas constant (``\\mathrm{J}\\,\\mathrm{K}^{-1}\\,\\mathrm{mol}^{-1}``).
+"""
+@kwdef struct FanLowStrainGSS1RateFactor{T} <: AbstractRateFactor
+    A_0::T = 4.677e-13   # 10^(-0.93 - 6*1.9) Pa^-1.9 m^1.2 s^-1
+    Q::T = 52e3
+    R::T = 8.314
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Arrhenius rate factor for the second grain-size sensitive (GSS2) disGBS component
+of the low-strain (1–2%) multicomponent flow law of [fan_flow_2025](@citet):
+
+```math
+\\begin{aligned}
+A_{\\mathrm{GSS2}}(T) = A_0 \\, \\exp\\!\\left(-\\frac{Q}{R \\, T}\\right)
+\\end{aligned}
+```
+
+The high activation energy ``Q = 182`` kJ mol⁻¹ causes this component to dominate
+near the pressure melting point, capturing the steep increase in apparent ``Q``
+observed experimentally above approximately ``-10`` °C without imposing a
+discontinuous temperature threshold. Default parameter values are the posterior
+medians from Bayesian inference over 305 low-strain data points (Table 1 of
+[fan_flow_2025](@citet)), converted from MPa to Pa.
+
+# Fields
+ - `A_0::T=4.571e7`: pre-exponential factor (``\\mathrm{Pa}^{-2.5}\\,\\mathrm{m}^{1.9}\\,\\mathrm{s}^{-1}``).
+ - `Q::T=182e3`: activation energy (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
+ - `R::T=8.314`: universal gas constant (``\\mathrm{J}\\,\\mathrm{K}^{-1}\\,\\mathrm{mol}^{-1}``).
+"""
+@kwdef struct FanLowStrainGSS2RateFactor{T} <: AbstractRateFactor
+    A_0::T = 4.571e7     # 10^(22.66 - 6*2.5) Pa^-2.5 m^1.9 s^-1
+    Q::T = 182e3
+    R::T = 8.314
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Arrhenius rate factor for the high-strain (≥8%) one-component GSI flow law of
+[fan_flow_2025](@citet):
+
+```math
+\\begin{aligned}
+A_{\\mathrm{GSI}}(T) = A_0 \\, \\exp\\!\\left(-\\frac{Q}{R \\, T}\\right)
+\\end{aligned}
+```
+
+Calibrated to tertiary-creep / flow-stress data (160 data points). Stress
+exponent ``n = 3.5`` (or ``n \\approx 4`` when ``T < -5`` °C) gives a better
+fit to the high-strain experimental record than the classic Glen exponent.
+Default parameter values are the posterior medians from Table 1 of
+[fan_flow_2025](@citet), converted from MPa to Pa.
+
+# Fields
+ - `A_0::T=7.943e-10`: pre-exponential factor (``\\mathrm{Pa}^{-3.5}\\,\\mathrm{s}^{-1}``).
+ - `Q::T=90e3`: activation energy (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
+ - `R::T=8.314`: universal gas constant (``\\mathrm{J}\\,\\mathrm{K}^{-1}\\,\\mathrm{mol}^{-1}``).
+"""
+@kwdef struct FanHighStrainGSIRateFactor{T} <: AbstractRateFactor
+    A_0::T = 7.943e-10   # 10^(11.9 - 6*3.5) Pa^-3.5 s^-1
+    Q::T = 90e3
+    R::T = 8.314
+end
+
 ###########################################################
 # Functions
 ###########################################################
@@ -174,6 +288,45 @@ $(TYPEDSIGNATURES)
 
 Get the rate factor `A` based on the temperature relative to the pressure melt point `T_relative` and the rate factor parameterization `arf<:AbstractRateFactor`.
 """
+function rate_factor(
+    ::T,
+    crf::ConstantRateFactor,
+) where {T<:Real}
+    return crf.A
+end
+
+function rate_factor(
+    T_relative::T,
+    rf::FanLowStrainGSIRateFactor,
+) where {T<:Real}
+    (; A_0, Q, R) = rf
+    return A_0 * exp(-Q / (R * T_relative))
+end
+
+function rate_factor(
+    T_relative::T,
+    rf::FanLowStrainGSS1RateFactor,
+) where {T<:Real}
+    (; A_0, Q, R) = rf
+    return A_0 * exp(-Q / (R * T_relative))
+end
+
+function rate_factor(
+    T_relative::T,
+    rf::FanLowStrainGSS2RateFactor,
+) where {T<:Real}
+    (; A_0, Q, R) = rf
+    return A_0 * exp(-Q / (R * T_relative))
+end
+
+function rate_factor(
+    T_relative::T,
+    rf::FanHighStrainGSIRateFactor,
+) where {T<:Real}
+    (; A_0, Q, R) = rf
+    return A_0 * exp(-Q / (R * T_relative))
+end
+
 function rate_factor(
     T_relative::T,
     arf::ArrheniusRateFactor,

@@ -163,6 +163,57 @@ temperature before constructing this struct.
     n_basal::T = 2.4
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+Three-component low-strain creep function following [fan_flow_2025](@citet),
+summing contributions from one grain-size insensitive (GSI) dislocation-creep
+component and two grain-size sensitive (GSS) disGBS components:
+
+```math
+\\begin{aligned}
+\\dot{\\varepsilon}_{\\mathrm{GSI}}  &= A_{\\mathrm{GSI}}  \\, \\sigma_e^{n_{\\mathrm{GSI}}} \\\\
+\\dot{\\varepsilon}_{\\mathrm{GSS1}} &= A_{\\mathrm{GSS1}} \\, \\sigma_e^{n_{\\mathrm{GSS1}}} \\, d^{-p_{\\mathrm{GSS1}}} \\\\
+\\dot{\\varepsilon}_{\\mathrm{GSS2}} &= A_{\\mathrm{GSS2}} \\, \\sigma_e^{n_{\\mathrm{GSS2}}} \\, d^{-p_{\\mathrm{GSS2}}} \\\\[4pt]
+f(\\sigma_e) &= \\frac{\\dot{\\varepsilon}_{\\mathrm{GSI}} + \\dot{\\varepsilon}_{\\mathrm{GSS1}} + \\dot{\\varepsilon}_{\\mathrm{GSS2}}}{\\sigma_e}
+\\end{aligned}
+```
+
+The two GSS components represent a single disGBS mechanism whose apparent
+activation energy increases near the pressure melting point, capturing the
+continuous temperature dependence of ice viscosity without a threshold
+discontinuity.
+
+The pre-factors ``A_{\\mathrm{GSI}}``, ``A_{\\mathrm{GSS1}}``, ``A_{\\mathrm{GSS2}}``
+already encode the Arrhenius temperature dependence and must be evaluated at the
+local temperature via [`FanLowStrainGSIRateFactor`](@ref),
+[`FanLowStrainGSS1RateFactor`](@ref), and [`FanLowStrainGSS2RateFactor`](@ref)
+before constructing this struct. Use [`FanLowStrainFlowLaw`](@ref) for a
+convenience constructor that handles this step automatically.
+
+# Fields
+ - `d::T`: mean grain size (``\\mathrm{m}``).
+ - `A_GSI::T`: temperature-evaluated GSI pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{GSI}}}\\,\\mathrm{s}^{-1}``).
+ - `A_GSS1::T`: temperature-evaluated GSS1 pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{GSS1}}}\\,\\mathrm{m}^{p_{\\mathrm{GSS1}}}\\,\\mathrm{s}^{-1}``).
+ - `A_GSS2::T`: temperature-evaluated GSS2 pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{GSS2}}}\\,\\mathrm{m}^{p_{\\mathrm{GSS2}}}\\,\\mathrm{s}^{-1}``).
+ - `n_GSI::T=3.6`: stress exponent for the GSI component.
+ - `n_GSS1::T=1.9`: stress exponent for the GSS1 component.
+ - `n_GSS2::T=2.5`: stress exponent for the GSS2 component.
+ - `p_GSS1::T=1.2`: grain-size exponent for the GSS1 component.
+ - `p_GSS2::T=1.9`: grain-size exponent for the GSS2 component.
+"""
+@kwdef struct FanLowStrainCreep{T} <: AbstractCreep
+    d::T
+    A_GSI::T
+    A_GSS1::T
+    A_GSS2::T
+    n_GSI::T = 3.6
+    n_GSS1::T = 1.9
+    n_GSS2::T = 2.5
+    p_GSS1::T = 1.2
+    p_GSS2::T = 1.9
+end
+
 ###########################################################
 # Dispatch
 ###########################################################
@@ -220,6 +271,17 @@ function creep(
     law::GlenNyeCreep,
 ) where {T<:Real}
     return law.E * σ_e^(law.n - 1)
+end
+
+function creep(
+    σ_e::T,
+    law::FanLowStrainCreep,
+) where {T<:Real}
+    (; d, A_GSI, A_GSS1, A_GSS2, n_GSI, n_GSS1, n_GSS2, p_GSS1, p_GSS2) = law
+    ε̇_GSI  = A_GSI  * σ_e^n_GSI
+    ε̇_GSS1 = A_GSS1 * σ_e^n_GSS1 * d^(-p_GSS1)
+    ε̇_GSS2 = A_GSS2 * σ_e^n_GSS2 * d^(-p_GSS2)
+    return (ε̇_GSI + ε̇_GSS1 + ε̇_GSS2) / σ_e
 end
 
 function creep(

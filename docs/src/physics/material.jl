@@ -181,6 +181,84 @@ A = rate_factor(T .+ 273.15, arrhenius_rate_factor)
 fig = plot_ice_viscosity(η, σ_e, T)
 
 #=
+
+### Fan et al. (2025) multicomponent flow laws
+
+[fan_flow_2025](@citet) constrain new flow laws from Bayesian inference on 70 years
+of laboratory data. Two are provided:
+
+- **[`FanLowStrainFlowLaw`](@ref)** — three-component law (grain-size insensitive
+  dislocation creep + two grain-size sensitive disGBS components) calibrated on
+  low-strain (1–2 %) data. It requires a mean grain size ``d`` and a temperature ``T``.
+- **[`FanHighStrainFlowLaw`](@ref)** — single GSI component with ``n = 3.5`` and
+  ``Q = 90`` kJ mol⁻¹, calibrated on tertiary-creep / flow-stress data. Suitable for
+  large-scale ice-sheet models where ice has reached microstructural steady state.
+
+**Left panel** — viscosity versus effective stress at ``T = -5`` °C. The low-strain
+law is shown for two grain sizes; its effective stress exponent varies because the
+relative contribution of each component shifts with stress. The high-strain and
+Glen-Nye laws are grain-size insensitive single-component laws that produce straight
+lines on a log–log plot, but with different exponents (``n = 3.5`` vs ``n = 3``).
+**Right panel** — viscosity of the low-strain law as a function of grain size at
+``\sigma_e = 0.3`` MPa. Coarser-grained ice is stiffer because the GSS mechanisms
+slow down with increasing ``d``. The Glen-Nye law is grain-size insensitive.
+=#
+
+T_fan_K     = 268.15                                                  # −5 °C in K
+σ_range_fan = 10 .^ range(log10(1e3), log10(1e6), length = 300)      # 1 kPa – 1 MPa
+
+fan_ls_1mm = FanLowStrainFlowLaw(1e-3, T_fan_K)
+fan_ls_5mm = FanLowStrainFlowLaw(5e-3, T_fan_K)
+fan_hs     = FanHighStrainFlowLaw()
+glen_nf    = GlenNyeFlowLaw()
+
+A_fan_ls = rate_factor(T_fan_K, fan_ls_1mm.rate_factor)   # = 1.0; baked into creep
+A_fan_hs = rate_factor(T_fan_K, fan_hs.rate_factor)
+A_glen   = rate_factor(T_fan_K, glen_nf.rate_factor)
+
+η_ls_1mm = viscosity(A_fan_ls, creep(σ_range_fan, fan_ls_1mm.creep), fan_ls_1mm)
+η_ls_5mm = viscosity(A_fan_ls, creep(σ_range_fan, fan_ls_5mm.creep), fan_ls_5mm)
+η_hs     = viscosity(A_fan_hs, creep(σ_range_fan, fan_hs.creep),     fan_hs)
+η_glen   = viscosity(A_glen,   creep(σ_range_fan, glen_nf.creep),    glen_nf)
+
+d_range  = 10 .^ range(log10(3e-4), log10(3e-2), length = 300)    # 0.3 mm – 30 mm
+σ_fixed  = 0.3e6   # Pa
+
+η_vs_d = [begin
+              ls = FanLowStrainFlowLaw(d, T_fan_K)
+              viscosity(rate_factor(T_fan_K, ls.rate_factor), creep(σ_fixed, ls.creep), ls)
+          end for d in d_range]
+η_glen_ref = viscosity(A_glen, creep(σ_fixed, glen_nf.creep), glen_nf)
+
+fig_fan = Figure(size = (900, 420))
+
+ax_σ = Axis(fig_fan[1, 1],
+    xlabel = L"Effective stress $\sigma_e$ (kPa)",
+    ylabel = L"Viscosity $\eta$ (Pa s)",
+    xscale = log10,
+    yscale = log10,
+    title  = L"Viscosity vs stress at $T = {-5}\,$°C",
+)
+lines!(ax_σ, σ_range_fan ./ 1e3, η_ls_1mm, label = L"Fan low-strain, $d = 1$ mm")
+lines!(ax_σ, σ_range_fan ./ 1e3, η_ls_5mm, label = L"Fan low-strain, $d = 5$ mm",    linestyle = :dash)
+lines!(ax_σ, σ_range_fan ./ 1e3, η_hs,     label = "Fan high-strain (1-component)",  linestyle = :dashdot)
+lines!(ax_σ, σ_range_fan ./ 1e3, η_glen,   label = "Glen-Nye",                       linestyle = :dot, color = :gray)
+axislegend(ax_σ, position = :lb, labelsize = 11)
+
+ax_d = Axis(fig_fan[1, 2],
+    xlabel = L"Grain size $d$ (mm)",
+    ylabel = L"Viscosity $\eta$ (Pa s)",
+    xscale = log10,
+    yscale = log10,
+    title  = L"Grain-size sensitivity at $T = {-5}\,$°C, $\sigma_e = 0.3$ MPa",
+)
+lines!(ax_d, d_range .* 1e3, η_vs_d,    label = "Fan low-strain (3-component)")
+hlines!(ax_d, [η_glen_ref],              label = "Glen-Nye (grain-size insensitive)", linestyle = :dot, color = :gray)
+axislegend(ax_d, position = :lt, labelsize = 11)
+
+fig_fan
+
+#=
 In [`AbstractFlowLaw`](@ref), we show convenience constructors, other options, as well as how to implement your own flow law.
 
 ## [Enhancement factor](@id enhancement_factor)

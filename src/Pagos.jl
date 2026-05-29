@@ -88,16 +88,20 @@ include("dynamics/advection.jl")
 include("material/rate_factor.jl")
 export AbstractRateFactor, ConstantRateFactor, ArrheniusRateFactor
 export SmithMorlandRateFactor, HookeRateFactor, LliboutryDuvalRateFactor
+export FanLowStrainGSIRateFactor, FanLowStrainGSS1RateFactor, FanLowStrainGSS2RateFactor
+export FanHighStrainGSIRateFactor
 export rate_factor, rate_factor!
 
 include("material/creep.jl")
 export AbstractCreep, GlenNyeCreep, RegularizedGlenNyeCreep
 export SmithMorlandCreep, PettitWaddingtonCreep, GoldsbyKohlstedtCreep
+export FanLowStrainCreep
 export creep, creep!
 
 include("material/flow_law.jl")
 export AbstractFlowLaw, ConstantViscosityFlowLaw, RateCreepFlowLaw
 export GlenNyeFlowLaw, RegularizedGlenNyeFlowLaw, SmithMorlandFlowLaw
+export FanLowStrainFlowLaw, FanHighStrainFlowLaw
 export viscosity, viscosity!
 
 include("material/pressure_melting_point.jl")
