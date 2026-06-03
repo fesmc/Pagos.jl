@@ -101,9 +101,7 @@ water-content enhancement ``(1 + \gamma\,\omega)``: at ``\omega = 0`` it is iden
 proportionally.
 
 **Right panel — creep function ``f(\sigma_e)``** (log–log scale):
-[`GlenNyeCreep`](@ref) is the standard power law ``f = \sigma_e^{n-1}`` (slope 2 for
-``n = 3``).
-[`RegularizedGlenNyeCreep`](@ref) adds a floor ``\sigma_0^{n-1}`` that prevents a
+[`GlenNyeCreep`](@ref) with and without regularization ``\sigma_0^{n-1}`` that prevents a
 viscosity singularity at zero stress; here ``\sigma_0 = 1\,\mathrm{kPa}`` is chosen to
 make the transition visible, whereas the default ``\sigma_0 = 10^{-6}\,\mathrm{Pa}`` is
 negligible at realistic stress levels.
@@ -134,8 +132,8 @@ A_ld1       = rate_factor(T_K, LliboutryDuvalRateFactor(ω = 0.01))
 A_ld5       = rate_factor(T_K, LliboutryDuvalRateFactor(ω = 0.05))
 
 σ_range = 10 .^ range(2.0, log10(5e5), length = 300)   # 0.1 kPa – 500 kPa
-cf_glen    = creep(σ_range, GlenNyeCreep())
-cf_reg     = creep(σ_range, RegularizedGlenNyeCreep(σ_0 = 1e3))
+cf_glen    = creep(σ_range, GlenNyeCreep(σ_0 = 0.0))   # unregularized
+cf_reg     = creep(σ_range, GlenNyeCreep(σ_0 = 1e3))
 cf_pw_low  = creep(σ_range, PettitWaddingtonCreep(A_lin = 1e6))
 cf_pw_high = creep(σ_range, PettitWaddingtonCreep(A_lin = 1e8))
 
@@ -261,9 +259,11 @@ fig_fan
 #=
 In [`AbstractFlowLaw`](@ref), we show convenience constructors, other options, as well as how to implement your own flow law.
 
-## [Enhancement factor](@id enhancement_factor)
+## [Anisotropy](@id anisotropy)
 
-In glaciology, an enhancement factor ``E`` is often introduced to account for deviations from the standard flow law due to factors such as impurities, crystal orientation, or other microstructural effects. The modified flow law incorporating the enhancement factor can be expressed as:
+Ice being a polycrystalline material, its deformation can be influenced by the orientation of its crystal fabric and the presence of impurities. These factors can lead to anisotropic behavior, where the ice deforms more easily in certain directions than others. Pagos.jl implements various parameterizations of this effect via [`AbstractAnisotropy`](@ref) and allows users to implement their own models.
+
+For instance, [`EnhancementFactorAnisotropy`](@ref) applies a constant enhancement factor ``E`` to the flow law, softening or hardening the ice uniformly in all directions. This value typically ranges from 0.1 to 10 in glaciological applications and can be used to account for the effects of crystal fabric or impurities on ice deformation without explicitly modeling the microstructural details. The modified flow law incorporating the enhancement factor can be expressed as:
 
 ```math
 \begin{aligned}
@@ -271,13 +271,42 @@ A(T') \rightarrow E A(T')
 \end{aligned}
 ```
 
-The enhancement factor ``E`` is typically a dimensionless quantity greater than 1, indicating that the ice deforms more easily than predicted by the standard flow law. It can vary depending on the specific conditions and characteristics of the ice being studied.
-
-In Pagos.jl, the enhancement factor is set through the `E` field of [`GlenNyeCreep`](@ref) and [`RegularizedGlenNyeCreep`](@ref). Values ``E > 1`` soften the ice (e.g. anisotropic crystal fabric, elevated impurity content), while ``E < 1`` harden it:
+In a continental ice-sheet model, different enhacement factors are typically applied to the shear, stream and shelf regions to capture the effects of fabric development and impurity content on ice deformation. For instance, a common choice is to use a higher enhancement factor (e.g., ``E = 2``) in stream and shelf regions where the ice is softer due to fabric development, and a lower enhancement factor (e.g., ``E = 1``) in regions that were not subject yet to a lot of deformation, as it is typically the case in interior, shear-dominated regions.
 =#
 
-glennye_soft = GlenNyeCreep(E = 3.0)
-glennye_hard = GlenNyeCreep(E = 0.5)
+shear_anisotropy = EnhancementFactorAnisotropy(1.0)
+stream_anisotropy = EnhancementFactorAnisotropy(2.0)
+shelf_anisotropy  = EnhancementFactorAnisotropy(3.0)
+
+#=
+However, this approach does not capture the directional dependence of anisotropy, as it applies the same enhancement factor regardless of the loading direction. More sophisticated models, such as [`CAFFEAnisotropy`](@ref), explicitly account for the fabric state and its evolution under deformation, allowing for a more realistic representation of anisotropic behavior.
+
+[`SimpleCAFFEAnisotropy`](@ref) offers a scalar simplification of the CAFFE model: the enhancement factor ``E`` is expressed as a function of a single deformability scalar ``\mathcal{D} \in [0, 5/2]``, which encodes the local fabric state. The piecewise law reads:
+
+```math
+E(\mathcal{D}) = \begin{cases}
+    E_\min + (1 - E_\min)\,\mathcal{D}^{t} & 0 \le \mathcal{D} \le 1 \\[4pt]
+    \dfrac{4\mathcal{D}^2(E_\max - 1) + 25 - 4 E_\max}{21} & 1 < \mathcal{D} \le \tfrac{5}{2}
+\end{cases}
+```
+
+where ``t = \tfrac{8}{21}(E_\max - 1)/(1 - E_\min)`` and the default parameters are ``E_\min = 0.1``, ``E_\max = 10``. ``\mathcal{D} = 0`` corresponds to a fully hardened (single-maximum) fabric, ``\mathcal{D} = 1`` to isotropic fabric, and ``\mathcal{D} = 5/2`` to a fully soft (girdle) fabric.
+=#
+
+simple_caffe = SimpleCAFFEAnisotropy()
+D_range = range(0, stop = 5/2, length = 500)
+E_simple = map(D -> enhancement_factor(D, simple_caffe), D_range)
+
+fig_simple_caffe = Figure()
+ax_sc = Axis(fig_simple_caffe[1, 1],
+    xlabel = L"Deformability $\mathcal{D}$",
+    ylabel = L"Enhancement factor $E$",
+    title  = "SimpleCAFFEAnisotropy enhancement factor",
+)
+lines!(ax_sc, collect(D_range), E_simple)
+vlines!(ax_sc, [1.0], linestyle = :dash, color = :gray, label = "Isotropic fabric")
+axislegend(ax_sc, position = :lt)
+fig_simple_caffe
 
 #=
 ## [Pressure melting point](@id melting_point)
