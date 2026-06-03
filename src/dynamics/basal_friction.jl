@@ -94,7 +94,7 @@ abstract type AbstractBasalBeta end
 """
 $(TYPEDSIGNATURES)
 
-Constant basal friction coefficient. The basal shear stress is linear in the
+Prescribed basal friction coefficient. The basal shear stress is linear in the
 sliding velocity:
 
 ```math
@@ -106,7 +106,7 @@ sliding velocity:
 # Fields
  - `beta::M`: Basal friction coefficient ``\\beta`` (scalar or array).
 """
-struct ConstantBasalBeta{M} <: AbstractBasalBeta
+struct PrescribedBasalBeta{M} <: AbstractBasalBeta
     beta::M
 end
 
@@ -180,7 +180,7 @@ $(TYPEDSIGNATURES)
 function basal_beta(
     c_bed,
     v_basal,
-    bb::ConstantBasalBeta,
+    bb::PrescribedBasalBeta,
 )
     return bb.beta
 end

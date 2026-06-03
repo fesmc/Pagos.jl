@@ -11,11 +11,11 @@ Laws fall into three families depending on their physical driver:
 
 | Family | Laws |
 |--------|------|
-| Ice thickness | [`ConstantCalving`](@ref), [`RelaxedCalving`](@ref), [`ThicknessCalving`](@ref), [`FlotationCalving`](@ref) |
+| Ice thickness | [`PrescribedCalving`](@ref), [`RelaxedCalving`](@ref), [`ThicknessCalving`](@ref), [`FlotationCalving`](@ref) |
 | Marine cliff geometry | [`PollardDeContoCalving`](@ref), [`CrawfordCalving`](@ref) |
 | Flow divergence | [`EigenCalving`](@ref), [`LevermannCalving`](@ref), [`LipscombCalving`](@ref) |
 
-The simplest default is [`ConstantCalving`](@ref): the default `rate = 0` effectively
+The simplest default is [`PrescribedCalving`](@ref): the default `rate = 0` effectively
 disables calving, providing a safe starting point when the calving boundary is not the
 primary interest:
 
@@ -23,8 +23,8 @@ primary interest:
 
 using Pagos, CairoMakie
 
-no_calving    = ConstantCalving()               # ċ = 0 everywhere — calving disabled
-const_calving = ConstantCalving(rate = 10.0)    # uniform 10 m yr⁻¹
+no_calving    = PrescribedCalving()               # ċ = 0 everywhere — calving disabled
+const_calving = PrescribedCalving(rate = 10.0)    # uniform 10 m yr⁻¹
 
 #=
 
@@ -82,7 +82,7 @@ The figure below visualises the three families. All panels show the calving magn
 (ice removed).
 
 **Left — thickness-based laws** (sweep over ice thickness ``H``).
-[`ConstantCalving`](@ref) is a flat baseline. [`RelaxedCalving`](@ref) grows linearly
+[`PrescribedCalving`](@ref) is a flat baseline. [`RelaxedCalving`](@ref) grows linearly
 with ``H`` once the threshold is crossed, while [`ThicknessCalving`](@ref) grows with the
 *excess* ``H - H_\mathrm{crit}`` — a softer response. [`FlotationCalving`](@ref) is
 active only below flotation thickness (here ``H_\mathrm{float} = 400\,\mathrm{m}``) and
@@ -104,7 +104,7 @@ transverse extension steepens the response proportionally.
 H_range = range(1.0, 600.0, length = 600)
 H_float = 400.0
 
-c_const = fill(abs(calving_rate(ConstantCalving(rate = 10.0))), length(H_range))
+c_const = fill(abs(calving_rate(PrescribedCalving(rate = 10.0))), length(H_range))
 c_relax = abs.([calving_rate(h, RelaxedCalving(H_critical = 200.0, timescale = 1.0)) for h in H_range])
 c_thick = abs.([calving_rate(h, h, ThicknessCalving(H_critical = 200.0, timescale = 1.0)) for h in H_range])
 c_float = abs.([calving_rate(h, h - H_float, FlotationCalving(timescale = 1.0)) for h in H_range])
@@ -130,7 +130,7 @@ ax1 = Axis(fig_calv[1, 1],
     ylabel = L"$|\dot{c}|$ (m yr$^{-1}$)",
     title  = "Thickness-based",
 )
-lines!(ax1, H_range, c_const, label = L"Constant (rate $= 10$ m yr$^{-1}$)")
+lines!(ax1, H_range, c_const, label = L"Prescribed (rate $= 10$ m yr$^{-1}$)")
 lines!(ax1, H_range, c_relax, label = L"Relaxed ($H_\mathrm{crit} = 200$ m, $\tau = 1$ yr)")
 lines!(ax1, H_range, c_thick, label = L"Thickness ($H_\mathrm{crit} = 200$ m, $\tau = 1$ yr)")
 lines!(ax1, H_range, c_float, label = L"Flotation ($\tau = 1$ yr, $H_\mathrm{float} = 400$ m)", linestyle = :dash)

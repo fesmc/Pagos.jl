@@ -26,7 +26,7 @@ coulomb_beta = CoulombBasalBeta()   # q = 0.2, v₀ = 100 m yr⁻¹ (defaults)
 
 #=
 
-The simplest alternative is [`ConstantBasalBeta`](@ref), which fixes ``\beta`` to a
+The simplest alternative is [`PrescribedBasalBeta`](@ref), which fixes ``\beta`` to a
 uniform value and gives linear (viscous) sliding with no velocity dependence or
 saturation. [`PseudoPlasticPowerBasalBeta`](@ref) offers a power-law regime without
 the Coulomb plateau: it recovers perfectly plastic sliding at ``q = 0`` and linear

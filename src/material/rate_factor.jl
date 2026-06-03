@@ -17,7 +17,7 @@ Rate factor for ice viscosity following a constant value.
 # Fields
 - `A::T=1e-16`: rate factor.
 """
-@kwdef struct ConstantRateFactor{T} <: AbstractRateFactor
+@kwdef struct PrescribedRateFactor{T} <: AbstractRateFactor
     A::T = 1e-16
 end
 
@@ -290,7 +290,7 @@ Get the rate factor `A` based on the temperature relative to the pressure melt p
 """
 function rate_factor(
     ::T,
-    crf::ConstantRateFactor,
+    crf::PrescribedRateFactor,
 ) where {T<:Real}
     return crf.A
 end

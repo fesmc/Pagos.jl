@@ -8,12 +8,12 @@ abstract type AbstractPressureMeltingPoint end
 """
 $(TYPEDSIGNATURES)
 
-Constant pressure melting point, independent of pressure. Useful for testing, and for cold-ice models where the pressure correction is negligible.
+Prescribed pressure melting point, independent of pressure. Useful for testing, and for cold-ice models where the pressure correction is negligible.
 
 # Fields
  - `T_0::T=273.15`: melting point (``\\mathrm{K}``).
 """
-@kwdef struct ConstantPressureMeltingPoint{T} <: AbstractPressureMeltingPoint
+@kwdef struct PrescribedPressureMeltingPoint{T} <: AbstractPressureMeltingPoint
     T_0::T = 273.15
 end
 
@@ -77,7 +77,7 @@ $(TYPEDSIGNATURES)
 
 Get the melting point `T_m` at pressure `p` based on the pressure melting point parameterization `law<:AbstractPressureMeltingPoint`.
 """
-function pressure_melting_point(p, law::ConstantPressureMeltingPoint)
+function pressure_melting_point(p, law::PrescribedPressureMeltingPoint)
     return law.T_0
 end
 
@@ -109,7 +109,7 @@ $(TYPEDSIGNATURES)
 
 Get the relative temperature `T'` based on the absolute temperature `T` and pressure `p` using the pressure melting point parameterization `law<:AbstractPressureMeltingPoint`.
 """
-function relative_temperature(T, p, law::ConstantPressureMeltingPoint)
+function relative_temperature(T, p, law::PrescribedPressureMeltingPoint)
     return T
 end
 

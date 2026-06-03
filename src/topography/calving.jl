@@ -21,9 +21,9 @@ Struct to specify a constant calving rate:
 ```
 
 # Fields
- - `rate::T`: Constant calving rate
+ - `rate::T`: Prescribed calving rate
 """
-@kwdef struct ConstantCalving{T} <: AbstractCalving
+@kwdef struct PrescribedCalving{T} <: AbstractCalving
     rate::T = 0.0           # m yr-1
 end
 
@@ -254,7 +254,7 @@ $(TYPEDSIGNATURES)
 
 Calculate the calving flux based on the ice thickness `H` and the calving law `calving<:AbstractCalving`.
 """
-function calving_rate(calving::ConstantCalving)
+function calving_rate(calving::PrescribedCalving)
     return -calving.rate
 end
 
@@ -335,7 +335,7 @@ $(TYPEDSIGNATURES)
 
 Update the calving flux `c_dt` based on the calving law `calving<:AbstractCalving` and the ice thickness `H`.
 """
-function calving_rate!(c_dt, calving::ConstantCalving)
+function calving_rate!(c_dt, calving::PrescribedCalving)
     map!(_ -> calving_rate(calving), c_dt, c_dt)
     return nothing
 end

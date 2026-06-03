@@ -11,19 +11,12 @@ abstract type AbstractEffectivePressure end
 """
 $(TYPEDSIGNATURES)
 
-A struct that prevents the update of effective pressure via [`effective_pressure`](@ref).
-"""
-struct ManualEffectivePressure{T} <: AbstractEffectivePressure end
-
-"""
-$(TYPEDSIGNATURES)
-
 A struct that passes a constant effective pressure value via [`effective_pressure`](@ref).
 
 # Fields
  - `p::M`: effective pressure value (Pa). Can be a scalar or an array.
 """
-struct ConstantEffectivePressure{M} <: AbstractEffectivePressure
+struct PrescribedEffectivePressure{M} <: AbstractEffectivePressure
     p::M
 end
 
@@ -96,7 +89,7 @@ function effective_pressure(
 end
 function effective_pressure(
     H_eff,
-    eff_pressure::ConstantEffectivePressure,
+    eff_pressure::PrescribedEffectivePressure,
 )
     return eff_pressure.p
 end
@@ -124,11 +117,8 @@ $(TYPEDSIGNATURES)
 
 Same as [`effective_pressure`](@ref) but operates in place.
 """
-function effective_pressure!(N_eff, H_eff, eff_pressure::ManualEffectivePressure)
+function effective_pressure!(N_eff, H_eff, eff_pressure::PrescribedEffectivePressure)
     return nothing
-end
-function effective_pressure!(N_eff, H_eff, eff_pressure::ConstantEffectivePressure)
-    N_eff .= eff_pressure.p
 end
 function effective_pressure!(N_eff, H_eff, eff_pressure)
     map!((h_eff) -> effective_pressure(h_eff, eff_pressure), N_eff, H_eff)

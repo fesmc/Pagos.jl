@@ -16,7 +16,7 @@ Flow law with constant viscosity.
 # Fields
  - `η::T`: constant viscosity.
 """
-struct ConstantViscosityFlowLaw{T} <: AbstractFlowLaw
+struct PrescribedViscosityFlowLaw{T} <: AbstractFlowLaw
     η::T
 end
 
@@ -60,17 +60,6 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Convenience function to create a Regularized Glen-Nye flow law with [`ArrheniusRateFactor`](@ref) and [`RegularizedGlenNyeCreep`](@ref).
-"""
-function RegularizedGlenNyeFlowLaw()
-    rf = ArrheniusRateFactor()
-    c = RegularizedGlenNyeCreep()
-    return RateCreepFlowLaw(rf, c)
-end
-
-"""
-$(TYPEDSIGNATURES)
-
 Convenience function to create a Smith-Morland flow law with [`SmithMorlandRateFactor`](@ref) and [`SmithMorlandCreep`](@ref).
 """
 function SmithMorlandFlowLaw()
@@ -99,7 +88,7 @@ function FanLowStrainFlowLaw(d, T)
     A_GSS1 = rate_factor(T, FanLowStrainGSS1RateFactor())
     A_GSS2 = rate_factor(T, FanLowStrainGSS2RateFactor())
     c = FanLowStrainCreep(; d, A_GSI, A_GSS1, A_GSS2)
-    return RateCreepFlowLaw(ConstantRateFactor(one(typeof(A_GSI))), c)
+    return RateCreepFlowLaw(PrescribedRateFactor(one(typeof(A_GSI))), c)
 end
 
 """
@@ -130,7 +119,7 @@ Get the viscosity `η` based on the rate factor `A`, creep function `f`, and flo
 function viscosity(
     _,
     _,
-    law::ConstantViscosityFlowLaw,
+    law::PrescribedViscosityFlowLaw,
 )
     return law.η
 end
