@@ -12,34 +12,11 @@ abstract type AbstractCreep end
 """
 $(TYPEDSIGNATURES)
 
-Glen-Nye creep function following [glen_creep_1955](@citet) and [nye_distribution_1957](@citet):
-
-```math
-\\begin{aligned}
-f(\\sigma_e) = E \\, \\sigma_e^{n - 1}
-\\end{aligned}
-```
-
-The enhancement factor ``E`` accounts for crystal anisotropy, impurity content, or
-fabric-induced softening/hardening. ``E > 1`` softens the ice; ``E < 1`` hardens it.
-
-# Fields
- - `n::T=3.0`: Glen-Nye's flow law exponent.
- - `E::T=1.0`: enhancement factor (dimensionless).
-"""
-@kwdef struct GlenNyeCreep{T} <: AbstractCreep
-    n::T = 3.0
-    E::T = 1.0
-end
-
-"""
-$(TYPEDSIGNATURES)
-
 Regularized Glen-Nye creep function following [glen_creep_1955](@citet) and [nye_distribution_1957](@citet):
 
 ```math
 \\begin{aligned}
-f(\\sigma_e) = E \\left( \\sigma_e^{n - 1} + \\sigma_0^{n - 1} \\right)
+f(\\sigma_e) = \\sigma_e^{n - 1} + \\sigma_0^{n - 1}
 \\end{aligned}
 ```
 
@@ -50,12 +27,10 @@ regularization is only active near ice divides where stresses approach zero.
 # Fields
  - `n::T=3.0`: Glen-Nye's flow law exponent.
  - `σ_0::T=1e-6`: regularization stress (``\\mathrm{Pa}``).
- - `E::T=1.0`: enhancement factor (dimensionless).
 """
-@kwdef struct RegularizedGlenNyeCreep{T} <: AbstractCreep
+@kwdef struct GlenNyeCreep{T} <: AbstractCreep
     n::T = 3.0
     σ_0::T = 1e-6
-    E::T = 1.0
 end
 
 """
@@ -235,15 +210,8 @@ function creep(
     σ_e::T,
     law::GlenNyeCreep,
 ) where {T<:Real}
-    return law.E * σ_e^(law.n - 1)
-end
-
-function creep(
-    σ_e::T,
-    law::RegularizedGlenNyeCreep,
-) where {T<:Real}
     (; n, σ_0) = law
-    return law.E * (σ_e^(n - 1) + σ_0^(n - 1))
+    return σ_e^(n - 1) + σ_0^(n - 1)
 end
 
 function creep(
@@ -264,13 +232,6 @@ function creep(
     ε̇_basal = A_basal * σ_e^n_basal
     ε̇_eff   = ε̇_diff + inv(inv(ε̇_gbs) + inv(ε̇_basal))
     return ε̇_eff / σ_e
-end
-
-function creep(
-    σ_e::T,
-    law::GlenNyeCreep,
-) where {T<:Real}
-    return law.E * σ_e^(law.n - 1)
 end
 
 function creep(
