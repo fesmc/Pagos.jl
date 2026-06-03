@@ -1,106 +1,238 @@
 """
-    delx1(u, dx)
-    delx1(u, dx, nx)
+$(TYPEDSIGNATURES)
 
-Compute the derivative of `u` with respect to `x` using a central difference scheme.
+In-place partial derivative of `u` along the first dimension. Uses central differences in
+the interior; boundary behaviour is controlled by `idx` (default: `FlatIndexing`,
+one-sided differences). GPU-compatible.
 """
-function delx1(u, dx)
-    nx = size(u, 1)
-    return delx1(u, dx, nx)
+function ∂x₁!(du, u, dx, idx::AbstractIndexing = FlatIndexing(1, size(u, 1)))
+    backend = get_backend(u)
+    if backend isa KernelAbstractions.CPU
+        # CPU: 1D column kernel — stencil_fd(i, idx) is loop-invariant in the inner
+        # i-loop, letting LLVM use a scalar reciprocal and SIMD multiplications
+        # instead of per-lane vector divisions.  GPU needs the 2D kernel for
+        # full thread occupancy, so the fast path is CPU-only.
+        kernel! = _∂x₁_col!(backend)
+        kernel!(du, u, dx, idx; ndrange = size(u, 2))
+    else
+        kernel! = _∂x₁!(backend)
+        kernel!(du, u, dx, idx; ndrange = size(u))
+    end
+    KernelAbstractions.synchronize(backend)
+    return nothing
 end
 
-function delx1(u, dx, mask)
-    du = similar(u)
-    delx1!(du, u, dx, mask)
-    return du
+# Backward-compatible dispatch: called with an integer grid size instead of an indexing.
+∂x₁!(du, u, dx, ::Integer) = ∂x₁!(du, u, dx)
+
+"""
+$(TYPEDSIGNATURES)
+
+In-place partial derivative of `u` along the second dimension. Uses central differences in
+the interior; boundary behaviour is controlled by `idx` (default: `FlatIndexing`,
+one-sided differences). GPU-compatible.
+"""
+function ∂x₂!(du, u, dy, idx::AbstractIndexing = FlatIndexing(1, size(u, 2)))
+    backend = get_backend(u)
+    if backend isa KernelAbstractions.CPU
+        kernel! = _∂x₂_col!(backend)
+        kernel!(du, u, dy, idx; ndrange = size(u, 2))
+    else
+        kernel! = _∂x₂!(backend)
+        kernel!(du, u, dy, idx; ndrange = size(u))
+    end
+    KernelAbstractions.synchronize(backend)
+    return nothing
 end
 
-function delx1!(du, u, dx, mask)
-    @inbounds for I in CartesianIndices(mask)[mask]
-        i, j = Tuple(I)
-        if mask[i+1, j] && mask[i-1, j]
-            du[i, j] = (u[i+1, j] - u[i-1, j]) / (dx * 2)
-        elseif mask[i+1, j]
-            du[i, j] = (u[i+1, j] - u[i, j]) / dx
-        elseif mask[i-1, j]
-            du[i, j] = (u[i, j] - u[i-1, j]) / dx
-        else
-            du[i, j] = 0.0
-        end
+∂x₂!(du, u, dy, ::Integer) = ∂x₂!(du, u, dy)
+
+"""
+$(TYPEDSIGNATURES)
+
+In-place partial derivative of `u` along the third dimension. Uses central differences in
+the interior; boundary behaviour is controlled by `idx` (default: `FlatIndexing`,
+one-sided differences). GPU-compatible.
+"""
+function ∂x₃!(du, u, dz, idx::AbstractIndexing = FlatIndexing(1, size(u, 3)))
+    backend = get_backend(u)
+    kernel! = _∂x₃!(backend)
+    kernel!(du, u, dz, idx; ndrange = size(u))
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+In-place vertical derivative of `u` in a terrain-following sigma coordinate system.
+
+The effective physical spacing at level `k` is `H[i,j] · (ζ_aa[kp1] - ζ_aa[km1])`,
+where `ζ_aa` are the sigma midpoint positions given by `transform` and `H` is the local
+ice thickness. Boundary behaviour along the vertical is controlled by `idx`
+(default: `FlatIndexing`, one-sided differences). GPU-compatible.
+"""
+function ∂x₃!(du, u, H::AbstractMatrix, transform::AbstractSigmaTransform,
+               idx::AbstractIndexing = FlatIndexing(1, size(u, 3)))
+    T    = eltype(u)
+    ζ_aa = similar(u, size(u, 3))
+    copyto!(ζ_aa, get_ζ_aa(T, transform))
+    backend = get_backend(u)
+    kernel! = _∂x₃_sigma!(backend)
+    kernel!(du, u, ζ_aa, H, idx; ndrange = size(u))
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Partial derivative of `u` along the first dimension. See [`∂x₁!`](@ref).
+"""
+∂x₁(u, dx, idx::AbstractIndexing = FlatIndexing(1, size(u, 1))) =
+    (du = similar(u); ∂x₁!(du, u, dx, idx); du)
+
+"""
+$(TYPEDSIGNATURES)
+
+Partial derivative of `u` along the second dimension. See [`∂x₂!`](@ref).
+"""
+∂x₂(u, dy, idx::AbstractIndexing = FlatIndexing(1, size(u, 2))) =
+    (du = similar(u); ∂x₂!(du, u, dy, idx); du)
+
+"""
+$(TYPEDSIGNATURES)
+
+Partial derivative of `u` along the third dimension. See [`∂x₃!`](@ref).
+"""
+∂x₃(u, dz, idx::AbstractIndexing = FlatIndexing(1, size(u, 3))) =
+    (du = similar(u); ∂x₃!(du, u, dz, idx); du)
+
+"""
+$(TYPEDSIGNATURES)
+
+Vertical derivative of `u` in sigma coordinates. See [`∂x₃!`](@ref).
+"""
+∂x₃(u, H::AbstractMatrix, transform::AbstractSigmaTransform,
+    idx::AbstractIndexing = FlatIndexing(1, size(u, 3))) =
+    (du = similar(u); ∂x₃!(du, u, H, transform, idx); du)
+
+"""
+$(TYPEDSIGNATURES)
+
+In-place computation of both planar partial derivatives of `u`. On GPU backends a single
+fused kernel reads `u` only once, saving memory bandwidth. On CPU the two optimised
+column kernels ([`∂x₁!`](@ref), [`∂x₂!`](@ref)) are called sequentially; they already
+achieve good SIMD efficiency individually and the working set fits in cache. Boundary
+behaviour is controlled by `idx₁` and `idx₂` independently (default: `FlatIndexing`).
+GPU-compatible.
+"""
+function ∂x₁₂!(du₁, du₂, u, dx, dy,
+    idx₁::AbstractIndexing = FlatIndexing(1, size(u, 1)),
+    idx₂::AbstractIndexing = FlatIndexing(1, size(u, 2)))
+    backend = get_backend(u)
+    if backend isa KernelAbstractions.CPU
+        ∂x₁!(du₁, u, dx, idx₁)
+        ∂x₂!(du₂, u, dy, idx₂)
+    else
+        kernel! = _∂x₁₂!(backend)
+        kernel!(du₁, du₂, u, dx, dy, idx₁, idx₂; ndrange = size(u))
+        KernelAbstractions.synchronize(backend)
+    end
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Fused computation of both planar partial derivatives of `u`. See [`∂x₁₂!`](@ref).
+"""
+function ∂x₁₂(u, dx, dy,
+    idx₁::AbstractIndexing = FlatIndexing(1, size(u, 1)),
+    idx₂::AbstractIndexing = FlatIndexing(1, size(u, 2)))
+    du₁ = similar(u)
+    du₂ = similar(u)
+    ∂x₁₂!(du₁, du₂, u, dx, dy, idx₁, idx₂)
+    return du₁, du₂
+end
+
+@kernel function _∂x₁!(du, u, dx, idx)
+    i, j = @index(Global, NTuple)
+    im1, ip1, h = stencil_fd(i, idx)
+    @inbounds du[i, j] = (u[ip1, j] - u[im1, j]) / (h * dx)
+end
+
+# CPU-optimised variant: dispatches one thread per column (j), then loops over i
+# internally.  The stencil_fd call is loop-invariant for the boundary elements,
+# and the interior uses a scalar reciprocal so LLVM emits SIMD multiplications
+# rather than per-lane vector divisions.
+@kernel function _∂x₁_col!(du, u, dx, idx)
+    j  = @index(Global)
+    i1 = idx.i1
+    i2 = idx.i2
+    # Lower boundary (one-sided or reflected depending on idx)
+    im1, ip1, h = stencil_fd(i1, idx)
+    @inbounds du[i1, j] = (u[ip1, j] - u[im1, j]) / (h * dx)
+    # Interior: h = 2 always → hoist reciprocal, enable SIMD multiply
+    inv_2dx = inv(2 * dx)
+    @inbounds for i in (i1 + 1):(i2 - 1)
+        du[i, j] = (u[i + 1, j] - u[i - 1, j]) * inv_2dx
+    end
+    # Upper boundary (skip when domain has only one point)
+    if i2 > i1
+        im1, ip1, h = stencil_fd(i2, idx)
+        @inbounds du[i2, j] = (u[ip1, j] - u[im1, j]) / (h * dx)
     end
 end
 
-"""
-    delx1!(du, u, dx, nx)
-
-Update `du` (in place), the derivative of `u` with respect to `x` using a central
-difference scheme.
-"""
-# function delx1!(du, u, dx, nx::Int)
-#     @inbounds for j in axes(du, 2)
-#         for i in axes(du, 1)[2:nx-1]
-#             du[i, j] = (u[i+1, j] - u[i-1, j]) / (dx * 2)
-#         end
-#         du[1, j] = (u[2, j] - u[1, j]) / dx
-#         du[nx, j] = (u[nx, j] - u[nx-1, j]) / dx
-#     end
-# end
-
-"""
-    delx2(u, dy)
-    delx2(u, dy, ny)
-
-Compute the derivative of `u` with respect to `y` using a central difference scheme.
-"""
-function delx2(u, dy)
-    ny = size(u, 2)
-    return delx2(u, dy, ny)
+@kernel function _∂x₂!(du, u, dy, idx)
+    i, j = @index(Global, NTuple)
+    jm1, jp1, h = stencil_fd(j, idx)
+    @inbounds du[i, j] = (u[i, jp1] - u[i, jm1]) / (h * dy)
 end
 
-function delx2(u, dy, mask)
-    du = similar(u)
-    delx2!(du, u, dy, mask)
-    return du
-end
-
-function delx2!(du, u, dy, mask)
-    @inbounds for I in CartesianIndices(mask)[mask]
-        i, j = Tuple(I)
-        if mask[i, j+1] && mask[i, j-1]
-            du[i, j] = (u[i, j+1] - u[i, j-1]) / (dy * 2)
-        elseif mask[i, j+1]
-            du[i, j] = (u[i, j+1] - u[i, j]) / dy
-        elseif mask[i, j-1]
-            du[i, j] = (u[i, j] - u[i, j-1]) / dy
-        else
-            du[i, j] = 0.0
-        end
+# CPU-optimised variant: dispatches one thread per column (j) and loops over i
+# internally.  stencil_fd(j, idx) is computed once per dispatch (h is uniform
+# across all i for a given j), so the entire inner loop uses a scalar reciprocal
+# and LLVM emits SIMD multiplications rather than per-lane vector divisions.
+# No boundary peeling is needed because h depends only on j (the dispatch index).
+@kernel function _∂x₂_col!(du, u, dy, idx)
+    j = @index(Global)
+    jm1, jp1, h = stencil_fd(j, idx)
+    inv_h_dy = inv(h * dy)
+    @inbounds for i in axes(u, 1)
+        du[i, j] = (u[i, jp1] - u[i, jm1]) * inv_h_dy
     end
 end
 
-"""
-    delx2!(du, u, dy, ny)
+@kernel function _∂x₃!(du, u, dz, idx)
+    i, j, k = @index(Global, NTuple)
+    km1, kp1, h = stencil_fd(k, idx)
+    @inbounds du[i, j, k] = (u[i, j, kp1] - u[i, j, km1]) / (h * dz)
+end
 
-Update `du` (in place), the derivative of `u` with respect to `y` using a central
-difference scheme.
-"""
-# function delx2!(du, u, dy, ny::Int)
-#     @inbounds for i in axes(du, 1)
-#         for j in axes(du, 2)[2:ny-1]
-#             du[i, j] = (u[i, j+1] - u[i, j-1]) / (dy * 2)
-#         end
-#         du[i, 1] = (u[i, 2] - u[i, 1]) / dy
-#         du[i, ny] = (u[i, ny] - u[i, ny-1]) / dy
-#     end
-# end
+# Sigma-coordinate variant: non-uniform ζ spacing, physical dz = H[i,j] * (ζ_aa[kp1]-ζ_aa[km1]).
+@kernel function _∂x₃_sigma!(du, u, ζ_aa, H, idx)
+    i, j, k = @index(Global, NTuple)
+    km1, kp1, _ = stencil_fd(k, idx)
+    @inbounds du[i, j, k] = (u[i, j, kp1] - u[i, j, km1]) / ((ζ_aa[kp1] - ζ_aa[km1]) * H[i, j])
+end
 
-"""
-Derivatives accounting for the vertical coordinate transformation.
-"""
-# TODO: the four code lines below are only improved pseudo-code. Needs
-# to be well implemented!
-# Commented out to avoid CI test failure (function signatures below conflict with those above)
-#delx1(u, delzt_delx1) = delx1t(u) + delzt_delx1 * delzt(u)
-#delx2(u, delzt_delx2) = delx2t(u) + delzt_delx2 * delzt(u)
-#delz(u, delzt_delz) = delzt_delz * delzt(u)
-#delt(u, delzt_delt) = deltt(u) + delzt_delt * delzt(u)
+@kernel function _∂x₁₂!(du₁, du₂, u, dx, dy, idx₁, idx₂)
+    i, j = @index(Global, NTuple)
+    im1, ip1, h₁ = stencil_fd(i, idx₁)
+    jm1, jp1, h₂ = stencil_fd(j, idx₂)
+    @inbounds begin
+        du₁[i, j] = (u[ip1, j] - u[im1, j]) / (h₁ * dx)
+        du₂[i, j] = (u[i, jp1] - u[i, jm1]) / (h₂ * dy)
+    end
+end
+
+
+#=
+Derivatives in a sigma-coordinate system (pseudo-code, not yet implemented):
+    ∂x₁(u, ∂ζ_∂x₁) = ∂x₁(u)|_σ + ∂ζ_∂x₁ * ∂ζ(u)
+    ∂x₂(u, ∂ζ_∂x₂) = ∂x₂(u)|_σ + ∂ζ_∂x₂ * ∂ζ(u)
+    ∂x₃(u, ∂ζ_∂x₃) = ∂ζ_∂x₃ * ∂ζ(u)
+    ∂t(u,  ∂ζ_∂t)  = ∂t(u)|_σ  + ∂ζ_∂t  * ∂ζ(u)
+=#
