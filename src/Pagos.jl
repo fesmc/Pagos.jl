@@ -25,13 +25,14 @@ export Domain, State, Params, Options, IceSheet
 ###########################################################
 
 include("utils/indices.jl")
+export AbstractIndexing, StrictIndexing, FlatIndexing
+export ReflectiveIndexing, PeriodicIndexing
+export index, stencil_fd, stencil
+
 include("utils/math.jl")
 include("utils/debug.jl")
 include("utils/mask.jl")
 export ActiveCellsMap, active_indices!, apply!
-
-include("helpers/indices.jl")
-# include("helpers/staggering.jl")
 
 ###########################################################
 # Topography
@@ -39,30 +40,32 @@ include("helpers/indices.jl")
 
 include("topography/sigmatransform.jl")
 export AbstractSigmaTransform, PowerSigmaTransform
-export ArctanSigmaTransform, LinearSigmaTransform
-export QuadraticSigmaTransform
+export LinearSigmaTransform, QuadraticSigmaTransform
 export VerticalLayering, CorrectedVerticalLayering
 export ζ_aa, ζ_ac, sigma
+export get_ζ_aa, get_ζ_ac
 
 include("topography/calving.jl")
 export AbstractCalving, AbstractGroundedCalving, AbstractFloatingCalving
-export ConstantCalving, RelaxedCalving, ThicknessCalving
+export PrescribedCalving, RelaxedCalving, ThicknessCalving
 export LipscombCalving, LevermannCalving, CrawfordCalving, BassisCalving
 export EigenCalving, FlotationCalving, PollardDeContoCalving
 export calving_rate, calving_rate!
+
+include("topography/advection.jl")
 
 ###########################################################
 # Dynamics
 ###########################################################
 
 include("dynamics/effective_pressure.jl")
-export AbstractEffectivePressure, ConstantEffectivePressure
+export AbstractEffectivePressure, PrescribedEffectivePressure
 export OverburdenEffectivePressure
 export LeguyEffectivePressure, TillEffectivePressure
 export effective_pressure, effective_pressure!
 
 include("dynamics/basal_friction.jl")
-export AbstractBasalBeta, ConstantBasalBeta
+export AbstractBasalBeta, PrescribedBasalBeta
 export PseudoPlasticPowerBasalBeta, CoulombBasalBeta
 export basal_shear_stress, basal_shear_stress!
 
@@ -79,34 +82,38 @@ export inertial_velocity!
 
 include("dynamics/friction/plastic.jl")
 include("dynamics/friction/stagger.jl")
-include("dynamics/advection.jl")
 
 ###########################################################
 # Material
 ###########################################################
 
+include("material/anisotropy.jl")
+export AbstractAnisotropy, EnhancementAnisotropy, CAFFEAnisotropy
+export anisotropy!, enhancement_factor
+export deformability, square_tangential_invariant
+
 include("material/rate_factor.jl")
-export AbstractRateFactor, ConstantRateFactor, ArrheniusRateFactor
+export AbstractRateFactor, PrescribedRateFactor, ArrheniusRateFactor
 export SmithMorlandRateFactor, HookeRateFactor, LliboutryDuvalRateFactor
 export FanLowStrainGSIRateFactor, FanLowStrainGSS1RateFactor, FanLowStrainGSS2RateFactor
 export FanHighStrainGSIRateFactor
 export rate_factor, rate_factor!
 
 include("material/creep.jl")
-export AbstractCreep, GlenNyeCreep, RegularizedGlenNyeCreep
-export SmithMorlandCreep, PettitWaddingtonCreep, GoldsbyKohlstedtCreep
+export AbstractCreep, GlenNyeCreep, SmithMorlandCreep
+export PettitWaddingtonCreep, GoldsbyKohlstedtCreep
 export FanLowStrainCreep
 export creep, creep!
 
 include("material/flow_law.jl")
-export AbstractFlowLaw, ConstantViscosityFlowLaw, RateCreepFlowLaw
-export GlenNyeFlowLaw, RegularizedGlenNyeFlowLaw, SmithMorlandFlowLaw
+export AbstractFlowLaw, PrescribedViscosityFlowLaw, RateCreepFlowLaw
+export GlenNyeFlowLaw, SmithMorlandFlowLaw
 export FanLowStrainFlowLaw, FanHighStrainFlowLaw
 export viscosity, viscosity!
 
 include("material/pressure_melting_point.jl")
 export AbstractPressureMeltingPoint, LinearPressureMeltingPoint
-export ConstantPressureMeltingPoint, LinearSalinityPressureMeltingPoint
+export PrescribedPressureMeltingPoint, LinearSalinityPressureMeltingPoint
 export pressure_melting_point, pressure_melting_point!
 export relative_temperature, relative_temperature!
 export thermal_forcing, thermal_forcing!
@@ -123,7 +130,8 @@ include("numerics/picard.jl")
 # include("numerics/pseudotransient.jl")
 # export stagger_beta!
 # export pseudo_dotvel!, pseudo_vel!, pseudo_transient!
-export delx1, delx2, delx1!, delx2!
+export ∂x₁, ∂x₂, ∂x₃, ∂x₁!, ∂x₂!, ∂x₃!
+export ∂x₁₂, ∂x₁₂!
 
 ###########################################################
 # Extensions
