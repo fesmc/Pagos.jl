@@ -33,8 +33,10 @@ NeuralDynamicsSolver3D
 
 ```@docs
 AbstractEffectivePressure
-ConstantEffectivePressure
+PrescribedEffectivePressure
 OverburdenEffectivePressure
+LeguyEffectivePressure
+TillEffectivePressure
 effective_pressure
 effective_pressure!
 ```
@@ -43,10 +45,9 @@ effective_pressure!
 
 ```@docs
 AbstractBasalBeta
-ConstantBasalBeta
-LinearBasalBeta
+PrescribedBasalBeta
 PseudoPlasticPowerBasalBeta
-RegularizedCoulombBasalBeta
+CoulombBasalBeta
 basal_shear_stress
 basal_shear_stress!
 ```
@@ -58,18 +59,29 @@ basal_shear_stress!
 ```@docs
 AbstractSigmaTransform
 PowerSigmaTransform
-ArctanSigmaTransform
 LinearSigmaTransform
 QuadraticSigmaTransform
-sigma_transform
+VerticalLayering
+CorrectedVerticalLayering
+sigma
+get_ζ_aa
+get_ζ_ac
 ```
 
 ### Calving
 
 ```@docs
 AbstractCalving
+PrescribedCalving
+RelaxedCalving
+ThicknessCalving
+FlotationCalving
 LipscombCalving
 LevermannCalving
+CrawfordCalving
+BassisCalving
+EigenCalving
+PollardDeContoCalving
 calving_rate
 calving_rate!
 ```
@@ -80,20 +92,30 @@ calving_rate!
 
 ```@docs
 AbstractPressureMeltingPoint
+PrescribedPressureMeltingPoint
 LinearPressureMeltingPoint
+LinearSalinityPressureMeltingPoint
 pressure_melting_point
 pressure_melting_point!
 relative_temperature
 relative_temperature!
+thermal_forcing
+thermal_forcing!
 ```
 
 ### Rate factor
 
 ```@docs
 AbstractRateFactor
-ConstantRateFactor
+PrescribedRateFactor
 ArrheniusRateFactor
 SmithMorlandRateFactor
+HookeRateFactor
+LliboutryDuvalRateFactor
+FanLowStrainGSIRateFactor
+FanLowStrainGSS1RateFactor
+FanLowStrainGSS2RateFactor
+FanHighStrainGSIRateFactor
 rate_factor
 rate_factor!
 ```
@@ -103,8 +125,10 @@ rate_factor!
 ```@docs
 AbstractCreep
 GlenNyeCreep
-RegularizedGlenNyeCreep
 SmithMorlandCreep
+PettitWaddingtonCreep
+GoldsbyKohlstedtCreep
+FanLowStrainCreep
 creep
 creep!
 ```
@@ -113,17 +137,31 @@ creep!
 
 ```@docs
 AbstractFlowLaw
-ConstantViscosityFlowLaw
+PrescribedViscosityFlowLaw
 RateCreepFlowLaw
 GlenNyeFlowLaw
-RegularizedGlenNyeFlowLaw
 SmithMorlandFlowLaw
+FanLowStrainFlowLaw
+FanHighStrainFlowLaw
+viscosity
+viscosity!
+```
+
+### Anisotropy
+
+```@docs
+AbstractAnisotropy
+EnhancementAnisotropy
+CAFFEAnisotropy
+anisotropy!
+enhancement_factor
+deformability
+square_tangential_invariant
 ```
 
 ## Thermodynamics
 
 ## Boundary conditions
-
 
 ## Plots
 
@@ -132,4 +170,41 @@ plot_rate_factor
 plot_melting_point
 plot_ice_viscosity
 plot_basal_shear_stress
+```
+
+## Numerics
+
+### Derivatives
+
+```@docs
+∂x₁!
+∂x₂!
+∂x₃!
+∂x₁₂!
+∂x₁
+∂x₂
+∂x₃
+∂x₁₂
+```
+
+## Utilities
+
+### Indexing
+
+```@docs
+AbstractIndexing
+StrictIndexing
+FlatIndexing
+ReflectiveIndexing
+PeriodicIndexing
+index
+stencil_fd
+stencil
+```
+
+### Active cells map
+
+```@docs
+ActiveCellsMap
+apply!
 ```
