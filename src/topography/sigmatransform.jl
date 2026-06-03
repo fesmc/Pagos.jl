@@ -3,9 +3,9 @@ $(TYPEDSIGNATURES)
 
 Abstract type for terrain-following vertical coordinate transforms.
 
-The sigma (``\\sigma``) coordinate maps the ice column onto the unit interval
+The ``\\sigma``-coordinate maps the ice column onto the unit interval
 ``[0, 1]``, with ``\\sigma = 0`` at the bed and ``\\sigma = 1`` at the surface.
-For a column of thickness ``H`` above a bed at elevation ``z_{\\mathrm{b}}``,
+For a column of thickness ``H`` resting on a bed at elevation ``z_{\\mathrm{b}}``,
 the physical elevation ``z`` corresponding to a given ``\\sigma`` level is:
 
 ```math
@@ -18,16 +18,13 @@ allowing resolution to be concentrated near the bed or the surface.
 
 # Available subtypes
  - [`PowerSigmaTransform`](@ref)
- - [`ArctanSigmaTransform`](@ref)
 """
 abstract type AbstractSigmaTransform end
 
 """
 $(TYPEDSIGNATURES)
 
-Sigma-level distribution based on a power law.
-
-Layer midpoints follow:
+Sigma-level distribution based on a power law. Layer midpoints follow:
 
 ```math
 \\zeta_i = \\left(\\frac{i - 1}{n - 1}\\right)^{p}, \\quad i = 1, \\ldots, n
@@ -42,8 +39,8 @@ where ``p`` is the `exponent`. Values ``p > 1`` concentrate layers near the bed
  - `exponent::T`: power-law exponent ``p``.
 
 # Convenience constructors
- - `LinearSigmaTransform(T, n)` — uniform spacing (``p = 1``).
- - `QuadraticSigmaTransform(T, n)` — quadratic clustering near the bed (``p = 2``).
+ - [`LinearSigmaTransform`](@ref)
+ - [`QuadraticSigmaTransform`](@ref)
 """
 struct PowerSigmaTransform{T} <: AbstractSigmaTransform
     n::Int
@@ -67,27 +64,19 @@ QuadraticSigmaTransform(T, n) = PowerSigmaTransform{T}(n, 2)
 """
 $(TYPEDSIGNATURES)
 
-Sigma-level distribution based on an arctangent stretching.
-
-Layers are clustered near the bed by mapping the unit interval through an
-arctangent function scaled by `stretch_factor`. Larger values of
-`stretch_factor` increase the concentration of layers near ``\\sigma = 0``.
-
-# Fields
- - `n::Int`: number of vertical layers.
- - `stretch_factor::T`: controls the degree of near-bed clustering.
+Compute the sigma midpoint positions ``\\zeta_{\\mathrm{aa}}`` for a given `PowerSigmaTransform`.
 """
-struct ArctanSigmaTransform{T} <: AbstractSigmaTransform
-    n::Int
-    stretch_factor::T
-end
-
 function get_ζ_aa(T, transform::PowerSigmaTransform)
     (; n, exponent) = transform
     ζ_aa = range(0.0, stop = 1.0, length = n) .^ exponent
     return T.(ζ_aa)
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+Compute the sigma interface positions ``\\zeta_{\\mathrm{ac}}`` from the midpoint positions ``\\zeta_{\\mathrm{aa}}`` by arithmetic averaging. The first and last interfaces are fixed at 0 and 1, respectively.
+"""
 function get_ζ_ac(ζ_aa)
     n = length(ζ_aa)
     ζ_ac = zeros(eltype(ζ_aa), n + 1)
