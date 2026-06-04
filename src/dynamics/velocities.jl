@@ -1,20 +1,20 @@
 """
 $(TYPEDSIGNATURES)
+
+An abstract type to multiple dispatch the dynamics type via [`velocity`](@ref).
+
+# Available subtypes:
 """
 abstract type AbstractDynamics end
 
-struct SIADynamicsXY <: AbstractDynamics end
-struct SIADynamicsXZ <: AbstractDynamics end
-struct SSADynamicsXY <: AbstractDynamics end
-struct SSADynamicsXZ <: AbstractDynamics end
-struct HybridDynamicsXY <: AbstractDynamics end
-struct HybridDynamicsXZ <: AbstractDynamics end
-struct DIVADynamicsXY <: AbstractDynamics end
-struct DIVADynamicsXZ <: AbstractDynamics end
-struct BlatterPattynDynamicsXYZ <: AbstractDynamics end
-struct BlatterPattynDynamicsXZ <: AbstractDynamics end
-struct StokesDynamicsXYZ <: AbstractDynamics end
-struct StokesDynamicsXZ <: AbstractDynamics end
+struct SIADynamics <: AbstractDynamics end
+struct SSADynamics <: AbstractDynamics end
+struct SIASSADynamics <: AbstractDynamics end
+struct InertialSIASSADynamics <: AbstractDynamics end
+struct DIVADynamics <: AbstractDynamics end
+struct InertialDIVADynamics <: AbstractDynamics end
+struct BlatterPattynDynamics <: AbstractDynamics end
+struct StokesDynamics <: AbstractDynamics end
 
 # Functions to calculate velocity 
 function calc_F_integral(visc_eff,H_ice,f_ice,zeta_aa,n)
@@ -65,325 +65,172 @@ function ResolutionParameters(n, nx, ny, dx, dy; T=Float32)
     )
 end
 
-abstract type AbstractDynamicsSolver end
-
-struct InertialSolver <: AbstractDynamicsSolver
+function fill_pattern!(Ai, Aj, nx, ny, i_idx, j_idx)
+    k = 0
+    for i in 1:nx, j in 1:ny
+        im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
+        nr = _ij2n_ux(i, j, nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(ip1, j,   nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   j,   nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(im1, j,   nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   jp1, nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   jm1, nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=ij2n_uy(i,   j,   nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=ij2n_uy(ip1, j,   nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=ij2n_uy(ip1, jm1, nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=ij2n_uy(i,   jm1, nx, ny)
+    end
+    for i in 1:nx, j in 1:ny
+        im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
+        nr = ij2n_uy(i, j, nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=ij2n_uy(i,   jp1, nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=ij2n_uy(i,   j,   nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=ij2n_uy(i,   jm1, nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=ij2n_uy(ip1, j,   nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=ij2n_uy(im1, j,   nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   jp1, nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   j,   nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(im1, jp1, nx, ny)
+        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(im1, j,   nx, ny)
+    end
+    return nothing
 end
 
-struct PseudoTransientSolver <: AbstractDynamicsSolver
+function coo_to_nzval_idx(Ai, Aj, A::SparseMatrixCSC)
+    perm = Vector{Int}(undef, length(Ai))
+    for k in eachindex(Ai)
+        c  = Aj[k]
+        r  = Ai[k]
+        lo = A.colptr[c]
+        hi = A.colptr[c+1] - 1
+        perm[k] = searchsortedfirst(A.rowval, r, lo, hi, Base.Order.Forward)
+    end
+    return perm
 end
 
-struct LinearSolver2D{
-    RP,     # <: ResolutionParameters
-    T,      # <: AbstractFloat
-    AI1,    # <: AbstractIndexing
-    AI2,    # <: AbstractIndexing
-} <: AbstractDynamicsSolver
-    resolution_params::RP
-    n_terms::Int
-    n_u::Int
-    n_sprs::Int
-    u::Vector{T}
-    u0::Vector{T}
-    b::Vector{T}
-    Ai::Vector{Int}
-    Aj::Vector{Int}
-    Av::Vector{T}
-    i_idx::AI1
-    j_idx::AI2
-end
-
-function LinearSolver2D(rp::ResolutionParameters; T=Float32)
-
+function LinearDynamicsSolver2D(rp::ResolutionParameters, dynamics::DYN, backend = CPU(); T = Float32) where {DYN <: AbstractDynamics}
     (; n, nx, ny) = rp
-    n_terms = 3^n
-    n_u     = 2*nx*ny
-    n_sprs  = n_u*n_terms
+    n_sprs = 2 * nx * ny * 3^n
+    n_u    = 2 * nx * ny
 
-    u = zeros(T, n_u)
-    u0 = zeros(T, n_u)
-    b = zeros(T, n_u)
-    Ai = zeros(Int, n_sprs)
-    Aj = zeros(Int, n_sprs)
-    Av = zeros(T, n_sprs)
     i_idx = PeriodicIndexing(1, nx)
     j_idx = PeriodicIndexing(1, ny)
 
-    return LinearSolver2D(
-        rp, n_terms, n_u, n_sprs,
-        u, u0, b, Ai, Aj, Av,
-        i_idx, j_idx,
-    )
+    # Pattern and permutation are always computed on CPU (one-time cost).
+    Ai_cpu   = zeros(Int, n_sprs)
+    Aj_cpu   = zeros(Int, n_sprs)
+    fill_pattern!(Ai_cpu, Aj_cpu, nx, ny, i_idx, j_idx)
+    A_cpu    = sparse(Ai_cpu, Aj_cpu, ones(T, n_sprs), n_u, n_u)
+    perm_cpu = coo_to_nzval_idx(Ai_cpu, Aj_cpu, A_cpu)
+
+    # Allocate live arrays on the target backend.
+    # For GPU (e.g. CUDABackend()), KernelAbstractions.zeros returns CuVector and
+    # the sparse matrix should be adapted via CUDA.CUSPARSE.CuSparseMatrixCSC(A_cpu).
+    u    = KernelAbstractions.zeros(backend, T,   n_u)
+    u0   = KernelAbstractions.zeros(backend, T,   n_u)
+    b    = KernelAbstractions.zeros(backend, T,   n_u)
+    perm = KernelAbstractions.zeros(backend, Int, n_sprs)
+    perm .= perm_cpu   # works for both CPU (no-op copy) and GPU (H→D transfer)
+
+    # A stays as SparseMatrixCSC for the CPU default; for GPU, adapt before passing
+    # to the inner constructor, e.g.:
+    #   A = CUDA.CUSPARSE.CuSparseMatrixCSC(A_cpu)
+    return LinearDynamicsSolver2D(dynamics, rp, u, u0, b, A_cpu, perm, i_idx, j_idx, Ref{Any}(nothing))
 end
 
-rp = ResolutionParameters(2, 50, 50, 1.0, 1.0)
-lsd = LinearSolver2D(rp, T = Float64)
-(; n, nx, ny, dx, dy) = rp
+@kernel function _assemble_ux!(nzval, perm, u0, b, nx, ny,
+                               N, N_ab, ux, taud_acx, β_acx, β_acy,
+                               dxdx_, dydy_, dxdy_, i_idx, j_idx, dynamics)
+    i, j = @index(Global, NTuple)
+    im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
+    nr = _ij2n_ux(i, j, nx, ny)
+    @inbounds u0[nr] = ux[i, j]
+    @inbounds b[nr]  = taud_acx[i, j]
+    v = loop1_coeffs(im1, i, ip1, jm1, j, jp1, dxdx_, dydy_, dxdy_,
+                     N, N_ab, β_acx, β_acy, dynamics)
+    k0 = 9 * ((i - 1) * ny + (j - 1))
+    @inbounds for s in 1:9
+        nzval[perm[k0 + s]] = v[s]
+    end
+end
 
-function populate_vectors!(lsd, dyn_now, dynamics)
+@kernel function _assemble_uy!(nzval, perm, u0, b, nx, ny,
+                               N, N_ab, uy, taud_acy, β_acx, β_acy,
+                               dxdx_, dydy_, dxdy_, i_idx, j_idx, dynamics)
+    i, j = @index(Global, NTuple)
+    im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
+    nr = ij2n_uy(i, j, nx, ny)
+    @inbounds u0[nr] = uy[i, j]
+    @inbounds b[nr]  = taud_acy[i, j]
+    v = loop2_coeffs(im1, i, ip1, jm1, j, jp1, dxdx_, dydy_, dxdy_,
+                     N, N_ab, β_acx, β_acy, dynamics)
+    k0 = 9 * nx * ny + 9 * ((i - 1) * ny + (j - 1))
+    @inbounds for s in 1:9
+        nzval[perm[k0 + s]] = v[s]
+    end
+end
+
+function populate_vectors!(lsd::LinearDynamicsSolver2D, dyn_now)
     (; N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy) = dyn_now
-
-    populate_vectors!(lsd, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy, dynamics)
+    populate_vectors!(lsd, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy)
     return nothing
 end
 
 function populate_vectors!(
-    lsd::LinearSolver2D,
-    N,
-    N_ab,
-    ux,
-    uy,
-    taud_acx,
-    taud_acy,
-    β_acx,
-    β_acy,
-    dynamics,
-)
-    (; Ai, Aj, Av, u0, b, i_idx, j_idx, resolution_params) = lsd
-    (; nx, ny, dxdx_, dydy_, dxdy_) = resolution_params
-
-    populate_vectors!(
-        Ai, Aj, Av, u0, b,
-        nx, ny,
-        N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy,
-        dxdx_, dydy_, dxdy_,
-        i_idx, j_idx,
-        dynamics,
-    )
-    return nothing
-end
-
-# TODO: RHS of Av should multiple dispatch on SSA and SIA too!
-
-function populate_vectors!(
-    Ai, Aj, Av, u0, b,
-    nx, ny,
+    lsd::LinearDynamicsSolver2D,
     N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy,
-    dxdx_, dydy_, dxdy_,
-    i_idx, j_idx,
-    dynamics,
 )
+    (; A, perm, u0, b, i_idx, j_idx, resolution_params, dynamics) = lsd
+    (; nx, ny, dxdx_, dydy_, dxdy_) = resolution_params
+    backend  = get_backend(lsd.u)
+    kern_ux  = _assemble_ux!(backend)
+    kern_uy  = _assemble_uy!(backend)
 
-    k = 0
-    v = zeros(eltype(Av), 9)
-    @inbounds for i in 1:nx, j in 1:ny
-
-        im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
-
-        # Set the row in matrix A that the equation is being defined for:
-        nr = ij2n_ux(i, j, nx, ny)  
-        u0[nr] = ux[i, j]
-        b[nr] = taud_acx[i, j]
-        loop1!(v, im1, i, ip1, jm1, j, jp1, dxdx_, dydy_, dxdy_, N, N_ab, β_acx, β_acy, dynamics::DIVA)
-
-        # -- vx terms --
-        # vx(i+1, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_ux(ip1, j,nx,ny)
-        Av[k] = v[1]
-        
-
-        # vx(i, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_ux(i, j,nx,ny)
-        Av[k] = v[2]
-
-        # vx(i-1, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_ux(im1, j,nx,ny)
-        Av[k] = v[3]
-
-        # vx(i, j+1)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_ux(i, jp1,nx,ny)
-        Av[k] = v[4]
-
-        # vx(i, j-1)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_ux(i, jm1,nx,ny)
-        Av[k] = v[5]
-
-        # -- vy terms -- 
-        # vy(i, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_uy(i, j,nx,ny)
-        Av[k] = v[6]
-
-        # vy(i+1, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_uy(ip1, j,nx,ny)
-        Av[k] = v[7]
-
-        # vy(i+1, j-1)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_uy(ip1, jm1,nx,ny)
-        Av[k] = v[8]
-        
-        # vy(i, j-1)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_uy(i, jm1,nx,ny)
-        Av[k] = v[9]
-        
-    end
-
-    for i in 1:nx, j in 1:ny
-        im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
-
-        # Set the row in matrix A that the equation is being defined for:
-        nr = ij2n_uy(i, j, nx, ny)
-        u0[nr] = uy[i, j]
-        b[nr] = taud_acy[i, j]
-        loop2!(v, im1, i, ip1, jm1, j, jp1, dxdx_, dydy_, dxdy_, N, N_ab, β_acx, β_acy, dynamics::DIVA)
-
-        # -- uy terms -- 
-        # uy(i, j+1)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_uy(i, jp1,nx,ny)
-        Av[k] = v[1]
-
-        # uy(i, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_uy(i, j,nx,ny)
-        Av[k] = v[2]
-
-        # uy(i, j-1)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_uy(i, jm1,nx,ny)
-        Av[k] = v[3]
-
-        # uy(i+1, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_uy(ip1, j,nx,ny)
-        Av[k] = v[4]
-
-        # uy(i-1, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_uy(im1, j,nx,ny)
-        Av[k] = v[5]
-
-        # -- ux terms -- 
-        # ux(i, j+1)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_ux(i, jp1,nx,ny)
-        Av[k] = v[6]
-
-        # ux(i, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_ux(i, j,nx,ny)
-        Av[k] = v[7]
-
-        # ux(i-1, j+1)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_ux(im1, jp1,nx,ny)
-        Av[k] = v[8]
-        
-        # ux(i-1, j)
-        k = k+1
-        Ai[k] = nr
-        Aj[k] = ij2n_ux(im1, j,nx,ny)
-        Av[k] = v[9]
-    end
+    nzval = nonzeros(A)
+    kern_ux(
+        nzval, perm, u0, b, nx, ny,
+        N, N_ab, ux, taud_acx, β_acx, β_acy,
+        dxdx_, dydy_, dxdy_, i_idx, j_idx, dynamics;
+        ndrange = (nx, ny),
+    )
+    kern_uy(
+        nzval, perm, u0, b, nx, ny,
+        N, N_ab, uy, taud_acy, β_acx, β_acy,
+        dxdx_, dydy_, dxdy_, i_idx, j_idx, dynamics;
+        ndrange = (nx, ny),
+    )
+    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
-
-function loop1!(v, im1, i, ip1, jm1, j, jp1, dxdx_, dydy_, dxdy_, N, N_ab, β_acx, β_acy, dynamics::DIVA)
-    v[1] = 4 * dxdx_ * N[ip1, j]
-    v[2] = -4 * dxdx_ * (N[ip1, j]+N[i, j]) - dydy_ * (N_ab[i, j] + N_ab[i, jm1]) - β_acx[i, j]
-    v[3] = 4 * dxdx_ * N[i, j]
-    v[4] = dydy_ * N_ab[i, j]
-    v[5] = dydy_ * N_ab[i, jm1]
-    v[6] = -2 * dxdy_ * N[i, j] - dxdy_ * N_ab[i, j]
-    v[7] = -2 * dxdy_ * N[ip1, j] + dxdy_ * N_ab[i, j]
-    v[8] = -2 * dxdy_ * N[ip1, j] - dxdy_ * N_ab[i, jm1]
-    v[9] = 2 * dxdy_ * N[i, j] + dxdy_ * N_ab[i, jm1]
-    return nothing
+function LinearSolve.LinearProblem(lsd::LinearDynamicsSolver2D)
+    return LinearProblem(lsd.A, lsd.b; u0 = lsd.u)
 end
 
-function loop2!(v, im1, i, ip1, jm1, j, jp1, dxdx_, dydy_, dxdy_, N, N_ab, β_acx, β_acy, dynamics::DIVA)
-    v[1] = 4 * dydy_ * N[i, jp1]
-    v[2] = -4 * dydy_ * (N[i, jp1] + N[i, j]) - dxdx_ * (N_ab[i, j] + N_ab[im1, j]) - β_acy[i, j]
-    v[3] = 4 * dydy_ * N[i, j]
-    v[4] = dxdx_ * N_ab[i, j]
-    v[5] = dxdx_ * N_ab[im1, j]
-    v[6] = 2 * dxdy_ * N[i, jp1] + dxdy_ * N_ab[i, j]
-    v[7] = -2 * dxdy_ * N[i, j] - dxdy_ * N_ab[i, j]
-    v[8] = -2 * dxdy_ * N[i, jp1] - dxdy_ * N_ab[im1, j]
-    v[9] = 2 * dxdy_ * N[i, j] + dxdy_ * N_ab[im1, j]
-    return nothing
-end
-
-function velocity!(lsd::LinearSolver2D; use_linsolve = true)
-    if use_linsolve
-        prob = LinearProblem(lsd)
-        sol = solve(prob)
-        lsd.u .= sol.u
+function velocity!(lsd::LinearDynamicsSolver2D)
+    if lsd.solver_cache[] === nothing
+        F = lu(lsd.A)
+        lsd.solver_cache[] = F
+        ldiv!(lsd.u, F, lsd.b)
     else
-        lsd.u .= sparse(lsd.Ai, lsd.Aj, lsd.Av) \ lsd.b
+        _velocity_cached!(lsd.solver_cache[], lsd)
     end
     return nothing
 end
 
-function velocity!(ux, uy, lsd::LinearSolver2D)
+# Function barrier: typed on F so lu! and ldiv! dispatch statically.
+function _velocity_cached!(F, lsd::LinearDynamicsSolver2D)
+    lu!(F, lsd.A)
+    ldiv!(lsd.u, F, lsd.b)
+    return nothing
+end
+
+function velocity!(ux, uy, lsd::LinearDynamicsSolver2D)
     u = lsd.u
     (; nx, ny) = lsd.resolution_params
-    @inbounds for i = 1:nx, j in 1:ny
-        n1 = ij2n_ux(i, j,nx,ny)
-        ux[i, j] = u[n1]
-
-        n2 = ij2n_uy(i, j,nx,ny)
-        uy[i, j] = u[n2]
+    @inbounds for i in 1:nx, j in 1:ny
+        ux[i, j] = u[_ij2n_ux(i, j, nx, ny)]
+        uy[i, j] = u[ij2n_uy(i, j, nx, ny)]
     end
     return nothing
 end
-
-
-N = rand(nx, ny)
-N_ab = rand(nx, ny)
-ux = rand(nx, ny)
-uy = rand(nx, ny)
-taud_acx = rand(nx, ny)
-taud_acy = rand(nx, ny)
-β_acx = rand(nx, ny)
-β_acy = rand(nx, ny)
-dynamics = DIVA()
-populate_vectors!(lsd, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy, dynamics)
-A = sparse(lsd.Ai, lsd.Aj, lsd.Av)
-
-@b populate_vectors!($lsd, $N, $N_ab, $ux, $uy, $taud_acx, $taud_acy, $β_acx, $β_acy)
-@b sparse($lsd.Ai, $lsd.Aj, $lsd.Av)
-
-function LinearSolve.LinearProblem(lsd::LinearSolver2D)
-    return LinearProblem(sparse(lsd.Ai, lsd.Aj, lsd.Av), lsd.b; u0=lsd.u)
-end
-
-@b LinearProblem(lsd)
-
-prob = LinearProblem(lsd)
-sol = solve(prob)
-
-@b solve($prob)
-@b A \ lsd.b
-
-T = Float64
-ux, uy = zeros(T, nx, ny), zeros(T, nx, ny)
-
-@b velocity!(lsd; use_linsolve = true)
-@b velocity!(ux, uy, lsd)
