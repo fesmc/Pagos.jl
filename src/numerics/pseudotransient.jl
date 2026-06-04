@@ -75,13 +75,13 @@ end
 Calculate the pseudo-transient error depending on the dimensionality of the dynamics.
 """
 function pseudo_transient_error!(
-    err::Vector{T},
-    buffer2D::Matrix{T},
-    iter::Int,
+    err,
+    buffer2D,
+    iter,
     state_dynamics::DynamicsState2D{T},
     dynamics::Dynamics2D{T},
-    mask::DynamicBitMask,
-) where {T<:AbstractFloat}
+    mask::B,
+) where {B}
 
     buffer2D .= 0
     @inbounds for I in view(mask)

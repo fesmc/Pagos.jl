@@ -13,8 +13,7 @@ function pseudo_dotvel!(icesheet::IceSheet)
     return nothing
 end
 
-function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
-    options::Options{T}) where {T<:AbstractFloat}
+function pseudo_dotvel!(state::State, domain::Domain, params::Params, options::Options)
     (; ux, uy, ux_b, uy_b) = state
     (; ux_x, ux_y, uy_x, uy_y) = state
     (; H, z_b, mu, N_ab) = state
@@ -147,7 +146,7 @@ end
 
 Perform the pseudo-transient method to update the velocity field.
 """
-function pseudo_transient!(icesheet::IceSheet{T}) where {T<:AbstractFloat}
+function pseudo_transient!(icesheet::IceSheet)
     # Unpack structs
     (; state, domain, params, options) = icesheet
     (; ux, uy, ux_old, uy_old) = state

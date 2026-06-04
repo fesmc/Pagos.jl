@@ -116,8 +116,27 @@ end
 $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via a pseudo-transient solver.
+
+# Fields:
+ - `ndim1`
+ - `ndim2`
+ - `ndim3`
+ - `min_bulk_viscosity_ice`
+ - `muB`
 """
-struct PseudoTransientSolver <: AbstractDynamicsSolver
+@kwdef struct PseudoTransientSolver{T<:AbstractFloat} <: AbstractDynamicsSolver
+    ndim1::T = 2.1
+    ndim2::T = 4.1
+    ndim3::T = 6.1
+    min_bulk_viscosity_ice::T = 0.5
+    muB::T = 1e2
+    theta_v::T = T(0.6)
+    theta_mu::T = T(0.1)
+    abstol::T = T(1e-8)
+    maxiter::Int = 100
+    debug::Bool = false
+    printout_every::Int = 10
+    dtau_scaling::T = T(1)
 end
 
 """

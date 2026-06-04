@@ -4,11 +4,11 @@
 Update the ice thickness field using the advection equation.
 """
 function advect!(icesheet::IceSheet)
-    return advect!(icesheet.state, icesheet.domain, icesheet.options)
+    return advect!(icesheet.state, icesheet.domain)
 end
 
 # TODO: handle the new ice-covered cells (otherwise, PT crashes)
-function advect!(state::State{T}, domain::Domain{T}, options::Options{T}) where {T<:AbstractFloat}
+function advect!(state::State, domain::Domain)
     (; H, ux, uy, ux_old, uy_old, prealloc) = state
     (; dx, dy) = domain
     dt = 1.0

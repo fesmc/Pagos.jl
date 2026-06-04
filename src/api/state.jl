@@ -1,69 +1,71 @@
 """
     State{T<:AbstractFloat}
 
-Struct containing the state variables of the ice sheet model, which contains:
-- `H::Matrix{T}`: ice thickness.
-- `z_b::Matrix{T}`: bed elevation.
-- `beta::Matrix{T}`: friction coefficient.
-- `beta_acx::Matrix{T}`: friction coefficient staggered in x-direction.
-- `beta_acy::Matrix{T}`: friction coefficient staggered in y-direction.
-- `ux::Matrix{T}`: ice velocity in x.
-- `uy::Matrix{T}`: ice velocity in y.
-- `ux_old::Matrix{T}`: pseudo transient ice velocity in x at last iteration.
-- `uy_old::Matrix{T}`: pseudo transient ice velocity in y at last iteration.
-- `ux_x::Matrix{T}`: dux/dx.
-- `ux_y::Matrix{T}`: dux/dy.
-- `uy_x::Matrix{T}`: duy/dx.
-- `uy_y::Matrix{T}`: duy/dy.
-- `ux_b::Matrix{T}`: ux at bed.
-- `uy_b::Matrix{T}`: uy at bed.
-- `strainrate_xx::Matrix{T}`: xx-component of the strain rate tensor.
-- `strainrate_xy::Matrix{T}`: xy-component of the strain rate tensor.
-- `strainrate_yy::Matrix{T}`: yy-component of the strain rate tensor.
-- `shearstress_x::Matrix{T}`: x-component of the shear stress.
-- `shearstress_y::Matrix{T}`: y-component of the shear stress.
-- `basalstress_x::Matrix{T}`: x-component of the basal stress.
-- `basalstress_y::Matrix{T}`: y-component of the basal stress.
-- `drivingstress_x::Matrix{T}`: x-component of the driving stress.
-- `drivingstress_y::Matrix{T}`: y-component of the driving stress.
-- `c_bed::Matrix{T}`: friction coefficient at bed.
-- `f_ice::Matrix{T}`: fraction of ice.
-- `mu::Matrix{T}`: ice viscosity.
-- `N_ab::Matrix{T}`: effective viscosity.
-- `prealloc::Matrix{T}`: temporary storage for calculations.
+Struct containing the state variables of the ice sheet model.
+
+# Fields
+- `H`: ice thickness.
+- `z_b`: bed elevation.
+- `beta`: friction coefficient.
+- `beta_acx`: friction coefficient staggered in x-direction.
+- `beta_acy`: friction coefficient staggered in y-direction.
+- `ux`: ice velocity in x.
+- `uy`: ice velocity in y.
+- `ux_old`: pseudo transient ice velocity in x at last iteration.
+- `uy_old`: pseudo transient ice velocity in y at last iteration.
+- `ux_x`: dux/dx.
+- `ux_y`: dux/dy.
+- `uy_x`: duy/dx.
+- `uy_y`: duy/dy.
+- `ux_b`: ux at bed.
+- `uy_b`: uy at bed.
+- `strainrate_xx`: xx-component of the strain rate tensor.
+- `strainrate_xy`: xy-component of the strain rate tensor.
+- `strainrate_yy`: yy-component of the strain rate tensor.
+- `shearstress_x`: x-component of the shear stress.
+- `shearstress_y`: y-component of the shear stress.
+- `basalstress_x`: x-component of the basal stress.
+- `basalstress_y`: y-component of the basal stress.
+- `drivingstress_x`: x-component of the driving stress.
+- `drivingstress_y`: y-component of the driving stress.
+- `c_bed`: friction coefficient at bed.
+- `f_ice`: fraction of ice.
+- `mu`: ice viscosity.
+- `N_ab`: effective viscosity.
+- `prealloc`: temporary storage for calculations.
 """
-mutable struct State{T<:AbstractFloat}
-    H::Matrix{T}
-    z_b::Matrix{T}
-    beta::Matrix{T}
-    beta_acx::Matrix{T}
-    beta_acy::Matrix{T}
-    ux::Matrix{T}
-    uy::Matrix{T}
-    ux_old::Matrix{T}
-    uy_old::Matrix{T}
-    dotvel_x::Matrix{T}
-    dotvel_y::Matrix{T}
-    ux_x::Matrix{T}
-    ux_y::Matrix{T}
-    uy_x::Matrix{T}
-    uy_y::Matrix{T}
-    ux_b::Matrix{T}
-    uy_b::Matrix{T}
-    strainrate_xx::Matrix{T}
-    strainrate_xy::Matrix{T}
-    strainrate_yy::Matrix{T}
-    shearstress_x::Matrix{T}
-    shearstress_y::Matrix{T}
-    basalstress_x::Matrix{T}
-    basalstress_y::Matrix{T}
-    drivingstress_x::Matrix{T}
-    drivingstress_y::Matrix{T}
-    c_bed::Matrix{T}
-    f_ice::Matrix{T}
-    mu::Matrix{T}
-    N_ab::Matrix{T}
-    prealloc::Matrix{T}
+mutable struct State{M}
+    H::M
+    z_b::M
+    beta::M
+    beta_acx::M
+    beta_acy::M
+    ux::M
+    uy::M
+    ux_old::M
+    uy_old::M
+    dotvel_x::M
+    dotvel_y::M
+    ux_x::M
+    ux_y::M
+    uy_x::M
+    uy_y::M
+    ux_b::M
+    uy_b::M
+    strainrate_xx::M
+    strainrate_xy::M
+    strainrate_yy::M
+    shearstress_x::M
+    shearstress_y::M
+    basalstress_x::M
+    basalstress_y::M
+    drivingstress_x::M
+    drivingstress_y::M
+    c_bed::M
+    f_ice::M
+    mu::M
+    N_ab::M
+    prealloc::M
 end
 # TODO should use lazy maps instead of large structs
 

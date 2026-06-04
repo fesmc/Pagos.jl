@@ -218,3 +218,169 @@ println("  v1 solve       sparse() construction + UMFPACK symbolic+numeric facto
 println("  v2-CPU solve   lu!/ldiv! with cached symbolic factorization (numeric only after 1st call)")
 println("  v2-GPU solve   CUDSS numeric factorization only after 1st call (CSR, cached solver)")
 HAS_CUDA || println("  GPU benchmarks skipped: no CUDA-capable device found (CUDA.functional() == false)")
+
+# ---------------------------------------------------------------------------
+# Pseudo-transient helpers
+#
+# pt_inputs   — build a NamedTuple of preallocated arrays (Matrix or CuArray)
+# pt_one_iter! — one full PT velocity update; broadcast / circshift throughout
+#                so the same code runs on CPU (Matrix) and GPU (CuArray)
+# ---------------------------------------------------------------------------
+
+function pt_inputs(nx, ny; H0 = 1000.0, μ0 = 1e5, β0 = 1e4, α = 1e-3,
+                   ρ = 910.0, g = 9.81, dx = 5e3, T = Float64)
+    H    = fill(T(H0), nx, ny)
+    z_b  = T(-α) .* (reshape(T.(0:nx-1) .- T(nx ÷ 2), nx, 1) .* T(dx)) .* ones(T, 1, ny)
+    mu   = fill(T(μ0), nx, ny)
+    beta = fill(T(β0), nx, ny)
+    z    = zeros(T, nx, ny)
+    return (;
+        H, z_b, mu, beta,
+        beta_acx = copy(z), beta_acy = copy(z),
+        N_ab     = copy(z),
+        ux = copy(z), uy = copy(z),
+        ux_old = copy(z), uy_old = copy(z),
+        ux_x = copy(z), ux_y = copy(z),
+        uy_x = copy(z), uy_y = copy(z),
+        strainrate_xx = copy(z), strainrate_xy = copy(z), strainrate_yy = copy(z),
+        shearstress_x = copy(z), shearstress_y = copy(z),
+        basalstress_x = copy(z), basalstress_y = copy(z),
+        drivingstress_x = copy(z), drivingstress_y = copy(z),
+        dotvel_x = copy(z), dotvel_y = copy(z),
+        prealloc = copy(z),
+        dx = T(dx), dy = T(dx), rho_ice = T(ρ), g = T(g),
+    )
+end
+
+function to_cu(s)
+    return map(x -> x isa AbstractArray ? CuArray(x) : x, s)
+end
+
+function pt_one_iter!(s, dtau, theta_v)
+    (; H, z_b, mu, beta, beta_acx, beta_acy, N_ab,
+       ux, uy, ux_old, uy_old,
+       ux_x, ux_y, uy_x, uy_y,
+       strainrate_xx, strainrate_xy, strainrate_yy,
+       shearstress_x, shearstress_y,
+       basalstress_x, basalstress_y,
+       drivingstress_x, drivingstress_y,
+       dotvel_x, dotvel_y, prealloc,
+       dx, dy, rho_ice, g) = s
+
+    beta_acx .= 0.5 .* (beta .+ circshift(beta, (-1, 0)))
+    beta_acy .= 0.5 .* (beta .+ circshift(beta, (0, -1)))
+    @. prealloc = H * mu
+    N_ab .= 0.25 .* (prealloc .+ circshift(prealloc, (-1, 0)) .+
+                     circshift(prealloc, (0, -1)) .+ circshift(prealloc, (-1, -1)))
+
+    velocitygradients!(ux_x, ux_y, uy_x, uy_y, ux, uy, dx, dy)
+    scaledstrainrate!(strainrate_xx, strainrate_xy, strainrate_yy,
+                      ux_x, ux_y, uy_x, uy_y, N_ab)
+    shearstress!(shearstress_x, shearstress_y,
+                 strainrate_xx, strainrate_xy, strainrate_yy, prealloc, dx, dy)
+
+    ux_old .= ux
+    uy_old .= uy
+    basalstress!(basalstress_x, basalstress_y, beta_acx, beta_acy, ux_old, uy_old)
+    drivingstress!(drivingstress_x, drivingstress_y, prealloc, rho_ice, g, H, z_b, dx, dy)
+
+    Z = zero(eltype(H))
+    @. dotvel_x = ifelse(H > 0, (shearstress_x - basalstress_x - drivingstress_x) / (rho_ice * H), Z)
+    @. dotvel_y = ifelse(H > 0, (shearstress_y - basalstress_y - drivingstress_y) / (rho_ice * H), Z)
+
+    pseudo_vel!(ux, ux_old, dotvel_x, dtau, theta_v)
+    pseudo_vel!(uy, uy_old, dotvel_y, dtau, theta_v)
+    return nothing
+end
+
+# Reset velocities and run full PT loop — repeated benchmark calls each start from zero.
+function run_pt!(icesheet)
+    icesheet.state.ux .= 0
+    icesheet.state.uy .= 0
+    pseudo_transient!(icesheet)
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Table 3: Single PT iteration — pt_one_iter! (CPU Matrix vs GPU CuArray)
+# ---------------------------------------------------------------------------
+
+const PT_SIZES = [(50, 50), (128, 128), (256, 256), (512, 512)]
+const PT_DTAU    = T(1e-5)
+const PT_THETA_V = T(0.6)
+
+pt_all_data = map(PT_SIZES) do (nx, ny)
+    s_cpu = pt_inputs(nx, ny; T)
+    s_gpu = HAS_CUDA ? to_cu(s_cpu) : nothing
+    (; nx, ny, s_cpu, s_gpu)
+end
+
+println()
+println("=" ^ w)
+println(" PT single iteration — pt_one_iter! (broadcast + circshift, GPU-compatible)")
+println(" stagger_beta & vintegrated_viscosity via circshift; dotvel via ifelse broadcast")
+println("=" ^ w)
+@printf("  %-18s %11s %11s %8s\n", "Grid", "CPU [ms]", "GPU [ms]", "CPU/GPU")
+println("-" ^ w)
+
+for (; nx, ny, s_cpu, s_gpu) in pt_all_data
+    t_cpu = (@b pt_one_iter!($s_cpu, $PT_DTAU, $PT_THETA_V)).time
+
+    if HAS_CUDA
+        pt_one_iter!(s_gpu, PT_DTAU, PT_THETA_V)   # warmup
+        CUDA.synchronize()
+        t_gpu = (@b begin
+            pt_one_iter!($s_gpu, $PT_DTAU, $PT_THETA_V)
+            CUDA.synchronize()
+        end).time
+        @printf("  %-18s %11.3f %11.3f %7.2fx\n",
+            "$(nx)×$(ny)", t_cpu * 1e3, t_gpu * 1e3, t_cpu / t_gpu)
+    else
+        @printf("  %-18s %11.3f %11s %8s\n",
+            "$(nx)×$(ny)", t_cpu * 1e3, "N/A", "N/A")
+    end
+end
+
+println("=" ^ w)
+
+# ---------------------------------------------------------------------------
+# Table 4: Full PT convergence loop — pseudo_transient! (CPU, IceSheet path)
+#          GPU path requires State to use AbstractMatrix; tracked as future work.
+#          Velocity reset to zero before each sample so convergence is not trivial.
+# ---------------------------------------------------------------------------
+
+println()
+println("=" ^ w)
+println(" Full PT convergence — pseudo_transient! + velocity reset (CPU, IceSheet)")
+println("=" ^ w)
+@printf("  %-18s %11s\n", "Grid (2×n DOF)", "Time [ms]")
+println("-" ^ w)
+
+for (nx, ny) in PT_SIZES
+    dx_pt = T(5e3)
+    lx_pt = T(nx - 1) * dx_pt
+    ly_pt = T(ny - 1) * dx_pt
+
+    domain_pt  = Domain(T, lx_pt, ly_pt, dx_pt, dx_pt)
+    state_pt   = State(domain_pt)
+    params_pt  = Params{T}()
+    options_pt = Options{T}(maxiter = 200, abstol = T(1e-8), printout_every = 99999)
+
+    state_pt.H    .= T(1000.0)
+    state_pt.z_b  .= T(-1e-3) .* domain_pt.X
+    state_pt.mu   .= T(1e5)
+    state_pt.beta .= T(1e4)
+
+    icesheet_pt = IceSheet(state_pt, domain_pt, params_pt, options_pt)
+
+    t = (@b run_pt!($icesheet_pt)).time
+    @printf("  %-18s %11.3f\n", "$(nx)×$(ny) ($(2*nx*ny))", t * 1e3)
+end
+
+println("=" ^ w)
+println()
+println("Notes (PT):")
+println("  pt_one_iter!       broadcast+circshift throughout; same code for CPU (Matrix) and GPU (CuArray)")
+println("  run_pt!            resets ux=uy=0 then runs pseudo_transient! to convergence; β0=1e4 → ~10 iters")
+println("  GPU full loop      not benchmarked: State{T} uses Matrix{T}; refactor to AbstractMatrix to enable")
+HAS_CUDA || println("  GPU benchmarks skipped: no CUDA-capable device found (CUDA.functional() == false)")

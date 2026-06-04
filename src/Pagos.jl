@@ -130,7 +130,10 @@ export relative_temperature, relative_temperature!
 export thermal_forcing, thermal_forcing!
 
 include("material/stress.jl")
+export shearstress!, basalstress!, drivingstress!
+
 include("material/strainrate.jl")
+export scaledstrainrate!, velocitygradients!
 
 ###########################################################
 # Numerics

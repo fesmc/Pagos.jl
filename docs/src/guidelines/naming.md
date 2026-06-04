@@ -23,4 +23,4 @@
 
 ## Functions
 
-Functions should be performing the operations in place. For example `delx!(dudx)` updates the derivate dudx. We omit the use of a prefix (e.g. `update_delx!`) since the exclamation at the end of the function name is implicitly understood as an update of the first argument taken by the function.
+Functions should be performing the operations in place. For example `delx1!(dudx)` updates the derivate dudx. We omit the use of a prefix (e.g. `update_delx1!`) since the exclamation at the end of the function name is implicitly understood as an update of the first argument taken by the function.
