@@ -7,7 +7,8 @@ docs/build/
 docs/src/physics/*.md
 benchmark/plots/*
 benchmark/data/*
-ice_data/
+ice-data
+ice_data
 notes.md
 questions.md
 src/legacy
