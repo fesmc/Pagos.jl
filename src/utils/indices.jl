@@ -122,11 +122,21 @@ function stencil(i, j, k, i_idx, j_idx, k_idx)
     return stencil(i, i_idx)..., stencil(j, j_idx)..., stencil(k, k_idx)...
 end
 
-function ij2n_ux(i, j, ::Integer, ny)
+"""
+$(TYPEDSIGNATURES)
+
+Convert between 2D and 1D indices for x-flattened arrays. Necessary for assembly of linear problem.
+"""
+function _ij2n_ux(i, j, ::Integer, ny)
     return (i - 1) * ny + j
 end
 
-function ij2n_uy(i, j, nx, ny)
+"""
+$(TYPEDSIGNATURES)
+
+Convert between 2D and 1D indices for y-flattened arrays. Necessary for assembly of linear problem.
+"""
+function _ij2n_uy(i, j, nx, ny)
     return (i - 1) * ny + j + nx * ny
 end
 
