@@ -1,5 +1,5 @@
 using Pagos
-using BenchmarkTools
+using Chairmarks
 include("../../../test/test_helpers/structs.jl")
 include("../../../test/test_helpers/utils.jl")
 include("../../../test/numerics/slab.jl")
@@ -20,16 +20,13 @@ end
 
 function btime_slab_problem(icesheet)
     (; state, domain, params, options) = icesheet
-    pseudodotvel_time = @belapsed pseudo_dotvel!($state, $domain, $params, $options)
-    # 4.638 ms (0 allocations: 0 bytes)
+    pseudodotvel_time = (@b pseudo_dotvel!($state, $domain, $params, $options)).time
 
     dtau = 1.0
-    pseudovel_time = @belapsed pseudo_vel!($state.ux, $state.ux_old,
-        $state.dotvel_x, $dtau, $options.theta_v)
-    # 47.941 μs (0 allocations: 0 bytes)
+    pseudovel_time = (@b pseudo_vel!($state.ux, $state.ux_old,
+        $state.dotvel_x, $dtau, $options.theta_v)).time
 
-    solve_time = @belapsed pseudo_transient!($icesheet)
-    # pseudo-transient: 86.182 ms (369089 allocations: 87.11 MiB)
+    solve_time = (@b pseudo_transient!($icesheet)).time
 
     return pseudodotvel_time, pseudovel_time, solve_time
 end
