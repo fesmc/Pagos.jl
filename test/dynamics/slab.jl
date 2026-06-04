@@ -50,7 +50,7 @@ end
 function solve_slab_v1(; kw...)
     N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, rp = slab_fields(; kw...)
     lsd = LegacyLinearDynamicsSolver2D(rp; T = eltype(ux))
-    populate_vectors!(lsd, N, N_ab, ux, uy, τd_x, τd_y, β_acx, β_acy, DIVADynamicsXY())
+    populate_vectors!(lsd, N, N_ab, ux, uy, τd_x, τd_y, β_acx, β_acy, DIVADynamics())
     velocity!(lsd)
     velocity!(ux, uy, lsd)
     return ux, uy
@@ -58,7 +58,7 @@ end
 
 function solve_slab_v2(; kw...)
     N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, rp = slab_fields(; kw...)
-    lsd = LinearDynamicsSolver2D(rp, DIVADynamicsXY(); T = eltype(ux))
+    lsd = LinearDynamicsSolver2D(rp, DIVADynamics(); T = eltype(ux))
     populate_vectors!(lsd, N, N_ab, ux, uy, τd_x, τd_y, β_acx, β_acy)
     velocity!(lsd)
     velocity!(ux, uy, lsd)
@@ -108,7 +108,7 @@ end
     N1, N_ab1, β_acx1, β_acy1, τd_x1, τd_y1, ux1, uy1, rp = slab_fields(; c1...)
     N2, N_ab2, β_acx2, β_acy2, τd_x2, τd_y2, ux2, uy2, _  = slab_fields(; c2...)
 
-    lsd = LinearDynamicsSolver2D(rp, DIVADynamicsXY(); T = Float64)
+    lsd = LinearDynamicsSolver2D(rp, DIVADynamics(); T = Float64)
 
     # First solve — exercises the lu() (cold) path and populates solver_cache.
     populate_vectors!(lsd, N1, N_ab1, ux1, uy1, τd_x1, τd_y1, β_acx1, β_acy1)
@@ -127,5 +127,65 @@ end
     an2 = slab_analytical(; c2...)
     @testset "2nd call H0=$(c2.H0) β0=$(c2.β0)" begin
         check_slab(ux2, uy2, an2)
+    end
+end
+
+# -----------------------------------------------------------------------
+# Pseudo-transient tests
+# -----------------------------------------------------------------------
+
+@testset "Pseudo-transient pure functions" begin
+    T   = Float64
+    ρ   = T(910.0)
+    dx  = T(5e3)
+    muB = T(100.0)
+    μ   = fill(T(1e5), 3, 3)
+
+    expected_dt = ρ * dx^2 / (4 * (1 + muB) * 4.1 * T(1e5))
+    @test pseudo_dt(ρ, dx, μ, muB) ≈ expected_dt
+
+    v     = zeros(T, 2, 2)
+    v_old = ones(T, 2, 2)
+    dv    = fill(T(2.0), 2, 2)
+    pseudo_vel!(v, v_old, dv, T(0.5), T(0.6))
+    @test all(≈(T(1.6)), v)   # 1 + 0.6 * 2 * 0.5 = 1.6
+
+    H       = fill(T(1000.0), 2, 2)
+    shear   = fill(T(0.0),    2, 2)
+    basal   = fill(T(1e3),    2, 2)
+    driving = fill(T(-8927.0), 2, 2)
+    dv2     = zeros(T, 2, 2)
+    dotvel!(dv2, shear, basal, driving, ρ, H, 2, 2)
+    @test all(≈((0.0 - 1e3 - (-8927.0)) / (ρ * T(1000.0))), dv2)
+end
+
+# Large β0 → lambda = θ·dtau·β/(ρH) ≈ 0.9 → converges in ~10 iterations.
+const PT_SLAB = (H0 = 1000.0, μ0 = 1e5, β0 = 1e4, α = 1e-3)
+
+@testset "DIVA uniform slab — pseudo_transient!" begin
+    T   = Float64
+    c   = PT_SLAB
+    an  = slab_analytical(; c...)
+
+    nx, ny, dx = 11, 3, T(5e3)
+    lx = (nx - 1) * dx
+    ly = (ny - 1) * dx
+
+    domain  = Domain(T, lx, ly, dx, dx)
+    state   = State(domain)
+    params  = Params{T}()
+    options = Options{T}(maxiter = 50, abstol = 1e-8, printout_every = 1000)
+
+    state.H    .= T(c.H0)
+    state.z_b  .= T(-c.α) .* domain.X   # linear slope: ∂(H+z_b)/∂x = -α
+    state.mu   .= T(c.μ0)
+    state.beta .= T(c.β0)
+
+    icesheet = IceSheet(state, domain, params, options)
+    pseudo_transient!(icesheet)
+
+    @testset "H0=$(c.H0) β0=$(c.β0)" begin
+        @test all(≈(an.ub, rtol = 1e-5), state.ux)
+        @test all(≈(0.0,   atol = 1e-8 * abs(an.ub)), state.uy)
     end
 end

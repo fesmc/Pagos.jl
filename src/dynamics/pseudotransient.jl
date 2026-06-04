@@ -28,7 +28,7 @@ function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
     stagger_beta!(state, domain)
     vintegrated_viscosity!(N_ab, prealloc, mu, H, nx, ny)
 
-    velocitygradients!(ux_x, ux_y, uy_x, uy_y, ux, uy, dx, dy, nx, ny)
+    velocitygradients!(ux_x, ux_y, uy_x, uy_y, ux, uy, dx, dy)
     if options.debug
         if hasnan(ux_x) || hasnan(ux_y) || hasnan(uy_x) || hasnan(uy_y)
             throw(ArgumentError("NaNs in velocity gradients"))
@@ -44,7 +44,7 @@ function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
     end
 
     shearstress!(shearstress_x, shearstress_y, strainrate_xx, strainrate_xy, strainrate_yy,
-        prealloc, dx, dy, nx, ny)
+        prealloc, dx, dy)
     if options.debug
         if hasnan(shearstress_x) || hasnan(shearstress_y)
             throw(ArgumentError("NaNs in shear stress"))
@@ -61,7 +61,7 @@ function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
         end
     end
 
-    drivingstress!(drivingstress_x, drivingstress_y, prealloc, rho_ice, g, H, z_b, dx, dy, nx, ny)
+    drivingstress!(drivingstress_x, drivingstress_y, prealloc, rho_ice, g, H, z_b, dx, dy)
     if options.debug
         if hasnan(drivingstress_x) || hasnan(drivingstress_y)
             throw(ArgumentError("NaNs in driving stress"))
@@ -79,11 +79,23 @@ function pseudo_dotvel!(state::State{T}, domain::Domain{T}, params::Params{T},
     return nothing
 end
 
+function stagger_beta!(state, domain)
+    (; beta, beta_acx, beta_acy) = state
+    (; nx, ny) = domain
+    for i in 1:nx, j in 1:ny
+        ip1 = mod1(i + 1, nx)
+        jp1 = mod1(j + 1, ny)
+        beta_acx[i, j] = 0.5 * (beta[i, j] + beta[ip1, j])
+        beta_acy[i, j] = 0.5 * (beta[i, j] + beta[i, jp1])
+    end
+    return nothing
+end
+
 function vintegrated_viscosity!(N_ab, prealloc, mu, H, nx, ny)
     @. prealloc = H * mu
     for i in 1:nx, j in 1:ny
-        ip1 = periodic_bc_plusindex(i, nx)
-        jp1 = periodic_bc_plusindex(j, ny)
+        ip1 = mod1(i + 1, nx)
+        jp1 = mod1(j + 1, ny)
         N_ab[i, j] = 0.25 * (prealloc[i, j] + prealloc[ip1, j] + prealloc[i, jp1] +
             prealloc[ip1, jp1])
     end
