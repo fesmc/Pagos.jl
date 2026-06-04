@@ -12,12 +12,12 @@ using SparseArrays
 # Structs
 ###########################################################
 
-include("structs/domain.jl")
-include("structs/state.jl")
-include("structs/params.jl")
-include("structs/options.jl")
+include("api/domain.jl")
+include("api/state.jl")
+include("api/params.jl")
+include("api/options.jl")
 # include("structs/tools.jl")
-include("structs/icesheet.jl")
+include("api/icesheet.jl")
 export Domain, State, Params, Options, IceSheet
 
 ###########################################################
@@ -58,6 +58,17 @@ include("topography/advection.jl")
 # Dynamics
 ###########################################################
 
+include("dynamics/velocities.jl")
+export AbstractDynamics
+export SIADynamics, SSADynamics, SIASSADynamics
+export DIVADynamics, BlatterPattynDynamics, StokesDynamics
+export InertialDIVADynamics, InertialSIASSADynamics
+export ResolutionParameters, populate_vectors!, velocity!
+export AbstractDynamicsSolver, LinearDynamicsSolver2D
+
+include("legacy_performance/velocities.jl")
+export LegacyLinearDynamicsSolver2D
+
 include("dynamics/effective_pressure.jl")
 export AbstractEffectivePressure, PrescribedEffectivePressure
 export OverburdenEffectivePressure
@@ -75,13 +86,13 @@ export velocities3D!, surface_velocity!, depthaveraged_velocity!
 export basal_velocity_from_surface_velocity!, depthavg_velocity!
 
 include("dynamics/pseudotransient.jl")
-export pseudo_transient!
+export pseudo_transient!, pseudo_dotvel!, pseudo_dt, pseudo_vel!, dotvel!
 
 include("dynamics/inertial.jl")
 export inertial_velocity!
 
-include("dynamics/friction/plastic.jl")
-include("dynamics/friction/stagger.jl")
+# include("dynamics/friction/plastic.jl")
+# include("dynamics/friction/stagger.jl")
 
 ###########################################################
 # Material
