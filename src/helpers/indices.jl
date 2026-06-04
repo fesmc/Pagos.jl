@@ -33,12 +33,12 @@ periodic_bc_indices(i, n) = periodic_bc_minusindex(i, n)..., periodic_bc_plusind
 periodic_bc_indices(ix, iy, nx, ny) =
     periodic_bc_indices(ix, nx)..., periodic_bc_indices(iy, ny)...
 
-function ij2n_ux(i, j, nx, ny)
+function _ij2n_ux(i, j, nx, ny)
     n = (i - 1) * ny + j
     return n
 end
 
-function ij2n_uy(i, j, nx, ny)
+function _ij2n_uy(i, j, nx, ny)
     n = (i - 1) * ny + j + nx * ny
     return n
 end
