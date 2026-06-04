@@ -1,5 +1,5 @@
 using Pagos
-using BenchmarkTools
+using Chairmarks
 using Printf
 using CUDA
 
@@ -44,11 +44,11 @@ for (nx, ny) in SIZES
     mask[nx÷4:3nx÷4, ny÷4:3ny÷4] .= true
     acm  = ActiveCellsMap(mask)
 
-    t_apply = @belapsed apply!($gadd, $acm, $out, ($x, $y))
-    t_bcast = @belapsed $out .= $x .+ $y
+    t_apply = (@b apply!($gadd, $acm, $out, ($x, $y))).time
+    t_bcast = (@b $out .= $x .+ $y).time
 
-    @printf "  %-14s %14.1f %14.1f %9.2fx\n" \
-        "$(nx)×$(ny)" t_apply * 1e6 t_bcast * 1e6 t_bcast / t_apply
+    @printf("  %-14s %14.1f %14.1f %9.2fx\n",
+        "$(nx)×$(ny)", t_apply * 1e6, t_bcast * 1e6, t_bcast / t_apply)
 end
 
 println("=" ^ w)
@@ -72,9 +72,9 @@ let (nx, ny) = SIZES[end]
     mask[nx÷4:3nx÷4, ny÷4:3ny÷4] .= true
     acm  = ActiveCellsMap(mask)
 
-    t1 = @belapsed apply!($gadd, $acm, $out, ($x, $y))
-    t2 = @belapsed apply!($g,    $acm, $out, ($x, $y), ($add,))
-    t3 = @belapsed $out .= $x .+ $y
+    t1 = (@b apply!($gadd, $acm, $out, ($x, $y))).time
+    t2 = (@b apply!($g,    $acm, $out, ($x, $y), ($add,))).time
+    t3 = (@b $out .= $x .+ $y).time
 
     @printf "  %-32s %14.1f\n" "apply!(GAdd())" t1 * 1e6
     @printf "  %-32s %14.1f\n" "apply!(g, ..., (Addition(),))" t2 * 1e6
@@ -104,12 +104,12 @@ for (nx, ny) in SIZES
     mask[nx÷4:3nx÷4, ny÷4:3ny÷4] .= true
     acm  = ActiveCellsMap(mask)
 
-    t_apply = @belapsed apply!(creep, $acm, $out, ($x,), ($smc,))
-    t_creep = @belapsed creep!($out, $x, $smc)
-    t_bcast = @belapsed $out .= $D_0 ./ $x .* ($p0 .+ $p2 .* ($x ./ $σ_0).^2 .+ $p4 .* ($x ./ $σ_0).^4)
+    t_apply = (@b apply!(creep, $acm, $out, ($x,), ($smc,))).time
+    t_creep = (@b creep!($out, $x, $smc)).time
+    t_bcast = (@b $out .= $D_0 ./ $x .* ($p0 .+ $p2 .* ($x ./ $σ_0).^2 .+ $p4 .* ($x ./ $σ_0).^4)).time
 
-    @printf "  %-14s %14.1f %14.1f %14.1f\n" \
-        "$(nx)×$(ny)" t_apply * 1e6 t_creep * 1e6 t_bcast * 1e6
+    @printf("  %-14s %14.1f %14.1f %14.1f\n",
+        "$(nx)×$(ny)", t_apply * 1e6, t_creep * 1e6, t_bcast * 1e6)
 end
 
 println("=" ^ w)
@@ -135,17 +135,17 @@ if HAS_CUDA
         mask_cpu[nx÷4:3nx÷4, ny÷4:3ny÷4] .= true
         acm = ActiveCellsMap(cu(mask_cpu))
 
-        t_apply = @belapsed begin
+        t_apply = (@b begin
             apply!($gadd, $acm, $out, ($x, $y))
             CUDA.synchronize()
-        end
-        t_bcast = @belapsed begin
+        end).time
+        t_bcast = (@b begin
             $out .= $x .+ $y
             CUDA.synchronize()
-        end
+        end).time
 
-        @printf "  %-14s %14.1f %14.1f %9.2fx\n" \
-            "$(nx)×$(ny)" t_apply * 1e6 t_bcast * 1e6 t_bcast / t_apply
+        @printf("  %-14s %14.1f %14.1f %9.2fx\n",
+            "$(nx)×$(ny)", t_apply * 1e6, t_bcast * 1e6, t_bcast / t_apply)
     end
 
     println("=" ^ w)
@@ -164,21 +164,21 @@ if HAS_CUDA
         mask_cpu[nx÷4:3nx÷4, ny÷4:3ny÷4] .= true
         acm = ActiveCellsMap(cu(mask_cpu))
 
-        t_apply = @belapsed begin
+        t_apply = (@b begin
             apply!(creep, $acm, $out, ($x,), ($smc,))
             CUDA.synchronize()
-        end
-        t_creep = @belapsed begin
+        end).time
+        t_creep = (@b begin
             creep!($out, $x, $smc)
             CUDA.synchronize()
-        end
-        t_bcast = @belapsed begin
+        end).time
+        t_bcast = (@b begin
             $out .= $D_0 ./ $x .* ($p0 .+ $p2 .* ($x ./ $σ_0).^2 .+ $p4 .* ($x ./ $σ_0).^4)
             CUDA.synchronize()
-        end
+        end).time
 
-        @printf "  %-14s %14.1f %14.1f %14.1f\n" \
-            "$(nx)×$(ny)" t_apply * 1e6 t_creep * 1e6 t_bcast * 1e6
+        @printf("  %-14s %14.1f %14.1f %14.1f\n",
+            "$(nx)×$(ny)", t_apply * 1e6, t_creep * 1e6, t_bcast * 1e6)
     end
 
     println("=" ^ w)
