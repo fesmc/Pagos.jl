@@ -77,9 +77,9 @@ all_data = map(SIZES) do (nx, ny)
     N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy = ins
 
     lsd1 = LegacyLinearDynamicsSolver2D(rp; T)
-    populate_vectors!(lsd1, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy, DIVADynamicsXY())
+    populate_vectors!(lsd1, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy, DIVADynamics())
 
-    lsd2 = LinearDynamicsSolver2D(rp, DIVADynamicsXY(); T)
+    lsd2 = LinearDynamicsSolver2D(rp, DIVADynamics(); T)
     populate_vectors!(lsd2, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy)
 
     gpu_csc, gpu_csr = if HAS_CUDA
@@ -120,7 +120,7 @@ for (; nx, ny, ins, lsd1, lsd2, gpu_csc) in all_data
     N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy = ins
 
     t_fill  = (@b populate_vectors!(
-        $lsd1, $N, $N_ab, $ux, $uy, $taud_acx, $taud_acy, $β_acx, $β_acy, DIVADynamicsXY()
+        $lsd1, $N, $N_ab, $ux, $uy, $taud_acx, $taud_acy, $β_acx, $β_acy, DIVADynamics()
     )).time
     t_assem = (@b sparse($lsd1.Ai, $lsd1.Aj, $lsd1.Av)).time
     t_v1    = t_fill + t_assem
@@ -178,7 +178,7 @@ for (; nx, ny, ins, lsd1, lsd2, gpu_csr) in all_data
     N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy = ins
 
     # Repopulate so all solvers start from the same matrix/RHS.
-    populate_vectors!(lsd1, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy, DIVADynamicsXY())
+    populate_vectors!(lsd1, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy, DIVADynamics())
     populate_vectors!(lsd2, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy)
 
     t_v1 = (@b velocity!($lsd1)).time
