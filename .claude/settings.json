@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(julia --project=/home/jan/.julia/dev/Pagos -e 'import Pkg; Pkg.resolve\\(\\)')",
+      "Bash(julia --project dynamics/velocities.jl)",
+      "Bash(git checkout *)",
+      "Bash(julia --project test/dynamics/slab.jl)",
+      "Bash(julia --project=. -e 'using Pagos; @show methods\\(Pagos.delx1!\\)')",
+      "Bash(julia --project=. test/dynamics/slab.jl)",
+      "Bash(julia --project=. -e 'using Pagos; println\\(\"load ok\"\\)')",
+      "Bash(julia --project=. -e 'using KernelAbstractions; println\\(KernelAbstractions.adapt\\)')",
+      "Bash(julia --project=. -e 'using KernelAbstractions; println\\(isdefined\\(KernelAbstractions, Symbol\\(\"@adapt_structure\"\\)\\)\\)')",
+      "Bash(julia --project=. -e 'using KernelAbstractions; println\\(isdefined\\(KernelAbstractions, :adapt\\), \" \", isdefined\\(KernelAbstractions, :Backend\\), \" \", isdefined\\(KernelAbstractions, :CPU\\)\\)')",
+      "Bash(julia --project=. -e ' *)",
+      "Bash(git -C /home/jan/.julia/dev/Pagos diff HEAD -- src/api/)",
+      "Bash(git -C /home/jan/.julia/dev/Pagos show HEAD:src/api/state.jl)",
+      "Bash(git -C /home/jan/.julia/dev/Pagos show HEAD:src/api/icesheet.jl)",
+      "Bash(git -C /home/jan/.julia/dev/Pagos show HEAD:src/api/domain.jl)",
+      "Bash(git -C /home/jan/.julia/dev/Pagos status --short src/api/)",
+      "Bash(git -C /home/jan/.julia/dev/Pagos show HEAD:src/dynamics/velocities.jl)",
+      "Bash(julia --project=. -e 'using Pagos')",
+      "Bash(grep -v \"^$\")",
+      "Bash(julia --project=. -e 'import Pkg; Pkg.precompile\\(\\)')",
+      "Bash(git -C /home/jan/.julia/dev/Pagos show HEAD:src/api/params.jl)",
+      "Bash(git -C /home/jan/.julia/dev/Pagos show HEAD:src/api/options.jl)"
+    ]
+  }
+}
