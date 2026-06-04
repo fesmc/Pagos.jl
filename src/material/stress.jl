@@ -7,18 +7,16 @@ of the scaled strain rate tensor, as computed by [`scaledstrainrate!`](@ref).
 """
 # TODO maybe need to stagger the stresses!
 function shearstress!(shear_x, shear_y, strainrate_xx, strainrate_xy, strainrate_yy,
-    prealloc, dx, dy, nx, ny)
-    
-    # Allocation-free version of: shear_x .= delx1(sr_xx, dx) + delx2(sr_xy, dy)
-    delx1!(prealloc, strainrate_xx, dx, nx)
+    prealloc, dx, dy)
+
+    ∂x₁!(prealloc, strainrate_xx, dx)
     shear_x .= prealloc
-    delx2!(prealloc, strainrate_xy, dy, ny)
+    ∂x₂!(prealloc, strainrate_xy, dy)
     shear_x .+= prealloc
 
-    # Allocation-free version of: shear_y .= delx1(sr_xy, dx) + delx2(sr_yy, dy)
-    delx1!(prealloc, strainrate_xy, dx, nx)
+    ∂x₁!(prealloc, strainrate_xy, dx)
     shear_y .= prealloc
-    delx2!(prealloc, strainrate_yy, dy, ny)
+    ∂x₂!(prealloc, strainrate_yy, dy)
     shear_y .+= prealloc
     return nothing
 end
@@ -43,10 +41,10 @@ ice density `rho_ice`, the acceleration due to gravity `g`, the ice thickness `H
 bedrock elevation `z_b`, and the grid spacings `dx` and `dy`. The helper `prealloc` is
 merely used for temporary storage.
 """
-function drivingstress!(drivingstress_x, drivingstress_y, prealloc, rho_ice, g, H, z_b, dx, dy, nx, ny)
+function drivingstress!(drivingstress_x, drivingstress_y, prealloc, rho_ice, g, H, z_b, dx, dy)
     @. prealloc = H + z_b
-    delx1!(drivingstress_x, prealloc, dx, nx)
-    delx2!(drivingstress_y, prealloc, dy, ny)
+    ∂x₁!(drivingstress_x, prealloc, dx)
+    ∂x₂!(drivingstress_y, prealloc, dy)
     @. drivingstress_x *= rho_ice * g * H
     @. drivingstress_y *= rho_ice * g * H
     return nothing

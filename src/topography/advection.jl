@@ -10,11 +10,11 @@ end
 # TODO: handle the new ice-covered cells (otherwise, PT crashes)
 function advect!(state::State{T}, domain::Domain{T}, options::Options{T}) where {T<:AbstractFloat}
     (; H, ux, uy, ux_old, uy_old, prealloc) = state
-    (; dx, dy, nx, ny) = domain
+    (; dx, dy) = domain
     dt = 1.0
-    delx1!(prealloc, H .* ux, dx, nx)
+    ∂x₁!(prealloc, H .* ux, dx)
     @. H += prealloc * dt
-    delx2!(prealloc, H .* uy, dy, ny)
+    ∂x₂!(prealloc, H .* uy, dy)
     @. H += prealloc * dt
 
     ux[H .< 0] .= 0.0

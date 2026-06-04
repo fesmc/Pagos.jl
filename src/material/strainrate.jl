@@ -26,10 +26,10 @@ The gradients are computed using the central difference scheme. The input veloci
 `ux` and `uy` are defined on a staggered grid with dimensions `nx` and `ny`.
 The grid spacing in x and y-direction is given by `dx` and `dy`.
 """
-function velocitygradients!(ux_x, ux_y, uy_x, uy_y, ux, uy, dx, dy, nx, ny)
-    delx1!(ux_x, ux, dx, nx)
-    delx2!(ux_y, ux, dy, ny)
-    delx1!(uy_x, uy, dx, nx)
-    delx2!(uy_y, uy, dy, ny)
+function velocitygradients!(ux_x, ux_y, uy_x, uy_y, ux, uy, dx, dy)
+    ∂x₁!(ux_x, ux, dx)
+    ∂x₂!(ux_y, ux, dy)
+    ∂x₁!(uy_x, uy, dx)
+    ∂x₂!(uy_y, uy, dy)
     return nothing
 end
