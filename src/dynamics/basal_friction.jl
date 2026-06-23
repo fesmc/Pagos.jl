@@ -77,7 +77,7 @@ end
 $(TYPEDSIGNATURES)
 """
 function basal_shear_stress!(τ_basal, v_basal, β_basal)
-    map!((v, β) -> basal_shear_stress(v, β), τ_basal, v_basal, β_basal)
+    @tullio τ_basal[i, j] = basal_shear_stress(v_basal[i, j], β_basal[i, j])
     return nothing
 end
 
@@ -212,7 +212,7 @@ function basal_beta!(
     v_basal,
     bb::AbstractBasalBeta,
 )
-    map!((c, v) -> basal_beta(c, v, bb), β_basal, c_bed, v_basal)
+    @tullio β_basal[i, j] = basal_beta(c_bed[i, j], v_basal[i, j], bb)
     return nothing
 end
 
@@ -332,25 +332,24 @@ $(TYPEDSIGNATURES)
 """
 function basal_beta_gz!(β, topo::Topography, c::Constants, bbgz::FgroundBasalBetaGroundingZone)
     (; mask_gz, f_grounded, mask_grounded) = topo
-    map!((b, m, f) -> basal_beta_gz(b, m, f, bbgz), β, mask_gz, f_grounded)
-    map!((b, f, bm) -> saturate_basal_beta(b, f, bm), β, f_grounded, bbgz.β_min)
+    @tullio β[i, j] = basal_beta_gz(β[i, j], mask_gz[i, j], f_grounded[i, j], bbgz)
+    @tullio β[i, j] = saturate_basal_beta(β[i, j], f_grounded[i, j], bbgz.β_min)
     return nothing
 end
 function basal_beta_gz!(β, topo::Topography, c::Constants, bbgz::FractionBasalBetaGroundingZone)
     (; mask_gz, f_gzone) = topo
-    map!((b, m, f) -> basal_beta_gz(b, m, f, bbgz), β, mask_gz, f_gzone)
+    @tullio β[i, j] = basal_beta_gz(β[i, j], mask_gz[i, j], f_gzone[i, j], bbgz)
     return nothing
 end
 function basal_beta_gz!(β, topo::Topography, c::Constants, bbgz::HgroundBasalBetaGroundingZone)
     (; mask_gz, H_grounded) = topo
-    map!((b, m, H) -> basal_beta_gz(b, m, H, bbgz), β, mask_gz, H_grounded)
+    @tullio β[i, j] = basal_beta_gz(β[i, j], mask_gz[i, j], H_grounded[i, j], bbgz)
     return nothing
 end
 function basal_beta_gz!(β, topo::Topography, c::Constants, bbgz::ZstarBasalBetaGroundingZone)
     (; z_bed, z_sl, H_eff) = topo
     (; ρ_seawater_div_ρ_ice) = c
-    map!((b, H, z_b, z_s) -> basal_beta_gz(b, H, z_b, z_s, ρ_seawater_div_ρ_ice, bbgz),
-        β, H_eff, z_bed, z_sl)
+    @tullio β[i, j] = basal_beta_gz(β[i, j], H_eff[i, j], z_bed[i, j], z_sl[i, j], ρ_seawater_div_ρ_ice, bbgz)
     return nothing
 end
 
@@ -548,7 +547,7 @@ function basal_shear_stress!(
     c_basal,
     friction::BasalBeta,
 )
-    map!((v, c) -> basal_shear_stress(v, c, friction), τ_basal, v_basal, c_basal)
+    @tullio τ_basal[i, j] = basal_shear_stress(v_basal[i, j], c_basal[i, j], friction)
     return nothing
 end
 

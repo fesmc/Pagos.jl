@@ -297,32 +297,8 @@ end
 
 function rate_factor(
     T_relative::T,
-    rf::FanLowStrainGSIRateFactor,
-) where {T<:Real}
-    (; A_0, Q, R) = rf
-    return A_0 * exp(-Q / (R * T_relative))
-end
-
-function rate_factor(
-    T_relative::T,
-    rf::FanLowStrainGSS1RateFactor,
-) where {T<:Real}
-    (; A_0, Q, R) = rf
-    return A_0 * exp(-Q / (R * T_relative))
-end
-
-function rate_factor(
-    T_relative::T,
-    rf::FanLowStrainGSS2RateFactor,
-) where {T<:Real}
-    (; A_0, Q, R) = rf
-    return A_0 * exp(-Q / (R * T_relative))
-end
-
-function rate_factor(
-    T_relative::T,
-    rf::FanHighStrainGSIRateFactor,
-) where {T<:Real}
+    rf::F,
+) where {T<:Real, F<:AbstractRateFactor}
     (; A_0, Q, R) = rf
     return A_0 * exp(-Q / (R * T_relative))
 end
@@ -387,11 +363,11 @@ $(TYPEDSIGNATURES)
 
 Get the rate factor `A` based on the temperature relative to the pressure melt point `T_relative` and the rate factor parameterization `arf<:AbstractRateFactor`. Optionally, a mask can be provided to only compute the rate factor for specific indices.
 """
-function rate_factor!(
-    A,
-    T_relative,
-    arf::AbstractRateFactor,
-)
-    map!(x -> rate_factor(x, arf), A, T_relative)
+function rate_factor!(A::AbstractVector, T_relative, arf::AbstractRateFactor)
+    @tullio A[i] = rate_factor(T_relative[i], arf)
+    return
+end
+function rate_factor!(A::AbstractMatrix, T_relative, arf::AbstractRateFactor)
+    @tullio A[i, j] = rate_factor(T_relative[i, j], arf)
     return
 end

@@ -336,47 +336,47 @@ $(TYPEDSIGNATURES)
 Update the calving flux `c_dt` based on the calving law `calving<:AbstractCalving` and the ice thickness `H`.
 """
 function calving_rate!(c_dt, calving::PrescribedCalving)
-    map!(_ -> calving_rate(calving), c_dt, c_dt)
+    @tullio c_dt[i, j] = calving_rate(calving)
     return nothing
 end
 
 function calving_rate!(c_dt, H, calving::RelaxedCalving)
-    map!(h -> calving_rate(h, calving), c_dt, H)
+    @tullio c_dt[i, j] = calving_rate(H[i, j], calving)
     return nothing
 end
 
 function calving_rate!(c_dt, H, H_eff, calving::ThicknessCalving)
-    map!(h, h_eff -> calving_rate(h, h_eff, calving), c_dt, H, H_eff)
+    @tullio c_dt[i, j] = calving_rate(H[i, j], H_eff[i, j], calving)
     return nothing
 end
 
 function calving_rate!(c_dt, H, H_eff, tau1, tau2, calving::LipscombCalving)
-    map!(h, h_eff, t1, t2 -> calving_rate(h, h_eff, t1, t2, calving), c_dt, H, H_eff, tau1, tau2)
+    @tullio c_dt[i, j] = calving_rate(H[i, j], H_eff[i, j], tau1[i, j], tau2[i, j], calving)
     return nothing
 end
 
 function calving_rate!(c_dt, H_eff, eps_eff, calving::LevermannCalving)
-    map!(h_eff, eps_e -> calving_rate(h_eff, eps_e, calving), c_dt, H_eff, eps_eff)
+    @tullio c_dt[i, j] = calving_rate(H_eff[i, j], eps_eff[i, j], calving)
     return nothing
 end
 
 function calving_rate!(c_dt, z_srf, z_sl, z_bed, calving::CrawfordCalving)
-    map!(srf, sl, bed -> calving_rate(srf, sl, bed, calving), c_dt, z_srf, z_sl, z_bed)
+    @tullio c_dt[i, j] = calving_rate(z_srf[i, j], z_sl[i, j], z_bed[i, j], calving)
     return nothing
 end
 
 function calving_rate!(c_dt, H_eff, z_sl, z_bed, f_ice, c, calving::BassisCalving)
-    map!(h_eff, sl, bed, fi -> calving_rate(h_eff, sl, bed, fi, c, calving), c_dt, H_eff, z_sl, z_bed, f_ice)
+    @tullio c_dt[i, j] = calving_rate(H_eff[i, j], z_sl[i, j], z_bed[i, j], f_ice[i, j], c, calving)
     return nothing
 end
 
 function calving_rate!(c_dt, eps1, eps2, calving::EigenCalving)
-    map!((e1, e2) -> calving_rate(e1, e2, calving), c_dt, eps1, eps2)
+    @tullio c_dt[i, j] = calving_rate(eps1[i, j], eps2[i, j], calving)
     return nothing
 end
 
 function calving_rate!(c_dt, H, H_eff, calving::FlotationCalving)
-    map!((h, h_eff) -> calving_rate(h, h_eff, calving), c_dt, H, H_eff)
+    @tullio c_dt[i, j] = calving_rate(H[i, j], H_eff[i, j], calving)
     return nothing
 end
 
@@ -392,6 +392,6 @@ function calving_rate(z_srf, z_sl, z_bed, calving::PollardDeContoCalving)
 end
 
 function calving_rate!(c_dt, z_srf, z_sl, z_bed, calving::PollardDeContoCalving)
-    map!((srf, sl, bed) -> calving_rate(srf, sl, bed, calving), c_dt, z_srf, z_sl, z_bed)
+    @tullio c_dt[i, j] = calving_rate(z_srf[i, j], z_sl[i, j], z_bed[i, j], calving)
     return nothing
 end

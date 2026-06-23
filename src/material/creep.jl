@@ -259,7 +259,11 @@ $(TYPEDSIGNATURES)
 
 Same as [`creep`](@ref) but operates in place.
 """
-function creep!(cf, σ_e, law)
-    map!(s -> creep(s, law), cf, σ_e)
+function creep!(cf::AbstractVector, σ_e, law)
+    @tullio cf[i] = creep(σ_e[i], law)
+    return nothing
+end
+function creep!(cf::AbstractMatrix, σ_e, law)
+    @tullio cf[i, j] = creep(σ_e[i, j], law)
     return nothing
 end

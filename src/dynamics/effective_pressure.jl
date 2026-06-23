@@ -121,5 +121,5 @@ function effective_pressure!(N_eff, H_eff, eff_pressure::PrescribedEffectivePres
     return nothing
 end
 function effective_pressure!(N_eff, H_eff, eff_pressure)
-    map!((h_eff) -> effective_pressure(h_eff, eff_pressure), N_eff, H_eff)
+    @tullio N_eff[i, j] = effective_pressure(H_eff[i, j], eff_pressure)
 end

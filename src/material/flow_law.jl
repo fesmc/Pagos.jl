@@ -147,7 +147,11 @@ $(TYPEDSIGNATURES)
 
 Same as [`viscosity`](@ref) but operates in place.
 """
-function viscosity!(η, A, f, law)
-    map!((a, s) -> viscosity(a, s, law), η, A, f)
+function viscosity!(η::AbstractVector, A, f, law)
+    @tullio η[i] = viscosity(A[i], f[i], law)
+    return nothing
+end
+function viscosity!(η::AbstractMatrix, A, f, law)
+    @tullio η[i, j] = viscosity(A[i, j], f[i, j], law)
     return nothing
 end
