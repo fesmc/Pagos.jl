@@ -5,8 +5,10 @@ using Downloads
 using KernelAbstractions
 using LinearAlgebra
 using LinearSolve           # TODO: externalize
+using LoopVectorization
 using StatsBase
 using SparseArrays
+using Tullio
 
 ###########################################################
 # Structs
