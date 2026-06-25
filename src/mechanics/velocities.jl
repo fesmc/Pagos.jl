@@ -1,38 +1,5 @@
-
-struct ResolutionParameters{T}
-    n::Int
-    nx::Int
-    ny::Int
-    dx::T
-    dy::T
-    dxdx::T
-    dydy::T
-    dxdy::T
-    dxdx_::T
-    dydy_::T
-    dxdy_::T
-end
-
-function ResolutionParameters(n, nx, ny, dx, dy; T=Float32)
-    dx = T(dx)
-    dy = T(dy)
-    dxdx = dx * dx
-    dydy = dy * dy
-    dxdy = dx * dy
-    dxdx_ = 1 / dxdx
-    dydy_ = 1 / dydy
-    dxdy_ = 1 / dxdy
-
-    return ResolutionParameters(
-        n, nx, ny,
-        dx, dy,
-        dxdx, dydy, dxdy,
-        dxdx_, dydy_, dxdy_,
-    )
-end
-
 ###############################################################
-# Dynamics
+# MomentumBalance
 ##############################################################
 
 """
@@ -42,16 +9,23 @@ An abstract type to multiple dispatch the dynamics type via [`velocity`](@ref).
 
 # Available subtypes:
 """
-abstract type AbstractDynamics end
+abstract type AbstractMomentumBalance end
 
-struct SIADynamics <: AbstractDynamics end
-struct SSADynamics <: AbstractDynamics end
-struct SIASSADynamics <: AbstractDynamics end
-struct InertialSIASSADynamics <: AbstractDynamics end
-struct DIVADynamics <: AbstractDynamics end
-struct InertialDIVADynamics <: AbstractDynamics end
-struct BlatterPattynDynamics <: AbstractDynamics end
-struct StokesDynamics <: AbstractDynamics end
+"""
+$(TYPEDSIGNATURES)
+
+Enforce the ice dynamics to be zero (no flow).
+"""
+struct NoMomentumBalance <: AbstractMomentumBalance end
+
+struct SIAMomentumBalance <: AbstractMomentumBalance end
+struct SSAMomentumBalance <: AbstractMomentumBalance end
+struct SIASSAMomentumBalance <: AbstractMomentumBalance end
+struct InertialSIASSAMomentumBalance <: AbstractMomentumBalance end
+struct DIVAMomentumBalance <: AbstractMomentumBalance end
+struct InertialDIVAMomentumBalance <: AbstractMomentumBalance end
+struct BlatterPattynMomentumBalance <: AbstractMomentumBalance end
+struct StokesMomentumBalance <: AbstractMomentumBalance end
 
 
 ###############################################################
@@ -65,7 +39,7 @@ An abstract type to multiple dispatch the dynamics solver via [`velocity`](@ref)
 
 # Available subtypes:
 """
-abstract type AbstractDynamicsSolver end
+abstract type AbstractMomentumSolver end
 
 # TODO
 """
@@ -73,7 +47,7 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via energy minimization.
 """
-struct OptimDynamicsSolver <: AbstractDynamicsSolver
+struct OptimMomentumSolver <: AbstractMomentumSolver
 end
 
 # TODO
@@ -82,7 +56,7 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via an iterative linear solver (e.g., CG, GMRES).
 """
-struct IterativeDynamicsSolver <: AbstractDynamicsSolver
+struct IterativeMomentumSolver <: AbstractMomentumSolver
 end
 
 """
@@ -90,7 +64,7 @@ $(TYPEDSIGNATURES)
 
 TODO: Solve the ice dynamics via wavelet methods.
 """
-struct WaveletDynamicsSolver <: AbstractDynamicsSolver
+struct WaveletMomentumSolver <: AbstractMomentumSolver
 end
 
 # TODO
@@ -99,7 +73,7 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via convolutional neural network (IGM style).
 """
-struct ConvolutionalDynamicsSolver <: AbstractDynamicsSolver
+struct ConvolutionalMomentumSolver <: AbstractMomentumSolver
 end
 
 # TODO
@@ -108,7 +82,7 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via a transient solver (e.g., explicit time-stepping).
 """
-struct TransientDynamicsSolver <: AbstractDynamicsSolver
+struct TransientMomentumSolver <: AbstractMomentumSolver
 end
 
 # TODO
@@ -124,7 +98,7 @@ Solve the ice dynamics via a pseudo-transient solver.
  - `min_bulk_viscosity_ice`
  - `muB`
 """
-@kwdef struct PseudoTransientSolver{T<:AbstractFloat} <: AbstractDynamicsSolver
+@kwdef struct PseudoTransientSolver{T<:AbstractFloat} <: AbstractMomentumSolver
     ndim1::T = 2.1
     ndim2::T = 4.1
     ndim3::T = 6.1
@@ -144,22 +118,26 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via a direct linear solver (e.g., sparse LU factorization).
 
-# Improvements over `LegacyLinearDynamicsSolver2D`:
+# Improvements over `LegacyLinearMomentumSolver2D`:
  1. dynamics is a type parameter → dispatch on loop1!/loop2! is fully static, no need to thread a runtime `dynamics` argument through populate_vectors! layers.
  2. SparseMatrixCSC pre-allocated at construction (fixed sparsity pattern). The hot path writes directly to A.nzval via a precomputed COO→nzval index map, eliminating the sparse(Ai, Aj, Av) allocation on every solve.
  3. Single AI type parameter (i_idx and j_idx are always the same kind).
  4. VT/MT/PI type parameters for vector/matrix/perm arrays so the struct can hold GPU arrays (CuVector, CuSparseMatrix) without code changes. The populate_vectors! kernels are written with KernelAbstractions and run on whichever backend owns lsd.u.
 """
-struct LinearDynamicsSolver2D{
-    DYN <: AbstractDynamics,
-    RP  <: ResolutionParameters,
+struct LinearMomentumSolver2D{
+    DYN <: AbstractMomentumBalance,
+    T   <: AbstractFloat,
     VT  <: AbstractVector,        # float vector type (u, u0, b)
     MT,                            # sparse matrix type (SparseMatrixCSC or CuSparseMatrix)
     PI  <: AbstractVector{Int},   # perm index vector type
     AI,
-} <: AbstractDynamicsSolver
+} <: AbstractMomentumSolver
     dynamics::DYN
-    resolution_params::RP
+    nx::Int
+    ny::Int
+    dxdx_::T
+    dydy_::T
+    dxdy_::T
     u::VT
     u0::VT
     b::VT
@@ -234,9 +212,14 @@ function coo_to_nzval_idx(Ai, Aj, A::SparseMatrixCSC)
     return perm
 end
 
-function LinearDynamicsSolver2D(rp::ResolutionParameters, dynamics::DYN, backend = CPU(); T = Float32) where {DYN <: AbstractDynamics}
-    (; n, nx, ny) = rp
-    n_sprs = 2 * nx * ny * 3^n
+function LinearMomentumSolver2D(grid::RegularGrid, dynamics::DYN, backend = CPU()) where {DYN <: AbstractMomentumBalance}
+    T      = eltype(grid.x)
+    nx, ny = grid.nx, grid.ny
+    dx, dy = T(grid.dx), T(grid.dy)
+    dxdx_  = 1 / (dx * dx)
+    dydy_  = 1 / (dy * dy)
+    dxdy_  = 1 / (dx * dy)
+    n_sprs = 18 * nx * ny  # 9 nonzeros/row × 2 equations (ux, uy)
     n_u    = 2 * nx * ny
 
     i_idx = PeriodicIndexing(1, nx)
@@ -261,7 +244,7 @@ function LinearDynamicsSolver2D(rp::ResolutionParameters, dynamics::DYN, backend
     # A stays as SparseMatrixCSC for the CPU default; for GPU, adapt before passing
     # to the inner constructor, e.g.:
     #   A = CUDA.CUSPARSE.CuSparseMatrixCSC(A_cpu)
-    return LinearDynamicsSolver2D(dynamics, rp, u, u0, b, A_cpu, perm, i_idx, j_idx, Ref{Any}(nothing))
+    return LinearMomentumSolver2D(dynamics, nx, ny, dxdx_, dydy_, dxdy_, u, u0, b, A_cpu, perm, i_idx, j_idx, Ref{Any}(nothing))
 end
 
 @kernel function _assemble_ux!(nzval, perm, u0, b, nx, ny,
@@ -296,18 +279,17 @@ end
     end
 end
 
-function populate_vectors!(lsd::LinearDynamicsSolver2D, dyn_now)
+function populate_vectors!(lsd::LinearMomentumSolver2D, dyn_now)
     (; N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy) = dyn_now
     populate_vectors!(lsd, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy)
     return nothing
 end
 
 function populate_vectors!(
-    lsd::LinearDynamicsSolver2D,
+    lsd::LinearMomentumSolver2D,
     N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy,
 )
-    (; A, perm, u0, b, i_idx, j_idx, resolution_params, dynamics) = lsd
-    (; nx, ny, dxdx_, dydy_, dxdy_) = resolution_params
+    (; A, perm, u0, b, i_idx, j_idx, nx, ny, dxdx_, dydy_, dxdy_, dynamics) = lsd
     backend  = get_backend(lsd.u)
     kern_ux  = _assemble_ux!(backend)
     kern_uy  = _assemble_uy!(backend)
@@ -329,11 +311,11 @@ function populate_vectors!(
     return nothing
 end
 
-function LinearSolve.LinearProblem(lsd::LinearDynamicsSolver2D)
+function LinearSolve.LinearProblem(lsd::LinearMomentumSolver2D)
     return LinearProblem(lsd.A, lsd.b; u0 = lsd.u)
 end
 
-function velocity!(lsd::LinearDynamicsSolver2D)
+function velocity!(lsd::LinearMomentumSolver2D)
     if lsd.solver_cache[] === nothing
         F = lu(lsd.A)
         lsd.solver_cache[] = F
@@ -345,15 +327,15 @@ function velocity!(lsd::LinearDynamicsSolver2D)
 end
 
 # Function barrier: typed on F so lu! and ldiv! dispatch statically.
-function _velocity_cached!(F, lsd::LinearDynamicsSolver2D)
+function _velocity_cached!(F, lsd::LinearMomentumSolver2D)
     lu!(F, lsd.A)
     ldiv!(lsd.u, F, lsd.b)
     return nothing
 end
 
-function velocity!(ux, uy, lsd::LinearDynamicsSolver2D)
+function velocity!(ux, uy, lsd::LinearMomentumSolver2D)
     u = lsd.u
-    (; nx, ny) = lsd.resolution_params
+    (; nx, ny) = lsd
     @inbounds for i in 1:nx, j in 1:ny
         ux[i, j] = u[_ij2n_ux(i, j, nx, ny)]
         uy[i, j] = u[_ij2n_uy(i, j, nx, ny)]

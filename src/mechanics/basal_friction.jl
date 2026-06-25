@@ -16,13 +16,15 @@ A struct that encapsulates all basal friction related models and allows for easy
 \\end{aligned}
 ```
 """
-struct BasalBeta{
+abstract type AbstractFriction end
+
+struct BasalFriction{
     BB,     # <: AbstractBasalBeta
     BBGZ,   # <: AbstractBasalBetaGroundingZone
     BRS,    # <: AbstractBedRoughnessSampling
     CBR,    # <: AbstractCbedRef
     CB,     # <: AbstractCbed
-}
+} <: AbstractFriction
     beta::BB
     beta_gz::BBGZ
     roughness_sampling::BRS
@@ -33,11 +35,12 @@ end
 """
 $(TYPEDSIGNATURES)
 """
-function basal_friction!(dyn_now, dyn_ref, topo_now, bf::BasalBeta)
+function basal_friction!(dyn_now, dyn_ref, topo_now, bf::BasalFriction)
     (; τ_basal, v_basal, β_basal, c_bed, N_eff) = dyn_now
     (; c_bed_ref) = dyn_ref
     (; z_bed, z_bed_σ, z_sl) = topo_now
-
+    basal_friction!(τ_basal, v_basal, β_basal, c_bed, c_bed_ref, N_eff, z_bed, z_bed_σ, z_sl, bf)
+    return nothing
 end
 
 function basal_friction!(
@@ -50,7 +53,7 @@ function basal_friction!(
     z_bed,
     z_bed_σ,
     z_sl,
-    bf::BasalBeta,
+    bf::BasalFriction,
 )
 
     c_bed!(c_bed, c_bed_ref, N_eff, bf.c_bed)
@@ -324,29 +327,27 @@ function saturate_basal_beta(β, f_ground, β_min)
     end
 end
 
-abstract type Topography end
-abstract type Constants end
 
 """
 $(TYPEDSIGNATURES)
 """
-function basal_beta_gz!(β, topo::Topography, c::Constants, bbgz::FgroundBasalBetaGroundingZone)
+function basal_beta_gz!(β, topo, c::Constants, bbgz::FgroundBasalBetaGroundingZone)
     (; mask_gz, f_grounded, mask_grounded) = topo
     @tullio β[i, j] = basal_beta_gz(β[i, j], mask_gz[i, j], f_grounded[i, j], bbgz)
     @tullio β[i, j] = saturate_basal_beta(β[i, j], f_grounded[i, j], bbgz.β_min)
     return nothing
 end
-function basal_beta_gz!(β, topo::Topography, c::Constants, bbgz::FractionBasalBetaGroundingZone)
+function basal_beta_gz!(β, topo, c::Constants, bbgz::FractionBasalBetaGroundingZone)
     (; mask_gz, f_gzone) = topo
     @tullio β[i, j] = basal_beta_gz(β[i, j], mask_gz[i, j], f_gzone[i, j], bbgz)
     return nothing
 end
-function basal_beta_gz!(β, topo::Topography, c::Constants, bbgz::HgroundBasalBetaGroundingZone)
+function basal_beta_gz!(β, topo, c::Constants, bbgz::HgroundBasalBetaGroundingZone)
     (; mask_gz, H_grounded) = topo
     @tullio β[i, j] = basal_beta_gz(β[i, j], mask_gz[i, j], H_grounded[i, j], bbgz)
     return nothing
 end
-function basal_beta_gz!(β, topo::Topography, c::Constants, bbgz::ZstarBasalBetaGroundingZone)
+function basal_beta_gz!(β, topo, c::Constants, bbgz::ZstarBasalBetaGroundingZone)
     (; z_bed, z_sl, H_eff) = topo
     (; ρ_seawater_div_ρ_ice) = c
     @tullio β[i, j] = basal_beta_gz(β[i, j], H_eff[i, j], z_bed[i, j], z_sl[i, j], ρ_seawater_div_ρ_ice, bbgz)
@@ -545,7 +546,7 @@ function basal_shear_stress!(
     τ_basal,
     v_basal,
     c_basal,
-    friction::BasalBeta,
+    friction::BasalFriction,
 )
     @tullio τ_basal[i, j] = basal_shear_stress(v_basal[i, j], c_basal[i, j], friction)
     return nothing
