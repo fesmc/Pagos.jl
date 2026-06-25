@@ -6,6 +6,7 @@ using KernelAbstractions
 using LinearAlgebra
 using LinearSolve           # TODO: externalize
 using LoopVectorization
+using Random
 using StatsBase
 using SparseArrays
 using Tullio
@@ -16,11 +17,17 @@ using Tullio
 
 include("api/domain.jl")
 include("api/state.jl")
-include("api/params.jl")
-include("api/options.jl")
-# include("structs/tools.jl")
+include("api/constants.jl")
 include("api/icesheet.jl")
-export Domain, State, Params, Options, IceSheet
+include("api/simulation.jl")
+include("api/step.jl")
+# TODO: remove Params — physics constants moved to Constants, solver params live in solver structs
+# include("api/params.jl")
+# TODO: remove Options — all fields already live in PseudoTransientSolver
+# include("api/options.jl")
+export AbstractGrid, RegularGrid, CommonGrid
+export TopographyState, DynamicsState, ThermodynamicsState, MaterialState
+export Constants, IceSheet, Simulation
 
 ###########################################################
 # Utils
@@ -35,6 +42,11 @@ include("utils/math.jl")
 include("utils/debug.jl")
 include("utils/mask.jl")
 export ActiveCellsMap, active_indices!, apply!
+
+include("utils/integrators.jl")
+export AbstractIntegrationMethod, Euler, RungeKutta4, BogackiShampine32, Tsitouras54, RKL2
+export SSPRK33, SSPRK43, ssp_coefficient
+export Integrator, step!, substep!, estimate_spectral_radius!
 
 ###########################################################
 # Topography
@@ -54,47 +66,50 @@ export LipscombCalving, LevermannCalving, CrawfordCalving, BassisCalving
 export EigenCalving, FlotationCalving, PollardDeContoCalving
 export calving_rate, calving_rate!
 
-include("topography/advection.jl")
+# TODO: update to new API (State → TopographyState/DynamicsState, Domain → RegularGrid)
+# include("topography/advection.jl")
 
 ###########################################################
 # Dynamics
 ###########################################################
 
-include("dynamics/velocities.jl")
+include("mechanics/velocities.jl")
 export AbstractDynamics
 export SIADynamics, SSADynamics, SIASSADynamics
 export DIVADynamics, BlatterPattynDynamics, StokesDynamics
 export InertialDIVADynamics, InertialSIASSADynamics
-export ResolutionParameters, populate_vectors!, velocity!
+export populate_vectors!, velocity!
 export AbstractDynamicsSolver, LinearDynamicsSolver2D
 
-include("legacy_performance/velocities.jl")
+include("legacy/performance/velocities.jl")
 export LegacyLinearDynamicsSolver2D
 
-include("dynamics/effective_pressure.jl")
+include("mechanics/effective_pressure.jl")
 export AbstractEffectivePressure, PrescribedEffectivePressure
 export OverburdenEffectivePressure
 export LeguyEffectivePressure, TillEffectivePressure
 export effective_pressure, effective_pressure!
 
-include("dynamics/basal_friction.jl")
+include("mechanics/basal_friction.jl")
+export AbstractFriction, BasalFriction
 export AbstractBasalBeta, PrescribedBasalBeta
 export PseudoPlasticPowerBasalBeta, CoulombBasalBeta
 export basal_shear_stress, basal_shear_stress!
 
-include("dynamics/velocities3D.jl")
+include("mechanics/velocities3D.jl")
 export aggregate_viscosity_integral!, aggregated_viscosity_integral!
 export velocities3D!, surface_velocity!, depthaveraged_velocity!
 export basal_velocity_from_surface_velocity!, depthavg_velocity!
 
-include("dynamics/pseudotransient.jl")
-export pseudo_transient!, pseudo_dotvel!, pseudo_dt, pseudo_vel!, dotvel!
+# TODO: update to new API (State → DynamicsState, Domain → RegularGrid)
+# include("mechanics/pseudotransient.jl")
+# export pseudo_transient!, pseudo_dotvel!, pseudo_dt, pseudo_vel!, dotvel!
 
-include("dynamics/inertial.jl")
+include("mechanics/inertial.jl")
 export inertial_velocity!
 
-# include("dynamics/friction/plastic.jl")
-# include("dynamics/friction/stagger.jl")
+# include("mechanics/friction/plastic.jl")
+# include("mechanics/friction/stagger.jl")
 
 ###########################################################
 # Material
