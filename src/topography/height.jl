@@ -32,16 +32,6 @@ function height_above_floatation(H, ρ_ice, ρ_seawater, z_sl, z_bed)
     return max(H - ρ_seawater / ρ_ice * max(z_sl - z_bed, 0), 0)
 end
 
-"""
-$(TYPEDSIGNATURES)
-
-Struct to hold the densities of ice and seawater.
-"""
-struct Densities{T}
-    ρ_ice::T
-    ρ_seawater::T
-end
-
 function surface_elevation(H_grnd, H_eff, ρ_ice, ρ_seawater, z_sl, z_bed)
     if H_grnd > 0
         z_srf = z_bed + H_eff

@@ -4,7 +4,7 @@ function update_dynamics!(
     dynamics::Vector{<:AbstractDynamics{T}},
     dyn_solvers::Vector{<:AbstractDynamicsSolver{T}},
     tools::Vector{Tools{T}},
-    constants::Vector{PhysicalConstants{T}},
+    constants::Vector{Constants{T}},
     options::Vector{Options},
 ) where {T<:AbstractFloat}
     for i in 1:ngrids
@@ -32,7 +32,7 @@ function update_dynamics!(
     dynamics::DIVA{T},
     dyn_solver::PseudoTransientSolver{T},
     tools::Tools{T},
-    constants::PhysicalConstants{T},
+    constants::Constants{T},
     options::Options,
 ) where {T<:AbstractFloat}
     (; abstol, maxiter, err) = dyn_solver
@@ -119,7 +119,7 @@ function pseudo_update_dynamics!(
     dyn::AbstractDynamics{T},
     dyn_solver::PseudoTransientSolver{T},
     tools::Tools{T},
-    constants::PhysicalConstants{T},
+    constants::Constants{T},
     options::Options,
 ) where {T<:AbstractFloat}
 
@@ -145,7 +145,7 @@ function pre_update_dynamics!(
     dyn::Dynamics2D{T},
     dyn_solver::PseudoTransientSolver{T},
     tools::Tools{T},
-    constants::PhysicalConstants{T},
+    constants::Constants{T},
     options::Options,
 ) where {T<:AbstractFloat}
 
@@ -162,7 +162,7 @@ function pre_update_dynamics!(
 
     (; dx, dy, nx, ny) = grid
     (; dtau_scaling, μ_B, ndim2) = dyn_solver
-    (; ρ_ice, g) = constants
+    (; density_ice, gravity) = constants
     (; buffer2D) = tools
 
     map_aa2ac!(β_ac_x, β_ac_y, β, masks.ice)
@@ -196,18 +196,18 @@ function pre_update_dynamics!(
     # check_nans(options, [stress_basal_x, stress_basal_y], ["stress_basal_x",
     #    "stress_basal_y"])
 
-    stress_driving!(stress_driving_x, stress_driving_y, buffer2D, ρ_ice, g, H, z_bed, dx,
+    stress_driving!(stress_driving_x, stress_driving_y, buffer2D, density_ice, gravity, H, z_bed, dx,
         dy, masks.update_ice, masks.update_ice)
     # check_nans(options, [stress_driving_x, stress_driving_y], ["stress_driving_x",
     #     "stress_driving_y"])
 
-    dotvel!(v_x_dt, stress_shear_x, stress_basal_x, stress_driving_x, ρ_ice, H,
+    dotvel!(v_x_dt, stress_shear_x, stress_basal_x, stress_driving_x, density_ice, H,
         masks.update_ice, dyn)
-    dotvel!(v_y_dt, stress_shear_y, stress_basal_y, stress_driving_y, ρ_ice, H,
+    dotvel!(v_y_dt, stress_shear_y, stress_basal_y, stress_driving_y, density_ice, H,
         masks.update_ice, dyn)
     # check_nans(options, [v_x_dt, v_y_dt], ["v_x_dt", "v_y_dt"])
 
-    @. dtau = dtau_scaling * pseudo_dt(ρ_ice, dx, dy, mu, μ_B, ndim2)
+    @. dtau = dtau_scaling * pseudo_dt(density_ice, dx, dy, mu, μ_B, ndim2)
     # check_nans(options, dtau, "dtau")
     return nothing
 end
@@ -219,7 +219,7 @@ function pre_update_dynamics!(
     dyn::D,
     dyn_solver::PseudoTransientSolver{T},
     tools::Tools{T},
-    constants::PhysicalConstants{T},
+    constants::Constants{T},
     options::Options,
 ) where {T<:AbstractFloat, D<:Dynamics3D{T}}
     return nothing
