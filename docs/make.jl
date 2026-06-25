@@ -18,6 +18,7 @@ Literate.markdown("src/physics/material.jl", "src/physics"; credit = false)
 Literate.markdown("src/physics/basal_friction.jl", "src/physics"; credit = false)
 Literate.markdown("src/physics/calving.jl", "src/physics"; credit = false)
 Literate.markdown("src/physics/topography.jl", "src/physics"; credit = false)
+Literate.markdown("src/numerics/integrators.jl", "src/numerics"; credit = false)
 
 # %% Build docs
 PAGES = [
@@ -28,6 +29,9 @@ PAGES = [
         "physics/basal_friction.md",
         "physics/calving.md",
         "physics/topography.md",
+    ],
+    "Numerics" => [
+        "numerics/integrators.md",
     ],
     "Guidelines" => [
         "guidelines/naming.md",
