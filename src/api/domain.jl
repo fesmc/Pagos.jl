@@ -1,55 +1,72 @@
+abstract type AbstractGrid end
+
 """
 $(TYPEDSIGNATURES)
 
-Define the domain of the ice sheet model, which contains:
-- `nx`: the number of grid points in the x-direction.
-- `ny`: the number of grid points in the y-direction.
-- `dx`: the grid spacing in the x-direction.
-- `dy`: the grid spacing in the y-direction.
-- `x`: the grid points in the x-direction.
-- `y`: the grid points in the y-direction.
-- `lx`: the length of the domain in the x-direction.
-- `ly`: the length of the domain in the y-direction.
-- `null`: a matrix of zeros of size `nx` by `ny`.
-- `X`: a matrix of x-coordinates of size `nx` by `ny`.
-- `Y`: a matrix of y-coordinates of size `nx` by `ny`.
+Sentinel grid type: reuses the `common_grid` of the parent `IceSheet`,
+avoiding redundant array allocation for components that share the same spatial discretization.
+"""
+struct CommonGrid <: AbstractGrid end
 
-The two-argument form allocates CPU (`Array`) arrays.  Pass a
-`KernelAbstractions.Backend` as the first argument to allocate on a different
-device:
+"""
+$(TYPEDSIGNATURES)
+
+A modular grid with uniform spacing and Cartesian or projected coordinate systems.
+Supports 2D (nz = 1) and 3D configurations.
+
+# Fields
+- `nx`, `ny`, `nz`: number of cells in x, y, z directions.
+- `x`, `y`, `z`: cell-centre coordinate vectors.
+- `dx`, `dy`, `dz`: uniform cell spacings (scalars). Physical distances vary via `distortion`.
+- `Lon`, `Lat`: geographic longitude and latitude (degrees) at each cell centre.
+- `area`: horizontal cell area (m²), precomputed from `dx`, `dy`, and `distortion`.
+- `distortion`: map-scale factor K; physical distance = `K * dx` (1 everywhere for Cartesian grids).
+- `basins`: integer mask identifying drainage basins.
+- `regions`: integer mask identifying user-defined regions.
+
+Convenience constructors for a flat, regular, Cartesian 2D grid:
 
 ```julia
-domain     = Domain(Float64, 6000.0, 6000.0, 16.0, 16.0)          # CPU
-domain_gpu = Domain(CUDABackend(), Float64, 6000.0, 6000.0, 16.0, 16.0)  # GPU
+grid = RegularGrid(Float64, 6000e3, 6000e3, 16e3, 16e3)                       # CPU
+grid = RegularGrid(CUDABackend(), Float32, 6000e3, 6000e3, 16e3, 16e3)        # GPU
 ```
 """
-struct Domain{T, V, M}
-    nx::Int
-    ny::Int
-    dx::T
-    dy::T
+struct RegularGrid{I, T, V, M, MI} <: AbstractGrid
+    nx::I
+    ny::I
+    nz::I
     x::V
     y::V
-    lx::T
-    ly::T
-    null::M
-    X::M
-    Y::M
+    z::V
+    dx::T
+    dy::T
+    dz::T
+    Lon::M
+    Lat::M
+    area::M
+    distortion::M
+    basins::MI
+    regions::MI
 end
 
-function Domain(T::Type{<:AbstractFloat}, lx, ly, dx, dy)
-    return Domain(CPU(), T, lx, ly, dx, dy)
+function RegularGrid(T::Type{<:AbstractFloat}, lx, ly, dx, dy)
+    return RegularGrid(CPU(), T, lx, ly, dx, dy)
 end
 
-function Domain(backend::Backend, T::Type{<:AbstractFloat}, lx, ly, dx, dy)
+function RegularGrid(backend::Backend, T::Type{<:AbstractFloat}, lx, ly, dx, dy)
     x_cpu = collect(range(T(0), step = T(dx), stop = T(lx))) .- T(lx) / 2
     y_cpu = collect(range(T(0), step = T(dy), stop = T(ly))) .- T(ly) / 2
     nx    = length(x_cpu)
     ny    = length(y_cpu)
+    nz    = 1
     x     = KernelAbstractions.adapt(backend, x_cpu)
     y     = KernelAbstractions.adapt(backend, y_cpu)
-    null  = KernelAbstractions.zeros(backend, T, nx, ny)
-    X     = KernelAbstractions.adapt(backend, x_cpu * ones(T, ny)')
-    Y     = KernelAbstractions.adapt(backend, ones(T, nx) * y_cpu')
-    return Domain(nx, ny, T(dx), T(dy), x, y, T(lx), T(ly), null, X, Y)
+    z     = KernelAbstractions.adapt(backend, [T(0)])
+    Lon   = KernelAbstractions.zeros(backend, T, nx, ny)
+    Lat   = KernelAbstractions.zeros(backend, T, nx, ny)
+    area  = KernelAbstractions.adapt(backend, fill(T(dx * dy), nx, ny))
+    dist  = KernelAbstractions.adapt(backend, ones(T, nx, ny))
+    bas   = KernelAbstractions.zeros(backend, Int, nx, ny)
+    reg   = KernelAbstractions.zeros(backend, Int, nx, ny)
+    return RegularGrid(nx, ny, nz, x, y, z, T(dx), T(dy), T(1), Lon, Lat, area, dist, bas, reg)
 end
