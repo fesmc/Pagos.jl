@@ -1,3 +1,10 @@
+abstract type AbstractAdvection end
+
+struct NoAdvection <: AbstractAdvection end
+struct UpwindAdvection <: AbstractAdvection end
+struct DivergenceAdvection <: AbstractAdvection end
+struct LevelSetAdvection <: AbstractAdvection end
+
 """
     advect!(icesheet::IceSheet)
 
