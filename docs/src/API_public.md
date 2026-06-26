@@ -5,14 +5,14 @@
 ### Ice Dynamics
 
 ```@docs
-AbstractDynamics
-SIADynamics
-SSADynamics
-HybridDynamics
-L1L2Dynamics
-DIVADynamics
-BlatterPattynDynamics
-StokesDynamics
+AbstractMomentumBalance
+SIAMomentumBalance
+SSAMomentumBalance
+HybridMomentumBalance
+L1L2MomentumBalance
+DIVAMomentumBalance
+BlatterPattynMomentumBalance
+StokesMomentumBalance
 velocity
 velocity!
 ```
@@ -20,13 +20,13 @@ velocity!
 ### Solvers
 
 ```@docs
-AbstractDynamicsSolver
-MatrixDynamicsSolver2D
-MatrixDynamicsSolver3D
-PseudoTransientDynamicsSolver2D
-PseudoTransientDynamicsSolver3D
-NeuralDynamicsSolver2D
-NeuralDynamicsSolver3D
+AbstractMomentumSolver
+MatrixMomentumSolver2D
+MatrixMomentumSolver3D
+PseudoTransientMomentumSolver2D
+PseudoTransientMomentumSolver3D
+NeuralMomentumSolver2D
+NeuralMomentumSolver3D
 ```
 
 ### Effective Pressure
@@ -177,8 +177,8 @@ plot_basal_shear_stress
 ### Derivatives
 
 ```@docs
-∂x₁!
-∂x₂!
+∂x!
+∂y!
 ∂x₃!
 ∂x₁₂!
 ∂x₁
