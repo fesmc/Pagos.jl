@@ -27,8 +27,8 @@ for (nx, ny) in SIZES
 
     idx₁ = FlatIndexing(1, nx)
     idx₂ = FlatIndexing(1, ny)
-    t1  = (@b ∂x₁!($du₁, $u, 1.0, $idx₁)).time
-    t2  = (@b ∂x₂!($du₂, $u, 1.0, $idx₂)).time
+    t1  = (@b ∂x!($du₁, $u, 1.0, $idx₁)).time
+    t2  = (@b ∂y!($du₂, $u, 1.0, $idx₂)).time
     t12 = (@b ∂x₁₂!($du₁, $du₂, $u, 1.0, 1.0, $idx₁, $idx₂)).time
 
     @printf("  %-14s %11.1f %11.1f %11.1f %9.2fx\n",
@@ -62,7 +62,7 @@ let (nx, ny) = SIZES[end]
         ("StrictIndexing",      StrictIndexing(1, nx)),
     ]
     for (name, idx) in idxs
-        t = (@b ∂x₁!($du, $u, 1.0, $idx)).time
+        t = (@b ∂x!($du, $u, 1.0, $idx)).time
         @printf "  %-28s %11.1f\n" name t * 1e6
     end
 end
