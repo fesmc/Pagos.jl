@@ -49,8 +49,8 @@ end
 
 function solve_slab_v1(; kw...)
     N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, rp = slab_fields(; kw...)
-    lsd = LegacyLinearDynamicsSolver2D(rp; T = eltype(ux))
-    populate_vectors!(lsd, N, N_ab, ux, uy, τd_x, τd_y, β_acx, β_acy, DIVADynamics())
+    lsd = LegacyLinearMomentumSolver2D(rp; T = eltype(ux))
+    populate_vectors!(lsd, N, N_ab, ux, uy, τd_x, τd_y, β_acx, β_acy, DIVAMomentumBalance())
     velocity!(lsd)
     velocity!(ux, uy, lsd)
     return ux, uy
@@ -58,7 +58,7 @@ end
 
 function solve_slab_v2(; kw...)
     N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, rp = slab_fields(; kw...)
-    lsd = LinearDynamicsSolver2D(rp, DIVADynamics(); T = eltype(ux))
+    lsd = LinearMomentumSolver2D(rp, DIVAMomentumBalance(); T = eltype(ux))
     populate_vectors!(lsd, N, N_ab, ux, uy, τd_x, τd_y, β_acx, β_acy)
     velocity!(lsd)
     velocity!(ux, uy, lsd)
@@ -79,7 +79,7 @@ function check_slab(ux, uy, an)
     @test all(≈(0.0,   atol = 1e-10 * abs(an.ub)), uy)
 end
 
-@testset "DIVA uniform slab — LegacyLinearDynamicsSolver2D" begin
+@testset "DIVA uniform slab — LegacyLinearMomentumSolver2D" begin
     for c in SLAB_CASES
         an = slab_analytical(; c...)
         ux, uy = solve_slab_v1(; c...)
@@ -89,7 +89,7 @@ end
     end
 end
 
-@testset "DIVA uniform slab — LinearDynamicsSolver2D" begin
+@testset "DIVA uniform slab — LinearMomentumSolver2D" begin
     for c in SLAB_CASES
         an = slab_analytical(; c...)
         ux, uy = solve_slab_v2(; c...)
@@ -108,7 +108,7 @@ end
     N1, N_ab1, β_acx1, β_acy1, τd_x1, τd_y1, ux1, uy1, rp = slab_fields(; c1...)
     N2, N_ab2, β_acx2, β_acy2, τd_x2, τd_y2, ux2, uy2, _  = slab_fields(; c2...)
 
-    lsd = LinearDynamicsSolver2D(rp, DIVADynamics(); T = Float64)
+    lsd = LinearMomentumSolver2D(rp, DIVAMomentumBalance(); T = Float64)
 
     # First solve — exercises the lu() (cold) path and populates solver_cache.
     populate_vectors!(lsd, N1, N_ab1, ux1, uy1, τd_x1, τd_y1, β_acx1, β_acy1)

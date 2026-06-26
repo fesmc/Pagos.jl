@@ -65,7 +65,7 @@ end
     u   = rand(Float64, nx, ny)
     du1 = ∂x₁(u, 0.4)
     du2 = similar(u)
-    ∂x₁!(du2, u, 0.4)
+    ∂x!(du2, u, 0.4)
     @test du1 ≈ du2
 end
 
@@ -109,7 +109,7 @@ end
     u   = rand(Float64, nx, ny)
     du1 = ∂x₂(u, 0.6)
     du2 = similar(u)
-    ∂x₂!(du2, u, 0.6)
+    ∂y!(du2, u, 0.6)
     @test du1 ≈ du2
 end
 
