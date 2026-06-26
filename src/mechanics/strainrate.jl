@@ -88,6 +88,74 @@ function strainrate_effective!(strainrate, velocity, momentum::MB, I) where MB<:
 end
 
 
+# Momentum balances that resolve the vertical velocity `w`, so its gradient `∂w/∂z`
+# (`velocity.z_dz`) is available and `ε̇_zz` is taken from it directly rather than
+# reconstructed from incompressibility.
+const FullColumnMomentumBalance = Union{BlatterPattynMomentumBalance, StokesMomentumBalance}
+
+"""
+$(TYPEDSIGNATURES)
+
+Compute the **raw** (unscaled) strain-rate tensor
+"""
+function raw_strainrate!(m::Mechanics)
+    (; state, momentum) = m
+    (; strainrate, velocity) = state
+    return raw_strainrate!(strainrate, velocity, momentum)
+end
+
+function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance)
+    backend = get_backend(strainrate.xx)
+    kernel! = _raw_strainrate_kernel!(backend)
+    kernel!(strainrate, velocity, momentum; ndrange = length(strainrate.xx))
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+@kernel function _raw_strainrate_kernel!(strainrate, velocity, momentum::AbstractMomentumBalance)
+    I = @index(Global, Linear)
+    @inbounds begin
+        raw_strainrate!(strainrate, velocity, momentum, I)
+        raw_strainrate_effective!(strainrate, momentum, I)
+    end
+end
+
+# Default (plane / depth-integrated): ε̇_zz reconstructed from incompressibility.
+function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance, I)
+    dxx = velocity.x_dx[I]
+    dyy = velocity.y_dy[I]
+    strainrate.xx[I] = dxx
+    strainrate.yy[I] = dyy
+    strainrate.zz[I] = -(dxx + dyy)                            # incompressibility (continuity)
+    strainrate.xy[I] = (velocity.x_dy[I] + velocity.y_dx[I]) / 2
+    strainrate.xz[I] = (velocity.x_dz[I] + velocity.z_dx[I]) / 2
+    strainrate.yz[I] = (velocity.y_dz[I] + velocity.z_dy[I]) / 2
+end
+
+# Full-column: ε̇_zz read directly from the resolved vertical velocity gradient.
+function raw_strainrate!(strainrate, velocity, momentum::FullColumnMomentumBalance, I)
+    strainrate.xx[I] = velocity.x_dx[I]
+    strainrate.yy[I] = velocity.y_dy[I]
+    strainrate.zz[I] = velocity.z_dz[I]                        # ∂w/∂z directly
+    strainrate.xy[I] = (velocity.x_dy[I] + velocity.y_dx[I]) / 2
+    strainrate.xz[I] = (velocity.x_dz[I] + velocity.z_dx[I]) / 2
+    strainrate.yz[I] = (velocity.y_dz[I] + velocity.z_dy[I]) / 2
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Compute the effective (second-invariant) raw strain rate from the tensor components
+already written by [`raw_strainrate!`](@ref) in the same kernel pass.
+"""
+function raw_strainrate_effective!(strainrate, momentum::AbstractMomentumBalance, I)
+    strainrate.effective[I] = sqrt(
+        (strainrate.xx[I]^2 + strainrate.yy[I]^2 + strainrate.zz[I]^2) / 2 +
+        strainrate.xy[I]^2 + strainrate.xz[I]^2 + strainrate.yz[I]^2
+    )
+end
+
+
 """
 $(TYPEDSIGNATURES)
 
