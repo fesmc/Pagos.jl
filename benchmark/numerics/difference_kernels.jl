@@ -25,8 +25,8 @@ function bench_cpu(nx, ny)
     du₂ = similar(u)
     idx₁ = FlatIndexing(1, nx)
     idx₂ = FlatIndexing(1, ny)
-    t1  = (@b ∂x₁!($du₁, $u, 1.0, $idx₁)).time
-    t2  = (@b ∂x₂!($du₂, $u, 1.0, $idx₂)).time
+    t1  = (@b ∂x!($du₁, $u, 1.0, $idx₁)).time
+    t2  = (@b ∂y!($du₂, $u, 1.0, $idx₂)).time
     t12 = (@b ∂x₁₂!($du₁, $du₂, $u, 1.0, 1.0, $idx₁, $idx₂)).time
     return t1, t2, t12
 end
@@ -37,8 +37,8 @@ function bench_cuda(nx, ny)
     du₂ = similar(u)
     idx₁ = FlatIndexing(1, nx)
     idx₂ = FlatIndexing(1, ny)
-    t1  = (@b ∂x₁!($du₁, $u, 1.0, $idx₁)).time
-    t2  = (@b ∂x₂!($du₂, $u, 1.0, $idx₂)).time
+    t1  = (@b ∂x!($du₁, $u, 1.0, $idx₁)).time
+    t2  = (@b ∂y!($du₂, $u, 1.0, $idx₂)).time
     t12 = (@b ∂x₁₂!($du₁, $du₂, $u, 1.0, 1.0, $idx₁, $idx₂)).time
     return t1, t2, t12
 end

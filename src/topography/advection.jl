@@ -19,9 +19,9 @@ function advect!(state::State, domain::Domain)
     (; H, ux, uy, ux_old, uy_old, prealloc) = state
     (; dx, dy) = domain
     dt = 1.0
-    ∂x₁!(prealloc, H .* ux, dx)
+    ∂x!(prealloc, H .* ux, dx)
     @. H += prealloc * dt
-    ∂x₂!(prealloc, H .* uy, dy)
+    ∂y!(prealloc, H .* uy, dy)
     @. H += prealloc * dt
 
     ux[H .< 0] .= 0.0

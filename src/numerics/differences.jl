@@ -5,7 +5,7 @@ In-place partial derivative of `u` along the first dimension. Uses central diffe
 the interior; boundary behaviour is controlled by `idx` (default: `FlatIndexing`,
 one-sided differences). GPU-compatible.
 """
-function ∂x₁!(du, u, dx, idx::AbstractIndexing = FlatIndexing(1, size(u, 1)))
+function ∂x!(du, u, dx, idx::AbstractIndexing = FlatIndexing(1, size(u, 1)))
     backend = get_backend(u)
     if backend isa KernelAbstractions.CPU
         # CPU: 1D column kernel — stencil_fd(i, idx) is loop-invariant in the inner
@@ -15,7 +15,7 @@ function ∂x₁!(du, u, dx, idx::AbstractIndexing = FlatIndexing(1, size(u, 1))
         kernel! = _∂x₁_col!(backend)
         kernel!(du, u, dx, idx; ndrange = size(u, 2))
     else
-        kernel! = _∂x₁!(backend)
+        kernel! = _∂x!(backend)
         kernel!(du, u, dx, idx; ndrange = size(u))
     end
     KernelAbstractions.synchronize(backend)
@@ -23,7 +23,7 @@ function ∂x₁!(du, u, dx, idx::AbstractIndexing = FlatIndexing(1, size(u, 1))
 end
 
 # Backward-compatible dispatch: called with an integer grid size instead of an indexing.
-∂x₁!(du, u, dx, ::Integer) = ∂x₁!(du, u, dx)
+∂x!(du, u, dx, ::Integer) = ∂x!(du, u, dx)
 
 """
 $(TYPEDSIGNATURES)
@@ -32,20 +32,20 @@ In-place partial derivative of `u` along the second dimension. Uses central diff
 the interior; boundary behaviour is controlled by `idx` (default: `FlatIndexing`,
 one-sided differences). GPU-compatible.
 """
-function ∂x₂!(du, u, dy, idx::AbstractIndexing = FlatIndexing(1, size(u, 2)))
+function ∂y!(du, u, dy, idx::AbstractIndexing = FlatIndexing(1, size(u, 2)))
     backend = get_backend(u)
     if backend isa KernelAbstractions.CPU
         kernel! = _∂x₂_col!(backend)
         kernel!(du, u, dy, idx; ndrange = size(u, 2))
     else
-        kernel! = _∂x₂!(backend)
+        kernel! = _∂y!(backend)
         kernel!(du, u, dy, idx; ndrange = size(u))
     end
     KernelAbstractions.synchronize(backend)
     return nothing
 end
 
-∂x₂!(du, u, dy, ::Integer) = ∂x₂!(du, u, dy)
+∂y!(du, u, dy, ::Integer) = ∂y!(du, u, dy)
 
 """
 $(TYPEDSIGNATURES)
@@ -87,18 +87,18 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Partial derivative of `u` along the first dimension. See [`∂x₁!`](@ref).
+Partial derivative of `u` along the first dimension. See [`∂x!`](@ref).
 """
 ∂x₁(u, dx, idx::AbstractIndexing = FlatIndexing(1, size(u, 1))) =
-    (du = similar(u); ∂x₁!(du, u, dx, idx); du)
+    (du = similar(u); ∂x!(du, u, dx, idx); du)
 
 """
 $(TYPEDSIGNATURES)
 
-Partial derivative of `u` along the second dimension. See [`∂x₂!`](@ref).
+Partial derivative of `u` along the second dimension. See [`∂y!`](@ref).
 """
 ∂x₂(u, dy, idx::AbstractIndexing = FlatIndexing(1, size(u, 2))) =
-    (du = similar(u); ∂x₂!(du, u, dy, idx); du)
+    (du = similar(u); ∂y!(du, u, dy, idx); du)
 
 """
 $(TYPEDSIGNATURES)
@@ -122,7 +122,7 @@ $(TYPEDSIGNATURES)
 
 In-place computation of both planar partial derivatives of `u`. On GPU backends a single
 fused kernel reads `u` only once, saving memory bandwidth. On CPU the two optimised
-column kernels ([`∂x₁!`](@ref), [`∂x₂!`](@ref)) are called sequentially; they already
+column kernels ([`∂x!`](@ref), [`∂y!`](@ref)) are called sequentially; they already
 achieve good SIMD efficiency individually and the working set fits in cache. Boundary
 behaviour is controlled by `idx₁` and `idx₂` independently (default: `FlatIndexing`).
 GPU-compatible.
@@ -132,8 +132,8 @@ function ∂x₁₂!(du₁, du₂, u, dx, dy,
     idx₂::AbstractIndexing = FlatIndexing(1, size(u, 2)))
     backend = get_backend(u)
     if backend isa KernelAbstractions.CPU
-        ∂x₁!(du₁, u, dx, idx₁)
-        ∂x₂!(du₂, u, dy, idx₂)
+        ∂x!(du₁, u, dx, idx₁)
+        ∂y!(du₂, u, dy, idx₂)
     else
         kernel! = _∂x₁₂!(backend)
         kernel!(du₁, du₂, u, dx, dy, idx₁, idx₂; ndrange = size(u))
@@ -156,7 +156,7 @@ function ∂x₁₂(u, dx, dy,
     return du₁, du₂
 end
 
-@kernel function _∂x₁!(du, u, dx, idx)
+@kernel function _∂x!(du, u, dx, idx)
     i, j = @index(Global, NTuple)
     im1, ip1, h = stencil_fd(i, idx)
     @inbounds du[i, j] = (u[ip1, j] - u[im1, j]) / (h * dx)
@@ -185,7 +185,7 @@ end
     end
 end
 
-@kernel function _∂x₂!(du, u, dy, idx)
+@kernel function _∂y!(du, u, dy, idx)
     i, j = @index(Global, NTuple)
     jm1, jp1, h = stencil_fd(j, idx)
     @inbounds du[i, j] = (u[i, jp1] - u[i, jm1]) / (h * dy)
