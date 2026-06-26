@@ -1,145 +1,233 @@
+struct TopographicMasks{B}
+    is_ice::B
+    is_ice_allowed::B
+    is_grounded::B
+    is_floating::B
+    is_margin::B
+end
+Adapt.@adapt_structure TopographicMasks
+
+struct DistanceState{M}
+    distance_to_margin::M
+    distance_to_grline::M
+end
+Adapt.@adapt_structure DistanceState
+
+struct FractionState{M}
+    fraction_grounded::M
+end
+Adapt.@adapt_structure FractionState
+
+struct MassBalanceState{M}
+    base::M
+    base_floating::M
+    base_grounded::M
+    calving_floating::M
+    calving_grounded::M
+    discharge::M
+    front::M
+    net::M
+    surface::M
+    surface_ref::M
+end
+Adapt.@adapt_structure MassBalanceState
+
+struct ElevationState{M}
+    base::M
+    bed::M
+    bed_ref::M
+    bed_stddev::M
+    seasurface::M
+    surface::M
+    surface_dt::M
+    surface_dx::M
+    surface_dy::M
+end
+Adapt.@adapt_structure ElevationState
+
+struct ThicknessState{M}
+    ice::M
+    ice_ref::M
+    ice_dt::M
+    ice_effective::M
+    ice_grounded::M
+    sediment::M
+end
+Adapt.@adapt_structure ThicknessState
+
 """
 $(TYPEDSIGNATURES)
 
 State variables for the topography component (ice geometry, mass balance, surface/bed elevations).
 All boolean masks share type parameter `B`; all float fields share type parameter `M`.
 """
-struct TopographyState{B, M}
-    # Boolean masks
-    is_ice::B
-    is_ice_allowed::B
-    is_grounded::B
-    is_floating::B
-    is_margin::B
-
-    # Distance and grounding-zone geometry
-    distance_to_margin::M
-    distance_to_grline::M
-    fraction_grounded::M
-
-    # Ice and sediment thickness
-    thickness_ice::M
-    thickness_ice_ref::M
-    thickness_ice_dt::M
-    thickness_ice_effective::M
-    thickness_ice_grounded::M
-    thickness_sediment::M
-
-    # Mass balance components
-    massbalance_base::M
-    massbalance_base_floating::M
-    massbalance_base_grounded::M
-    massbalance_calving_floating::M
-    massbalance_calving_grounded::M
-    massbalance_discharge::M
-    massbalance_front::M
-    massbalance_net::M
-    massbalance_surface::M
-    massbalance_surface_ref::M
-
-    # Elevations
-    elevation_base::M
-    elevation_bed::M
-    elevation_bed_ref::M
-    elevation_bed_stddev::M
-    elevation_seasurface::M
-    elevation_surface::M
-    elevation_surface_dt::M
-    elevation_surface_dx::M
-    elevation_surface_dy::M
+struct TopographicState{B, M}
+    mask::TopographicMasks{B}
+    distance::DistanceState{M}
+    fraction::FractionState{M}
+    thickness::ThicknessState{M}
+    massbalance::MassBalanceState{M}
+    elevation::ElevationState{M}
 end
+Adapt.@adapt_structure TopographicState
 
-function TopographyState(grid::RegularGrid)
+
+function TopographicState(grid::RegularGrid)
     backend = KernelAbstractions.get_backend(grid.x)
     T       = eltype(grid.x)
     (; nx, ny) = grid
     b = KernelAbstractions.zeros(backend, Bool, nx, ny)
     m = KernelAbstractions.zeros(backend, T, nx, ny)
-    return TopographyState(
-        [copy(b) for _ in 1:5]...,   # 5 boolean fields
-        [copy(m) for _ in 1:28]...,  # 28 float fields
+    return TopographicState(
+        TopographicMasks([copy(b) for _ in 1:5]...),
+        DistanceState([copy(m) for _ in 1:2]...),
+        FractionState([copy(m) for _ in 1:1]...),
+        ThicknessState([copy(m) for _ in 1:6]...),
+        MassBalanceState([copy(m) for _ in 1:10]...),
+        ElevationState([copy(m) for _ in 1:9]...),
     )
 end
 
 ###############################################################
+
+struct MechanicTopographyState{M}
+    surface::M
+    thickness::M
+end
+Adapt.@adapt_structure MechanicTopographyState
+
+struct MechanicMaterialState{M2, M3}
+    viscosity_depthaveraged::M2
+    viscosity::M3
+end
+Adapt.@adapt_structure MechanicMaterialState
+
+struct StressState{M2, M3}
+    driving::M2
+    base::M2
+    base_vertical::M2
+
+    xx::M3
+    xy::M3
+    xz::M3
+    yx::M3
+    yy::M3
+    yz::M3
+    zx::M3
+    zy::M3
+    zz::M3
+    effective::M3
+    lateral::M3
+    eigenvalue_1::M3
+    eigenvalue_2::M3
+end
+Adapt.@adapt_structure StressState
+
+struct StrainRateState{M3}
+    xx::M3
+    xy::M3
+    xz::M3
+    yx::M3
+    yy::M3
+    yz::M3
+    zx::M3
+    zy::M3
+    zz::M3
+    effective::M3
+end
+Adapt.@adapt_structure StrainRateState
+
+struct VelocityState{M2, M3}
+    x_bar::M2
+    y_bar::M2
+    x_bar_dx::M2
+    x_bar_dy::M2
+    x_bar_dz::M2
+    y_bar_dx::M2
+    y_bar_dy::M2
+    y_bar_dz::M2
+
+    x_base::M2
+    y_base::M2
+    x_surf::M2
+    y_surf::M2
+    norm_base::M2
+    norm_surface::M2
+
+    x::M3
+    y::M3
+    z::M3
+    x_dx::M3
+    x_dy::M3
+    x_dz::M3
+    y_dx::M3
+    y_dy::M3
+    y_dz::M3
+    z_dx::M3
+    z_dy::M3
+    z_dz::M3
+    norm::M3
+end
+Adapt.@adapt_structure VelocityState
 
 """
 $(TYPEDSIGNATURES)
 
 State variables for the dynamics component.
-`M2` is always a 2D matrix; `M23` is a 2D matrix for depth-averaged solvers (SIA, SSA)
-or a 3D array for full-column solvers (Blatter–Pattyn, Stokes).
-`M23` is 2D when `grid.nz == 1`, 3D otherwise.
+`M2` is always a 2D matrix `(nx, ny)` for the depth-averaged / vertically-integrated
+fields. `M3` is always a 3D array `(nx, ny, nz)` for the column fields (velocity, its
+gradients, the strain-rate and stress tensors). Depth-averaged solvers (SIA, SSA) simply
+use `nz == 1`, so the column dimension is always present and tensor/stress computations
+are dynamics-independent (no 2D/3D special-casing).
 """
-struct DynamicsState{M2, M23}
-    # Depth-averaged / 2D fields
+struct MechanicState{M2, M3}
     beta::M2
     beta_eff::M2
     c_bed::M2
-    v_x_bar::M2
-    v_y_bar::M2
-    v_x_base::M2
-    v_y_base::M2
-    v_x_surf::M2
-    v_y_surf::M2
-    v_norm_base::M2
-    v_norm_surface::M2
-    tau_driving::M2
-    tau_base::M2
-    tau_base_vertical::M2
     flux::M2
     flux_grline::M2
 
-    # 2D or 3D fields depending on solver
-    strain_effective::M23
-    strain_rate_dxx::M23
-    strain_rate_dyy::M23
-    strain_rate_dzz::M23
-    strain_rate_dxy::M23
-    strain_rate_dxz::M23
-    strain_rate_dyz::M23
-    strain_rate_effective::M23
-    stress_xx::M23
-    stress_yy::M23
-    stress_zz::M23
-    stress_xy::M23
-    stress_xz::M23
-    stress_yz::M23
-    stress_effective::M23
-    stress_eigenvalue_1::M23
-    stress_eigenvalue_2::M23
-    tau_eff::M23
-    tau_lateral::M23
-    v_x::M23
-    v_y::M23
-    v_z::M23
-    v_x_dx::M23
-    v_x_dy::M23
-    v_x_dz::M23
-    v_y_dx::M23
-    v_y_dy::M23
-    v_y_dz::M23
-    v_z_dx::M23
-    v_z_dy::M23
-    v_z_dz::M23
-    v_norm::M23
+    # Column (3D) fields; depth-averaged solvers use nz == 1
+    topography::MechanicTopographyState{M2}
+    material::MechanicMaterialState{M2, M3}
+    strainrate::StrainRateState{M3}
+    stress::StressState{M2, M3}
+    velocity::VelocityState{M2, M3}
 end
+Adapt.@adapt_structure MechanicState
 
-function DynamicsState(grid::RegularGrid)
+function MechanicState(grid::RegularGrid)
     backend = KernelAbstractions.get_backend(grid.x)
     T       = eltype(grid.x)
     (; nx, ny, nz) = grid
-    m2  = KernelAbstractions.zeros(backend, T, nx, ny)
-    m23 = nz > 1 ?
-        KernelAbstractions.zeros(backend, T, nx, ny, nz) :
-        KernelAbstractions.zeros(backend, T, nx, ny)
-    return DynamicsState(
-        [copy(m2)  for _ in 1:16]...,  # 16 depth-averaged fields
-        [copy(m23) for _ in 1:32]...,  # 32 column or depth-averaged fields
+    m2() = KernelAbstractions.zeros(backend, T, nx, ny)
+    m3() = KernelAbstractions.zeros(backend, T, nx, ny, nz)
+    return MechanicState(
+        m2(), m2(), m2(), m2(), m2(),                       # beta, beta_eff, c_bed, flux, flux_grline
+        MechanicTopographyState(m2(), m2()),               # surface, thickness
+        MechanicMaterialState(m2(), m3()),                 # viscosity_depthaveraged, viscosity
+        StrainRateState(ntuple(_ -> m3(), 10)...),         # 10 column tensor fields
+        StressState(m2(), m2(), m2(), ntuple(_ -> m3(), 13)...),  # 3 depth-averaged + 13 column
+        VelocityState(ntuple(_ -> m2(), 14)..., ntuple(_ -> m3(), 13)...),  # 14 depth-averaged + 13 column
     )
 end
 
 ###############################################################
+
+struct TemperatureState{M}
+    ice::M
+    ice_surface::M
+    ice_homologous::M
+    rock::M
+    pressure_melting_point::M
+end
+Adapt.@adapt_structure TemperatureState
+
+struct EnthalpyState{M}
+    ice::M
+    rock::M
+end
+Adapt.@adapt_structure EnthalpyState
 
 """
 $(TYPEDSIGNATURES)
@@ -148,14 +236,9 @@ State variables for the thermodynamics component.
 `M` is a 2D matrix for column-averaged models or a 3D array for full thermodynamics.
 `M` is 2D when `grid.nz == 1`, 3D otherwise.
 """
-struct ThermodynamicsState{M}
-    temperature_ice::M
-    temperature_ice_surface::M
-    temperature_ice_homologous::M
-    temperature_rock::M
-    temperature_pressure_melting_point::M
-    enthalpy_ice::M
-    enthalpy_rock::M
+struct ThermodynamicState{M}
+    temperature::TemperatureState{M}
+    enthalpy::EnthalpyState{M}
     ice_water_content::M
     heat_strain_internal::M
     heat_strain_internal_dt::M
@@ -169,15 +252,20 @@ struct ThermodynamicsState{M}
     specific_heat_capacity_ice::M
     heat_conductivity_ice::M
 end
+Adapt.@adapt_structure ThermodynamicState
 
-function ThermodynamicsState(grid::RegularGrid)
+function ThermodynamicState(grid::RegularGrid)
     backend = KernelAbstractions.get_backend(grid.x)
     T       = eltype(grid.x)
     (; nx, ny, nz) = grid
-    m = nz > 1 ?
+    m() = nz > 1 ?
         KernelAbstractions.zeros(backend, T, nx, ny, nz) :
         KernelAbstractions.zeros(backend, T, nx, ny)
-    return ThermodynamicsState([copy(m) for _ in 1:19]...)
+    return ThermodynamicState(
+        TemperatureState(ntuple(_ -> m(), 5)...),  # ice, ice_surface, ice_homologous, rock, pressure_melting_point
+        EnthalpyState(m(), m()),                   # ice, rock
+        ntuple(_ -> m(), 12)...,                   # 12 remaining flat fields
+    )
 end
 
 ###############################################################
@@ -193,6 +281,7 @@ struct MaterialState{M2, M3}
     eta_depth_integrated::M2
     eta_ice::M3
 end
+Adapt.@adapt_structure MaterialState
 
 function MaterialState(grid::RegularGrid)
     backend = KernelAbstractions.get_backend(grid.x)
