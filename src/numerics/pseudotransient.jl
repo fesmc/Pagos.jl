@@ -1,8 +1,8 @@
 function update_dynamics!(
     states::Vector{State{T}},
     grids::Vector{RegularGrid{T}},
-    dynamics::Vector{<:AbstractDynamics{T}},
-    dyn_solvers::Vector{<:AbstractDynamicsSolver{T}},
+    dynamics::Vector{<:AbstractMomentumBalance{T}},
+    dyn_solvers::Vector{<:AbstractMomentumSolver{T}},
     tools::Vector{Tools{T}},
     constants::Vector{Constants{T}},
     options::Vector{Options},
@@ -70,7 +70,7 @@ function pseudo_transient_monitor(iter, dyn_solver, err, state_dynamics)
 end
 
 """
-    pseudo_transient_error(state_dynamics, dynamics<:AbstractDynamics)
+    pseudo_transient_error(state_dynamics, dynamics<:AbstractMomentumBalance)
 
 Calculate the pseudo-transient error depending on the dimensionality of the dynamics.
 """
@@ -78,8 +78,8 @@ function pseudo_transient_error!(
     err,
     buffer2D,
     iter,
-    state_dynamics::DynamicsState2D{T},
-    dynamics::Dynamics2D{T},
+    state_dynamics::MechanicState2D{T},
+    dynamics::MomentumBalance2D{T},
     mask::B,
 ) where {B}
 
@@ -100,7 +100,7 @@ function pseudo_transient_error!(
 end
 
 function pseudo_transient_error(state_dynamics, dynamics::D) where
-    {T<:AbstractFloat, D<:Dynamics3D{T}}
+    {T<:AbstractFloat, D<:MomentumBalance3D{T}}
     return max(
         maximum(abs.(state_dynamics.v_x - state_dynamics.v_old_x)),
         maximum(abs.(state_dynamics.v_y - state_dynamics.v_old_y)),
@@ -116,7 +116,7 @@ Perform a pseudo time step to update the velocity field.
 function pseudo_update_dynamics!(
     state::State{T},
     grid::RegularGrid{T},
-    dyn::AbstractDynamics{T},
+    dyn::AbstractMomentumBalance{T},
     dyn_solver::PseudoTransientSolver{T},
     tools::Tools{T},
     constants::Constants{T},
@@ -131,7 +131,7 @@ function pseudo_update_dynamics!(
     v_old_x .= v_x
     v_old_y .= v_y
 
-    # Pre-updating dynamics dispatches on Dynamics2D and Dynamics3D
+    # Pre-updating dynamics dispatches on MomentumBalance2D and MomentumBalance3D
     pre_update_dynamics!(state, grid, dyn, dyn_solver, tools, constants, options)
     pseudo_vel!(v_x, v_old_x, v_x_dt, dtau, theta_v, state.masks.update_ice)
     pseudo_vel!(v_y, v_old_y, v_y_dt, dtau, theta_v, state.masks.update_ice)
@@ -142,7 +142,7 @@ end
 function pre_update_dynamics!(
     state::State{T},
     grid::RegularGrid{T},
-    dyn::Dynamics2D{T},
+    dyn::MomentumBalance2D{T},
     dyn_solver::PseudoTransientSolver{T},
     tools::Tools{T},
     constants::Constants{T},
@@ -221,7 +221,7 @@ function pre_update_dynamics!(
     tools::Tools{T},
     constants::Constants{T},
     options::Options,
-) where {T<:AbstractFloat, D<:Dynamics3D{T}}
+) where {T<:AbstractFloat, D<:MomentumBalance3D{T}}
     return nothing
 end
 

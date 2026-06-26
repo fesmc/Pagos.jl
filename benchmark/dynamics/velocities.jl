@@ -28,8 +28,8 @@ function gpu_inputs(cpu_ins)
     return CuArray.(cpu_ins)
 end
 
-function gpu_solver(lsd2::LinearDynamicsSolver2D)
-    return LinearDynamicsSolver2D(
+function gpu_solver(lsd2::LinearMomentumSolver2D)
+    return LinearMomentumSolver2D(
         lsd2.dynamics,
         lsd2.resolution_params,
         CuArray(lsd2.u),
@@ -45,12 +45,12 @@ end
 
 # CUDSS requires CSR format. The `perm` array maps COO fill-order → CSC nzval positions;
 # we remap it to CSR positions by sorting the CSC entries by (row, col).
-function gpu_solver_csr(lsd2::LinearDynamicsSolver2D)
+function gpu_solver_csr(lsd2::LinearMomentumSolver2D)
     A_cpu = lsd2.A                              # SparseMatrixCSC on CPU
     Ai_csc, Aj_csc, _ = findnz(A_cpu)          # (row, col) in CSC nzval order
     csc_to_csr = invperm(sortperm(collect(zip(Ai_csc, Aj_csc))))
     perm_csr   = csc_to_csr[Array(lsd2.perm)]  # remap perm to CSR nzval positions
-    return LinearDynamicsSolver2D(
+    return LinearMomentumSolver2D(
         lsd2.dynamics,
         lsd2.resolution_params,
         CuArray(lsd2.u),
@@ -76,10 +76,10 @@ all_data = map(SIZES) do (nx, ny)
     ins = cpu_inputs(nx, ny; T)
     N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy = ins
 
-    lsd1 = LegacyLinearDynamicsSolver2D(rp; T)
+    lsd1 = LegacyLinearMomentumSolver2D(rp; T)
     populate_vectors!(lsd1, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy, DIVADynamics())
 
-    lsd2 = LinearDynamicsSolver2D(rp, DIVADynamics(); T)
+    lsd2 = LinearMomentumSolver2D(rp, DIVADynamics(); T)
     populate_vectors!(lsd2, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy)
 
     gpu_csc, gpu_csr = if HAS_CUDA
