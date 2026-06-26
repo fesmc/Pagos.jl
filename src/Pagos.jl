@@ -1,5 +1,6 @@
 module Pagos
 
+using Adapt
 using DocStringExtensions
 using Downloads
 using KernelAbstractions
@@ -16,18 +17,21 @@ using Tullio
 ###########################################################
 
 include("api/domain.jl")
-include("api/state.jl")
-include("api/constants.jl")
-include("api/icesheet.jl")
-include("api/simulation.jl")
-include("api/step.jl")
-# TODO: remove Params — physics constants moved to Constants, solver params live in solver structs
-# include("api/params.jl")
-# TODO: remove Options — all fields already live in PseudoTransientSolver
-# include("api/options.jl")
 export AbstractGrid, RegularGrid, CommonGrid
-export TopographyState, DynamicsState, ThermodynamicsState, MaterialState
-export Constants, IceSheet, Simulation
+
+include("api/state.jl")
+export TopographicState, MechanicState, ThermodynamicState, MaterialState
+
+include("api/constants.jl")
+export Constants
+
+include("api/icesheet.jl")
+export IceSheet, Topography, Tracers, Dynamics, Thermodynamics, Material
+
+include("api/simulation.jl")
+export Simulation
+
+include("api/step.jl")
 
 ###########################################################
 # Utils
@@ -66,23 +70,25 @@ export LipscombCalving, LevermannCalving, CrawfordCalving, BassisCalving
 export EigenCalving, FlotationCalving, PollardDeContoCalving
 export calving_rate, calving_rate!
 
-# TODO: update to new API (State → TopographyState/DynamicsState, Domain → RegularGrid)
+# TODO: update to new API (State → TopographicState/MechanicState, Domain → RegularGrid)
 # include("topography/advection.jl")
 
 ###########################################################
 # Dynamics
 ###########################################################
 
-include("mechanics/velocities.jl")
-export AbstractDynamics
-export SIADynamics, SSADynamics, SIASSADynamics
-export DIVADynamics, BlatterPattynDynamics, StokesDynamics
-export InertialDIVADynamics, InertialSIASSADynamics
+include("mechanics/momentum.jl")
+export AbstractMomentumBalance
+export SIAMomentumBalance, SSAMomentumBalance, SIASSAMomentumBalance
+export DIVAMomentumBalance, BlatterPattynMomentumBalance, StokesMomentumBalance
+export InertialDIVAMomentumBalance, InertialSIASSAMomentumBalance
+
+include("mechanics/solvers.jl")
+export AbstractMomentumSolver, LinearMomentumSolver2D
 export populate_vectors!, velocity!
-export AbstractDynamicsSolver, LinearDynamicsSolver2D
 
 include("legacy/performance/velocities.jl")
-export LegacyLinearDynamicsSolver2D
+export LegacyLinearMomentumSolver2D
 
 include("mechanics/effective_pressure.jl")
 export AbstractEffectivePressure, PrescribedEffectivePressure
@@ -101,7 +107,7 @@ export aggregate_viscosity_integral!, aggregated_viscosity_integral!
 export velocities3D!, surface_velocity!, depthaveraged_velocity!
 export basal_velocity_from_surface_velocity!, depthavg_velocity!
 
-# TODO: update to new API (State → DynamicsState, Domain → RegularGrid)
+# TODO: update to new API (State → MechanicState, Domain → RegularGrid)
 # include("mechanics/pseudotransient.jl")
 # export pseudo_transient!, pseudo_dotvel!, pseudo_dt, pseudo_vel!, dotvel!
 
@@ -110,6 +116,14 @@ export inertial_velocity!
 
 # include("mechanics/friction/plastic.jl")
 # include("mechanics/friction/stagger.jl")
+
+include("mechanics/stress.jl")
+export shearstress!, basalstress!, drivingstress!
+export deviatoric_stress!
+
+include("mechanics/strainrate.jl")
+export strainrate!, scaledstrainrate!, velocitygradients!
+export raw_strainrate!, raw_strainrate_effective!, FullColumnMomentumBalance
 
 ###########################################################
 # Material
@@ -146,12 +160,6 @@ export pressure_melting_point, pressure_melting_point!
 export relative_temperature, relative_temperature!
 export thermal_forcing, thermal_forcing!
 
-include("material/stress.jl")
-export shearstress!, basalstress!, drivingstress!
-
-include("material/strainrate.jl")
-export scaledstrainrate!, velocitygradients!
-
 ###########################################################
 # Numerics
 ###########################################################
@@ -161,7 +169,7 @@ include("numerics/picard.jl")
 # include("numerics/pseudotransient.jl")
 # export stagger_beta!
 # export pseudo_dotvel!, pseudo_vel!, pseudo_transient!
-export ∂x₁, ∂x₂, ∂x₃, ∂x₁!, ∂x₂!, ∂x₃!
+export ∂x₁, ∂x₂, ∂x₃, ∂x!, ∂y!, ∂x₃!
 export ∂x₁₂, ∂x₁₂!
 
 ###########################################################
