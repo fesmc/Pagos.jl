@@ -1,3 +1,10 @@
+"""
+$(TYPEDSIGNATURES)
+
+Abstract supertype for the spatial discretizations of an `IceSheet`. Concrete subtypes such
+as [`CommonGrid`](@ref) select, via multiple dispatch, how a component's arrays are laid out
+and which coordinates they are evaluated on.
+"""
 abstract type AbstractGrid end
 
 """

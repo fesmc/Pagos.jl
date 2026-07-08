@@ -18,6 +18,19 @@ A struct that encapsulates all basal friction related models and allows for easy
 """
 abstract type AbstractFriction end
 
+"""
+$(TYPEDEF)
+
+Concrete [`AbstractFriction`](@ref) bundling the sub-models needed to update the basal
+friction via [`basal_friction!`](@ref).
+
+# Fields:
+ - `beta<:AbstractBasalBeta`: model for the basal friction coefficient.
+ - `beta_gz<:AbstractBasalBetaGroundingZone`: model for the basal friction coefficient at the grounding zone.
+ - `roughness_sampling<:AbstractBedRoughnessSampling`: model for the bed roughness sampling.
+ - `c_bed_ref<:AbstractCbedRef`: model for the reference bed friction coefficient.
+ - `c_bed<:AbstractCbed`: model for the bed friction coefficient.
+"""
 struct BasalFriction{
     BB,     # <: AbstractBasalBeta
     BBGZ,   # <: AbstractBasalBetaGroundingZone

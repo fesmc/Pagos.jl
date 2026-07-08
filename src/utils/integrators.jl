@@ -290,6 +290,15 @@ end
 
 # Fixed-step sub-steps ------------------------------------------------------
 
+"""
+$(TYPEDSIGNATURES)
+
+Advance the state `x` by a single internal step of the integration method `m`, starting at
+time `t` and never overshooting `t_end`. Mutates `x` in place (and, for adaptive methods,
+`m.dt`) and returns the new time. Dispatched on the method type so that each scheme (e.g.
+`Euler`, `RungeKutta4`, `RKL2`) provides its own stage evaluations; `step!` calls it
+repeatedly until a macro-step `Δt_sync` is completed.
+"""
 function substep!(f::F, x, p, m::Euler, t, t_end) where {F}
     h = min(m.dt, t_end - t)
     f(m.du, x, p, t)
@@ -451,6 +460,16 @@ end
 @inline _rkl2_b(j, ::Type{T}) where {T} =
     j ≥ 2 ? (T(j)^2 + T(j) - 2) / (2 * T(j) * (T(j) + 1)) : T(1//3)
 
+# TODO: clustered spectra (e.g. a real diffusion operator, whose top eigenvalues differ
+#       by <1%) converge slowly here, so the *cold-start* estimate can under-resolve —
+#       and underestimating ρ is the unsafe direction for stability. Mitigations to add:
+#        - prefer an analytic bound when the operator provides one (e.g. SIA diffusion:
+#          ρ ≈ 2D(1/Δx² + 1/Δy²)); fall back to this power method only otherwise;
+#        - raise `maxiter` / tighten the stopping tolerance for the first (cold) call;
+#        - inflate `safety` for cold starts.
+# TODO: complex-dominated spectra (strong advection) violate RKL2's real-axis stability
+#       assumption; the magnitude returned here is then not a sufficient stability bound.
+#       Use an SSP/IMEX integrator for advection-dominated components instead.
 """
 $(TYPEDSIGNATURES)
 
@@ -464,16 +483,6 @@ Assumes the caller has already set `m.y0 == x` and `m.f0 == f(x, p, t)`. Writes
 `m.vest` to warm-start (and thus shorten) the next call. Returns the estimate. Buffers
 `m.ym1`/`m.fm1` are used as scratch and overwritten.
 """
-# TODO: clustered spectra (e.g. a real diffusion operator, whose top eigenvalues differ
-#       by <1%) converge slowly here, so the *cold-start* estimate can under-resolve —
-#       and underestimating ρ is the unsafe direction for stability. Mitigations to add:
-#        - prefer an analytic bound when the operator provides one (e.g. SIA diffusion:
-#          ρ ≈ 2D(1/Δx² + 1/Δy²)); fall back to this power method only otherwise;
-#        - raise `maxiter` / tighten the stopping tolerance for the first (cold) call;
-#        - inflate `safety` for cold starts.
-# TODO: complex-dominated spectra (strong advection) violate RKL2's real-axis stability
-#       assumption; the magnitude returned here is then not a sufficient stability bound.
-#       Use an SSP/IMEX integrator for advection-dominated components instead.
 function estimate_spectral_radius!(f::F, p, t, m::RKL2; maxiter = 50) where {F}
     T = eltype(m.y0)
     yn, fn, v, fv, vest = m.y0, m.f0, m.ym1, m.fm1, m.vest

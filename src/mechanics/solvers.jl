@@ -55,32 +55,82 @@ Solve the ice dynamics via a transient solver (e.g., explicit time-stepping).
 struct TransientMomentumSolver <: AbstractMomentumSolver
 end
 
-# TODO
 """
 $(TYPEDSIGNATURES)
 
-Solve the ice dynamics via a pseudo-transient solver.
+Solve the ice dynamics via a pseudo-transient (PT) solver following Sandip et al. (2024).
+The velocity field is relaxed in pseudo-time until the momentum balance is satisfied,
+which only requires local (stencil) operations. All work arrays live on the backend of
+the grid the solver is constructed from, so the same code runs on CPU and GPU.
+
+Construct from a grid, overriding parameters selectively via keyword arguments:
+
+```julia
+solver = PseudoTransientSolver(grid)
+solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
+```
 
 # Fields:
- - `ndim1`
- - `ndim2`
- - `ndim3`
- - `min_bulk_viscosity_ice`
- - `muB`
+ - `ndim1`, `ndim2`, `ndim3`: numerical-dimensionality constants of the PT time step
+   (1D, 2D, 3D stencils).
+ - `min_bulk_viscosity_ice`: lower bound of the bulk viscosity.
+ - `muB`: bulk-to-shear viscosity ratio entering the PT time step.
+ - `theta_v`: relaxation weight of the velocity update.
+ - `theta_mu`: relaxation weight of the viscosity update.
+ - `abstol`: convergence tolerance on the max-norm velocity change per iteration.
+ - `maxiter`: maximum number of PT iterations.
+ - `ncheck`: check convergence every `ncheck` iterations. The check is the only
+   operation that forces the host to wait for the device (see
+   [Asynchronous kernel launches](@ref)), so on GPU a larger value (10–50) keeps
+   the launch pipeline busy at the cost of up to `ncheck - 1` extra iterations.
+ - `printout_every`: print a convergence monitor every `printout_every` iterations
+   (silent by default).
+ - `dtau_scaling`: safety scaling of the PT time step.
+ - `velocity_x_old`, `velocity_y_old`: previous velocity iterate.
+ - `velocity_x_dt`, `velocity_y_dt`: pseudo-transient velocity rate.
 """
-@kwdef struct PseudoTransientSolver{T<:AbstractFloat} <: AbstractMomentumSolver
-    ndim1::T = 2.1
-    ndim2::T = 4.1
-    ndim3::T = 6.1
-    min_bulk_viscosity_ice::T = 0.5
-    muB::T = 1e2
-    theta_v::T = T(0.6)
-    theta_mu::T = T(0.1)
-    abstol::T = T(1e-8)
-    maxiter::Int = 100
-    debug::Bool = false
-    printout_every::Int = 10
-    dtau_scaling::T = T(1)
+struct PseudoTransientSolver{T<:AbstractFloat, M} <: AbstractMomentumSolver
+    ndim1::T
+    ndim2::T
+    ndim3::T
+    min_bulk_viscosity_ice::T
+    muB::T
+    theta_v::T
+    theta_mu::T
+    abstol::T
+    maxiter::Int
+    ncheck::Int
+    printout_every::Int
+    dtau_scaling::T
+    velocity_x_old::M
+    velocity_y_old::M
+    velocity_x_dt::M
+    velocity_y_dt::M
+end
+Adapt.@adapt_structure PseudoTransientSolver
+
+function PseudoTransientSolver(grid::RegularGrid;
+    ndim1 = 2.1,
+    ndim2 = 4.1,
+    ndim3 = 6.1,
+    min_bulk_viscosity_ice = 0.5,
+    muB = 1e2,
+    theta_v = 0.6,
+    theta_mu = 0.1,
+    abstol = 1e-8,
+    maxiter = 100,
+    ncheck = 1,
+    printout_every = typemax(Int),
+    dtau_scaling = 1,
+)
+    T = eltype(grid.x)
+    backend = get_backend(grid.x)
+    w() = KernelAbstractions.zeros(backend, T, grid.nx, grid.ny)
+    return PseudoTransientSolver(
+        T(ndim1), T(ndim2), T(ndim3), T(min_bulk_viscosity_ice), T(muB),
+        T(theta_v), T(theta_mu), T(abstol), Int(maxiter), Int(ncheck),
+        Int(printout_every), T(dtau_scaling), w(), w(), w(), w(),
+    )
 end
 
 """
@@ -249,6 +299,15 @@ end
     end
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+Assemble the linear system of the [`LinearMomentumSolver2D`](@ref) from the current dynamic
+state `dyn_now`: fill the sparse matrix `A` (viscosity and basal-drag coefficients) and the
+right-hand side `b` (driving stress), and seed the initial guess `u0` from the current
+velocity. Mutates the solver buffers in place; the low-level method takes the unpacked fields
+directly.
+"""
 function populate_vectors!(lsd::LinearMomentumSolver2D, dyn_now)
     (; N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy) = dyn_now
     populate_vectors!(lsd, N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy)
@@ -277,7 +336,6 @@ function populate_vectors!(
         dxdx_, dydy_, dxdy_, i_idx, j_idx, dynamics;
         ndrange = (nx, ny),
     )
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 

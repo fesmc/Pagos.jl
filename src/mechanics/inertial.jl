@@ -4,6 +4,14 @@ function velocity!(icesheet::IceSheet)
     return nothing
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+Compute the time derivative `dudt` of the depth-averaged velocity `u` for an inertial
+momentum balance, i.e. the right-hand side of the acceleration equation
+`ρ ∂u/∂t = driving stress − basal drag − membrane divergence`. The `IceSheet` method unpacks
+the required fields and forwards them to the low-level method. Mutates `dudt` in place.
+"""
 function inertial_velocity!(dudt, u, t, icesheet::IceSheet)
     (;domain, now, params) = icesheet
     inertial_velocity!(dudt, u, params.rho_ice_inv, params.mu, now.H, now.z_s, params.c_b_ref, params.g)
