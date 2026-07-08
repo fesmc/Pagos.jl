@@ -15,7 +15,6 @@ function strainrate!(strainrate, velocity, material, topo, momentum::AbstractMom
     backend = get_backend(strainrate.xx)
     kernel! = _strainrate_kernel!(backend)
     kernel!(strainrate, velocity, material, topo, momentum; ndrange = length(strainrate.xx))
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -88,9 +87,14 @@ function strainrate_effective!(strainrate, velocity, momentum::MB, I) where MB<:
 end
 
 
-# Momentum balances that resolve the vertical velocity `w`, so its gradient `∂w/∂z`
-# (`velocity.z_dz`) is available and `ε̇_zz` is taken from it directly rather than
-# reconstructed from incompressibility.
+"""
+    FullColumnMomentumBalance
+
+Union of the momentum balances that resolve the vertical velocity `w`, so its gradient
+`∂w/∂z` (`velocity.z_dz`) is available and `ε̇_zz` is taken from it directly rather than
+reconstructed from incompressibility. Currently the [`BlatterPattynMomentumBalance`](@ref)
+and [`StokesMomentumBalance`](@ref).
+"""
 const FullColumnMomentumBalance = Union{BlatterPattynMomentumBalance, StokesMomentumBalance}
 
 """
@@ -108,7 +112,6 @@ function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance
     backend = get_backend(strainrate.xx)
     kernel! = _raw_strainrate_kernel!(backend)
     kernel!(strainrate, velocity, momentum; ndrange = length(strainrate.xx))
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 

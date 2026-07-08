@@ -81,7 +81,6 @@ function aggregate_viscosity_integral!(Fm, mu, H, m, sigma, l)
     backend = get_backend(Fm)
     kernel! = _aggregate_viscosity_integral!(backend)
     kernel!(Fm, mu, H, m, s_minus_z_over_H, dsigma, l; ndrange = size(Fm))
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -95,7 +94,6 @@ function layer_velocity!(v, l, vb, beta, F1)
     backend = get_backend(v)
     kernel! = _layer_velocity!(backend)
     kernel!(v, vb, beta, F1, l; ndrange = size(vb))
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 

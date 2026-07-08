@@ -3,7 +3,8 @@ $(TYPEDSIGNATURES)
 
 In-place partial derivative of `u` along the first dimension. Uses central differences in
 the interior; boundary behaviour is controlled by `idx` (default: `FlatIndexing`,
-one-sided differences). GPU-compatible.
+one-sided differences). GPU-compatible and asynchronous (see
+[Asynchronous kernel launches](@ref)).
 """
 function ∂x!(du, u, dx, idx::AbstractIndexing = FlatIndexing(1, size(u, 1)))
     backend = get_backend(u)
@@ -18,7 +19,6 @@ function ∂x!(du, u, dx, idx::AbstractIndexing = FlatIndexing(1, size(u, 1)))
         kernel! = _∂x!(backend)
         kernel!(du, u, dx, idx; ndrange = size(u))
     end
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -30,7 +30,8 @@ $(TYPEDSIGNATURES)
 
 In-place partial derivative of `u` along the second dimension. Uses central differences in
 the interior; boundary behaviour is controlled by `idx` (default: `FlatIndexing`,
-one-sided differences). GPU-compatible.
+one-sided differences). GPU-compatible and asynchronous (see
+[Asynchronous kernel launches](@ref)).
 """
 function ∂y!(du, u, dy, idx::AbstractIndexing = FlatIndexing(1, size(u, 2)))
     backend = get_backend(u)
@@ -41,7 +42,6 @@ function ∂y!(du, u, dy, idx::AbstractIndexing = FlatIndexing(1, size(u, 2)))
         kernel! = _∂y!(backend)
         kernel!(du, u, dy, idx; ndrange = size(u))
     end
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -52,13 +52,13 @@ $(TYPEDSIGNATURES)
 
 In-place partial derivative of `u` along the third dimension. Uses central differences in
 the interior; boundary behaviour is controlled by `idx` (default: `FlatIndexing`,
-one-sided differences). GPU-compatible.
+one-sided differences). GPU-compatible and asynchronous (see
+[Asynchronous kernel launches](@ref)).
 """
 function ∂x₃!(du, u, dz, idx::AbstractIndexing = FlatIndexing(1, size(u, 3)))
     backend = get_backend(u)
     kernel! = _∂x₃!(backend)
     kernel!(du, u, dz, idx; ndrange = size(u))
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -70,7 +70,8 @@ In-place vertical derivative of `u` in a terrain-following sigma coordinate syst
 The effective physical spacing at level `k` is `H[i,j] · (ζ_aa[kp1] - ζ_aa[km1])`,
 where `ζ_aa` are the sigma midpoint positions given by `transform` and `H` is the local
 ice thickness. Boundary behaviour along the vertical is controlled by `idx`
-(default: `FlatIndexing`, one-sided differences). GPU-compatible.
+(default: `FlatIndexing`, one-sided differences). GPU-compatible and asynchronous (see
+[Asynchronous kernel launches](@ref)).
 """
 function ∂x₃!(du, u, H::AbstractMatrix, transform::AbstractSigmaTransform,
                idx::AbstractIndexing = FlatIndexing(1, size(u, 3)))
@@ -80,7 +81,6 @@ function ∂x₃!(du, u, H::AbstractMatrix, transform::AbstractSigmaTransform,
     backend = get_backend(u)
     kernel! = _∂x₃_sigma!(backend)
     kernel!(du, u, ζ_aa, H, idx; ndrange = size(u))
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -125,7 +125,7 @@ fused kernel reads `u` only once, saving memory bandwidth. On CPU the two optimi
 column kernels ([`∂x!`](@ref), [`∂y!`](@ref)) are called sequentially; they already
 achieve good SIMD efficiency individually and the working set fits in cache. Boundary
 behaviour is controlled by `idx₁` and `idx₂` independently (default: `FlatIndexing`).
-GPU-compatible.
+GPU-compatible and asynchronous (see [Asynchronous kernel launches](@ref)).
 """
 function ∂x₁₂!(du₁, du₂, u, dx, dy,
     idx₁::AbstractIndexing = FlatIndexing(1, size(u, 1)),
@@ -137,7 +137,6 @@ function ∂x₁₂!(du₁, du₂, u, dx, dy,
     else
         kernel! = _∂x₁₂!(backend)
         kernel!(du₁, du₂, u, dx, dy, idx₁, idx₂; ndrange = size(u))
-        KernelAbstractions.synchronize(backend)
     end
     return nothing
 end

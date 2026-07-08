@@ -10,8 +10,10 @@ using CUDA
 #   julia -t 1  benchmark/numerics/difference_kernels.jl   # serial CPU
 #   julia -t 4  benchmark/numerics/difference_kernels.jl   # 4-thread CPU
 #
-# The functions call KernelAbstractions.synchronize internally, so the
-# benchmark captures the full round-trip time including synchronization.
+# The operators launch asynchronously on GPU (see the "Asynchronous kernel
+# launches" section of the performance guidelines), so the GPU benchmark
+# synchronizes explicitly inside the timed region to capture execution time,
+# not just launch overhead. CPU kernels complete before returning.
 # ---------------------------------------------------------------------------
 
 const HAS_CUDA = CUDA.functional()
@@ -37,9 +39,9 @@ function bench_cuda(nx, ny)
     du₂ = similar(u)
     idx₁ = FlatIndexing(1, nx)
     idx₂ = FlatIndexing(1, ny)
-    t1  = (@b ∂x!($du₁, $u, 1.0, $idx₁)).time
-    t2  = (@b ∂y!($du₂, $u, 1.0, $idx₂)).time
-    t12 = (@b ∂x₁₂!($du₁, $du₂, $u, 1.0, 1.0, $idx₁, $idx₂)).time
+    t1  = (@b begin ∂x!($du₁, $u, 1.0, $idx₁); CUDA.synchronize() end).time
+    t2  = (@b begin ∂y!($du₂, $u, 1.0, $idx₂); CUDA.synchronize() end).time
+    t12 = (@b begin ∂x₁₂!($du₁, $du₂, $u, 1.0, 1.0, $idx₁, $idx₂); CUDA.synchronize() end).time
     return t1, t2, t12
 end
 
@@ -99,4 +101,4 @@ end
 println("Notes:")
 println("  Run with `julia -t 1` for serial and `julia -t 4` for 4-threaded CPU results.")
 println("  ∂x₁₂ reads u once; ∂x₁ + ∂x₂ reads u twice — fused wins when u > L3 cache.")
-println("  Synchronization is included in all timings (KernelAbstractions.synchronize).")
+println("  GPU timings synchronize explicitly; operators themselves launch asynchronously.")

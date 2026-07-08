@@ -8,6 +8,11 @@ using Printf
 # These kernels are memory-bandwidth-bound (~1 FLOP/byte).  The fused kernel
 # reads `u` only once rather than twice, so it should be roughly 2× faster
 # when `u` does not fit in cache.
+#
+# CPU-only benchmark: KA CPU kernels complete before returning, so no explicit
+# synchronization is needed in the timed expressions. For GPU timings see
+# difference_kernels.jl, which synchronizes inside the timed region (operators
+# launch asynchronously on GPU).
 # ---------------------------------------------------------------------------
 
 const SIZES = [(128, 128), (256, 256), (512, 512), (1024, 1024)]

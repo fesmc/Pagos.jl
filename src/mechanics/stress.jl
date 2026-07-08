@@ -50,7 +50,6 @@ function deviatoric_stress!(sxx, syy, szz, sxy, sxz, syz, seff, η, exx, eyy, ex
     kernel! = _deviatoric_stress_kernel!(backend)
     kernel!(sxx, syy, szz, sxy, sxz, syz, seff, η, exx, eyy, exy, exz, eyz;
         ndrange = length(sxx))
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 # TODO this typically does not need to be computed where we don't have any ice and could be easily handled via a mask passed to the kernel. Check performance!
@@ -74,14 +73,14 @@ end
     end
 end
 
+# TODO maybe need to stagger the stresses!
 """
     shearstress!(shear_x, shear_y, strainrate_xx, strainrate_xy, strainrate_yy,
-        prealloc, dx, dy, nx, ny)
+        prealloc, dx, dy)
 
 Compute the shear stress components `shear_x` and `shear_y` from the components
-of the scaled strain rate tensor, as computed by [`scaledstrainrate!`](@ref).
+of the scaled strain rate tensor.
 """
-# TODO maybe need to stagger the stresses!
 function shearstress!(shear_x, shear_y, strainrate_xx, strainrate_xy, strainrate_yy,
     prealloc, dx, dy)
 
@@ -98,30 +97,76 @@ function shearstress!(shear_x, shear_y, strainrate_xx, strainrate_xy, strainrate
 end
 
 """
-    basalstress!(basalstress_x, basalstress_y, beta_acx, beta_acy, ux, uy)
+$(TYPEDSIGNATURES)
 
-Compute the basal stress components `basalstress_x` and `basalstress_y` from the
-basal friction coefficients `beta_acx` and `beta_acy` and the velocity components `ux` and `uy`.
+Compute the basal-stress components `stress.base_x` and `stress.base_y` of `m` in place.
+
+The basal stress follows the friction law `` \\boldsymbol{\\tau}_b = \\beta\\,\\mathbf{v}_b ``,
+i.e. the effective basal friction coefficient `friction.beta_eff` times the basal velocity
+`velocity.x_base`, `velocity.y_base`. Like the driving stress it is a depth-averaged 2D
+field and dynamics-independent, so no dispatch on the momentum balance is needed.
+
+Staggering of `beta_eff` onto the velocity points is assumed to be handled externally, so
+the components are formed by a plain elementwise product.
 """
-function basalstress!(basalstress_x, basalstress_y, beta_acx, beta_acy, ux, uy)
-    basalstress_x .= beta_acx .* ux
-    basalstress_y .= beta_acy .* uy
-    return nothing
+function basalstress!(m::Mechanics)
+    (; state) = m
+    (; stress, friction, velocity) = state
+    return basalstress!(
+        stress.base_x, stress.base_y,
+        friction.beta_eff, velocity.x_base, velocity.y_base,
+    )
 end
 
 """
-    drivingstress!(drivingstress_x, drivingstress_y, prealloc, rho_ice, g, H, z_b, dx, dy, nx, ny)
+$(TYPEDSIGNATURES)
 
-Compute the driving stress components `drivingstress_x` and `drivingstress_y` from the
-ice density `rho_ice`, the acceleration due to gravity `g`, the ice thickness `H`, the
-bedrock elevation `z_b`, and the grid spacings `dx` and `dy`. The helper `prealloc` is
-merely used for temporary storage.
+Array-level method of [`basalstress!`](@ref): writes the basal-stress components `base_x`,
+`base_y` as the elementwise product of the effective basal friction coefficient `β` and the
+basal velocity components `v_x`, `v_y`.
 """
-function drivingstress!(drivingstress_x, drivingstress_y, prealloc, rho_ice, g, H, z_b, dx, dy)
-    @. prealloc = H + z_b
-    ∂x!(drivingstress_x, prealloc, dx)
-    ∂y!(drivingstress_y, prealloc, dy)
-    @. drivingstress_x *= rho_ice * g * H
-    @. drivingstress_y *= rho_ice * g * H
+function basalstress!(base_x, base_y, β, v_x, v_y)
+    @. base_x = β * v_x
+    @. base_y = β * v_y
+    return nothing
+end
+# TODO: this should be staggered!
+
+"""
+$(TYPEDSIGNATURES)
+
+Compute the driving-stress components `stress.driving_x` and `stress.driving_y` of `m`
+in place.
+
+The driving stress is `` \\tau_{d} = \\rho_{ice}\\,g\\,H\\,\\nabla s ``, where `` s `` is the
+ice surface elevation, `` H `` the thickness and `` \\rho_{ice}, g `` are taken from the
+physical `Constants`. It is **independent of the dynamics**: every momentum balance shares
+this expression, so the depth-averaged 2D `driving_*` fields are obtained the same way and
+no dispatch on the momentum balance is needed.
+"""
+function drivingstress!(m::Mechanics, c::Constants)
+    (; state, grid) = m
+    (; stress, topography) = state
+    (; dx, dy) = grid
+    return drivingstress!(
+        stress.driving_x, stress.driving_y,
+        topography.surface, topography.thickness,
+        c.density_ice, c.gravity, dx, dy,
+    )
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Array-level method of [`drivingstress!`](@ref): writes the driving-stress components
+`driving_x`, `driving_y` from the surface elevation `surface`, the thickness `thickness`,
+the ice density `ρ_ice`, the gravitational acceleration `g` and the grid spacings `dx`,
+`dy`. The surface gradient is taken with the central-difference stencils `∂x!`/`∂y!`.
+"""
+function drivingstress!(driving_x, driving_y, surface, thickness, ρ_ice, g, dx, dy)
+    ∂x!(driving_x, surface, dx)
+    ∂y!(driving_y, surface, dy)
+    @. driving_x *= ρ_ice * g * thickness
+    @. driving_y *= ρ_ice * g * thickness
     return nothing
 end
