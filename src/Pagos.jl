@@ -1,3 +1,17 @@
+"""
+    Pagos
+
+An ice-sheet model written in pure Julia, designed to be accessible, modular and performant.
+
+Pagos provides a hierarchy of momentum balances (from the shallow-ice approximation up to
+full Stokes, see [`AbstractMomentumBalance`](@ref)) together with the material laws, basal
+friction models and time integrators needed to advance an [`IceSheet`](@ref). Kernels are
+written with `KernelAbstractions`, so the same code runs on CPU and GPU backends.
+
+!!! warning
+    Pagos is work in progress: it is not yet fully functional and its API is subject to
+    major changes.
+"""
 module Pagos
 
 using Adapt
@@ -26,7 +40,7 @@ include("api/constants.jl")
 export Constants
 
 include("api/icesheet.jl")
-export IceSheet, Topography, Tracers, Dynamics, Thermodynamics, Material
+export IceSheet, Topography, Tracers, Mechanics, Thermodynamics, Material
 
 include("api/simulation.jl")
 export Simulation
@@ -51,6 +65,9 @@ include("utils/integrators.jl")
 export AbstractIntegrationMethod, Euler, RungeKutta4, BogackiShampine32, Tsitouras54, RKL2
 export SSPRK33, SSPRK43, ssp_coefficient
 export Integrator, step!, substep!, estimate_spectral_radius!
+
+include("utils/oceananigans.jl")
+export StaggeredGrids
 
 ###########################################################
 # Topography
@@ -107,9 +124,9 @@ export aggregate_viscosity_integral!, aggregated_viscosity_integral!
 export velocities3D!, surface_velocity!, depthaveraged_velocity!
 export basal_velocity_from_surface_velocity!, depthavg_velocity!
 
-# TODO: update to new API (State → MechanicState, Domain → RegularGrid)
-# include("mechanics/pseudotransient.jl")
-# export pseudo_transient!, pseudo_dotvel!, pseudo_dt, pseudo_vel!, dotvel!
+include("mechanics/pseudotransient.jl")
+export PseudoTransientSolver
+export pseudo_transient!, pseudo_rate!, pseudo_dt, pseudo_vel!, dotvel!
 
 include("mechanics/inertial.jl")
 export inertial_velocity!
@@ -166,9 +183,6 @@ export thermal_forcing, thermal_forcing!
 
 include("numerics/differences.jl")
 include("numerics/picard.jl")
-# include("numerics/pseudotransient.jl")
-# export stagger_beta!
-# export pseudo_dotvel!, pseudo_vel!, pseudo_transient!
 export ∂x₁, ∂x₂, ∂x₃, ∂x!, ∂y!, ∂x₃!
 export ∂x₁₂, ∂x₁₂!
 
