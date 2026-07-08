@@ -39,8 +39,8 @@ function slab_fields(; H0, μ0, β0, α, ρ = 910.0, g = 9.81,
     τd_y  = fill(T(0),               nx, ny)
     ux    = zeros(T, nx, ny)
     uy    = zeros(T, nx, ny)
-    rp    = ResolutionParameters(2, nx, ny, dx, dx; T)
-    return N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, rp
+    grid  = RegularGrid(T, (nx - 1) * dx, (ny - 1) * dx, dx, dx)
+    return N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, grid
 end
 
 # -----------------------------------------------------------------------
@@ -48,7 +48,8 @@ end
 # -----------------------------------------------------------------------
 
 function solve_slab_v1(; kw...)
-    N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, rp = slab_fields(; kw...)
+    N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, grid = slab_fields(; kw...)
+    rp  = Pagos.ResolutionParameters(2, grid.nx, grid.ny, grid.dx, grid.dy; T = eltype(ux))
     lsd = LegacyLinearMomentumSolver2D(rp; T = eltype(ux))
     populate_vectors!(lsd, N, N_ab, ux, uy, τd_x, τd_y, β_acx, β_acy, DIVAMomentumBalance())
     velocity!(lsd)
@@ -57,8 +58,8 @@ function solve_slab_v1(; kw...)
 end
 
 function solve_slab_v2(; kw...)
-    N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, rp = slab_fields(; kw...)
-    lsd = LinearMomentumSolver2D(rp, DIVAMomentumBalance(); T = eltype(ux))
+    N, N_ab, β_acx, β_acy, τd_x, τd_y, ux, uy, grid = slab_fields(; kw...)
+    lsd = LinearMomentumSolver2D(grid, DIVAMomentumBalance())
     populate_vectors!(lsd, N, N_ab, ux, uy, τd_x, τd_y, β_acx, β_acy)
     velocity!(lsd)
     velocity!(ux, uy, lsd)
@@ -105,10 +106,10 @@ end
     # converge to the correct solution when the matrix values change.
     c1, c2 = SLAB_CASES
 
-    N1, N_ab1, β_acx1, β_acy1, τd_x1, τd_y1, ux1, uy1, rp = slab_fields(; c1...)
-    N2, N_ab2, β_acx2, β_acy2, τd_x2, τd_y2, ux2, uy2, _  = slab_fields(; c2...)
+    N1, N_ab1, β_acx1, β_acy1, τd_x1, τd_y1, ux1, uy1, grid = slab_fields(; c1...)
+    N2, N_ab2, β_acx2, β_acy2, τd_x2, τd_y2, ux2, uy2, _    = slab_fields(; c2...)
 
-    lsd = LinearMomentumSolver2D(rp, DIVAMomentumBalance(); T = Float64)
+    lsd = LinearMomentumSolver2D(grid, DIVAMomentumBalance())
 
     # First solve — exercises the lu() (cold) path and populates solver_cache.
     populate_vectors!(lsd, N1, N_ab1, ux1, uy1, τd_x1, τd_y1, β_acx1, β_acy1)
@@ -135,14 +136,15 @@ end
 # -----------------------------------------------------------------------
 
 @testset "Pseudo-transient pure functions" begin
-    T   = Float64
-    ρ   = T(910.0)
-    dx  = T(5e3)
-    muB = T(100.0)
-    μ   = fill(T(1e5), 3, 3)
+    T    = Float64
+    ρ    = T(910.0)
+    dx   = T(5e3)
+    muB  = T(100.0)
+    ndim = T(4.1)
+    μ    = fill(T(1e5), 3, 3)
 
-    expected_dt = ρ * dx^2 / (4 * (1 + muB) * 4.1 * T(1e5))
-    @test pseudo_dt(ρ, dx, μ, muB) ≈ expected_dt
+    expected_dt = ρ * dx^2 / (4 * (1 + muB) * ndim * T(1e5))
+    @test pseudo_dt(ρ, dx, dx, μ, muB, ndim) ≈ expected_dt
 
     v     = zeros(T, 2, 2)
     v_old = ones(T, 2, 2)
@@ -150,42 +152,67 @@ end
     pseudo_vel!(v, v_old, dv, T(0.5), T(0.6))
     @test all(≈(T(1.6)), v)   # 1 + 0.6 * 2 * 0.5 = 1.6
 
-    H       = fill(T(1000.0), 2, 2)
-    shear   = fill(T(0.0),    2, 2)
-    basal   = fill(T(1e3),    2, 2)
-    driving = fill(T(-8927.0), 2, 2)
-    dv2     = zeros(T, 2, 2)
-    dotvel!(dv2, shear, basal, driving, ρ, H, 2, 2)
-    @test all(≈((0.0 - 1e3 - (-8927.0)) / (ρ * T(1000.0))), dv2)
+    # Uniform slab residual: no membrane stresses, basal and driving stress only.
+    nx, ny  = 2, 2
+    H       = fill(T(1000.0),  nx, ny)
+    sxx     = zeros(T, nx, ny)
+    sxy     = zeros(T, nx, ny)
+    syy     = zeros(T, nx, ny)
+    basal_x = fill(T(1e3),     nx, ny)
+    basal_y = zeros(T, nx, ny)
+    driving_x = fill(T(-8927.0), nx, ny)
+    driving_y = zeros(T, nx, ny)
+    dvx     = zeros(T, nx, ny)
+    dvy     = zeros(T, nx, ny)
+    dotvel!(dvx, dvy, sxx, sxy, syy, basal_x, basal_y, driving_x, driving_y,
+        H, ρ, dx, dx, DIVAMomentumBalance())
+    @test all(≈((0.0 - 1e3 - (-8927.0)) / (ρ * T(1000.0))), dvx)
+    @test all(==(T(0)), dvy)
 end
 
 # Large β0 → lambda = θ·dtau·β/(ρH) ≈ 0.9 → converges in ~10 iterations.
 const PT_SLAB = (H0 = 1000.0, μ0 = 1e5, β0 = 1e4, α = 1e-3)
 
-@testset "DIVA uniform slab — pseudo_transient!" begin
+@testset "DIVA uniform slab — PseudoTransientSolver" begin
     T   = Float64
     c   = PT_SLAB
     an  = slab_analytical(; c...)
 
     nx, ny, dx = 11, 3, T(5e3)
-    lx = (nx - 1) * dx
-    ly = (ny - 1) * dx
+    grid   = RegularGrid(T, (nx - 1) * dx, (ny - 1) * dx, dx, dx)
+    state  = MechanicState(grid)
+    cst    = Constants{T}()
+    solver = PseudoTransientSolver(grid; maxiter = 50, abstol = 1e-8)
+    mech   = Mechanics(state, grid, nothing, DIVAMomentumBalance(), solver,
+                       nothing, nothing)
 
-    domain  = Domain(T, lx, ly, dx, dx)
-    state   = State(domain)
-    params  = Params{T}()
-    options = Options{T}(maxiter = 50, abstol = 1e-8, printout_every = 1000)
+    state.topography.thickness .= T(c.H0)
+    state.topography.surface   .= T(c.H0) .- T(c.α) .* grid.x  # ∂s/∂x = -α
+    state.material.viscosity_depthaveraged .= T(c.μ0)
+    state.friction.beta_eff    .= T(c.β0)
 
-    state.H    .= T(c.H0)
-    state.z_b  .= T(-c.α) .* domain.X   # linear slope: ∂(H+z_b)/∂x = -α
-    state.mu   .= T(c.μ0)
-    state.beta .= T(c.β0)
-
-    icesheet = IceSheet(state, domain, params, options)
-    pseudo_transient!(icesheet)
+    res = velocity!(mech, cst)
+    ux  = view(state.velocity.x, :, :, 1)
+    uy  = view(state.velocity.y, :, :, 1)
 
     @testset "H0=$(c.H0) β0=$(c.β0)" begin
-        @test all(≈(an.ub, rtol = 1e-5), state.ux)
-        @test all(≈(0.0,   atol = 1e-8 * abs(an.ub)), state.uy)
+        @test res.converged
+        @test all(≈(an.ub, rtol = 1e-5), ux)
+        @test all(≈(0.0,   atol = 1e-8 * abs(an.ub)), uy)
+    end
+
+    # Sparse convergence checks (ncheck > 1): fewer host-device syncs on GPU,
+    # same solution; may overshoot convergence by up to ncheck - 1 iterations.
+    @testset "ncheck = 5" begin
+        ux .= 0
+        uy .= 0
+        solver5 = PseudoTransientSolver(grid; maxiter = 50, abstol = 1e-8, ncheck = 5)
+        mech5   = Mechanics(state, grid, nothing, DIVAMomentumBalance(), solver5,
+                            nothing, nothing)
+        res5 = velocity!(mech5, cst)
+        @test res5.converged
+        @test res5.iterations % 5 == 0
+        @test all(≈(an.ub, rtol = 1e-5), ux)
+        @test all(≈(0.0,   atol = 1e-8 * abs(an.ub)), uy)
     end
 end
