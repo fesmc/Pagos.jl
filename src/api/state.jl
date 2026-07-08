@@ -102,9 +102,18 @@ struct MechanicMaterialState{M2, M3}
 end
 Adapt.@adapt_structure MechanicMaterialState
 
+struct FrictionState{M}
+    beta::M
+    beta_eff::M
+    c_bed::M
+end
+Adapt.@adapt_structure FrictionState
+
 struct StressState{M2, M3}
-    driving::M2
-    base::M2
+    driving_x::M2
+    driving_y::M2
+    base_x::M2
+    base_y::M2
     base_vertical::M2
 
     xx::M3
@@ -181,9 +190,7 @@ use `nz == 1`, so the column dimension is always present and tensor/stress compu
 are dynamics-independent (no 2D/3D special-casing).
 """
 struct MechanicState{M2, M3}
-    beta::M2
-    beta_eff::M2
-    c_bed::M2
+    friction::FrictionState{M2}
     flux::M2
     flux_grline::M2
 
@@ -203,11 +210,12 @@ function MechanicState(grid::RegularGrid)
     m2() = KernelAbstractions.zeros(backend, T, nx, ny)
     m3() = KernelAbstractions.zeros(backend, T, nx, ny, nz)
     return MechanicState(
-        m2(), m2(), m2(), m2(), m2(),                       # beta, beta_eff, c_bed, flux, flux_grline
+        FrictionState(m2(), m2(), m2()),                    # beta, beta_eff, c_bed
+        m2(), m2(),                                         # flux, flux_grline
         MechanicTopographyState(m2(), m2()),               # surface, thickness
         MechanicMaterialState(m2(), m3()),                 # viscosity_depthaveraged, viscosity
         StrainRateState(ntuple(_ -> m3(), 10)...),         # 10 column tensor fields
-        StressState(m2(), m2(), m2(), ntuple(_ -> m3(), 13)...),  # 3 depth-averaged + 13 column
+        StressState(ntuple(_ -> m2(), 5)..., ntuple(_ -> m3(), 13)...),  # 3 depth-averaged + 13 column
         VelocityState(ntuple(_ -> m2(), 14)..., ntuple(_ -> m3(), 13)...),  # 14 depth-averaged + 13 column
     )
 end
