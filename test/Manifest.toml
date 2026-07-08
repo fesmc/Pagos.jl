@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "b2868b95fb9747d2daf4d9ca9a2529084c9121ff"
+project_hash = "633e56f71d28e8ae054b934232a7ab6df775a398"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -28,6 +28,12 @@ weakdeps = ["SparseArrays", "StaticArrays"]
     [deps.Adapt.extensions]
     AdaptSparseArraysExt = "SparseArrays"
     AdaptStaticArraysExt = "StaticArrays"
+
+[[deps.Aqua]]
+deps = ["Compat", "Pkg", "Test"]
+git-tree-sha1 = "4537cc8ed3fba5d88b844a18f7e9bb93f07d2742"
+uuid = "4c88cf16-eb10-579e-8560-4a9242c79595"
+version = "0.8.16"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -152,6 +158,16 @@ deps = ["CFTime", "DataStructures", "Dates", "DiskArrays", "Preferences", "Print
 git-tree-sha1 = "bf07704e843daabd2cb2bb1404571656f80bce16"
 uuid = "1fbeeb36-5f17-413c-809b-666fb144f157"
 version = "0.4.3"
+
+[[deps.Compat]]
+deps = ["TOML", "UUIDs"]
+git-tree-sha1 = "9d8a54ce4b17aa5bdce0ea5c34bc5e7c340d16ad"
+uuid = "34da2185-b29b-5c13-b0c7-acf172513d20"
+version = "4.18.1"
+weakdeps = ["Dates", "LinearAlgebra"]
+
+    [deps.Compat.extensions]
+    CompatLinearAlgebraExt = "LinearAlgebra"
 
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
