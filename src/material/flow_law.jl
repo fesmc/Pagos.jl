@@ -117,19 +117,19 @@ $(TYPEDSIGNATURES)
 Get the viscosity `η` based on the rate factor `A`, creep function `f`, and flow law parameterization `law<:AbstractFlowLaw`.
 """
 function viscosity(
-    _,
-    _,
+    ::Number,
+    ::Number,
     law::PrescribedViscosityFlowLaw,
 )
     return law.η
 end
 
 function viscosity(
-    A,
-    f,
+    A::Number,
+    f::Number,
     ::RateCreepFlowLaw,
 )
-    return 0.5 ./ (A .* f)
+    return 0.5 / (A * f)
 end
 
 function viscosity(
