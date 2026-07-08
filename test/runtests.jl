@@ -1,6 +1,7 @@
 using Pagos
 using Test
 
+include("aqua.jl")
 include("utils/indices.jl")
 include("utils/mask.jl")
 include("utils/integrators.jl")
