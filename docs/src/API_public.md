@@ -208,3 +208,15 @@ stencil
 ActiveCellsMap
 apply!
 ```
+
+### Staggered grids
+
+```@docs
+StaggeredGrids
+StaggeredGrids.RectilinearGrid
+StaggeredGrids.Field
+StaggeredGrids.interpolate
+StaggeredGrids.compute
+StaggeredGrids.compute!
+StaggeredGrids.@at
+```
