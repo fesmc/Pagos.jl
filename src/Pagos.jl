@@ -58,8 +58,6 @@ export index, stencil_fd, stencil
 
 include("utils/math.jl")
 include("utils/debug.jl")
-include("utils/mask.jl")
-export ActiveCellsMap, active_indices!, apply!
 
 include("utils/integrators.jl")
 export AbstractIntegrationMethod, Euler, RungeKutta4, BogackiShampine32, Tsitouras54, RKL2
