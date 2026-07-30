@@ -124,7 +124,15 @@ end
 end
 
 # Default (plane / depth-integrated): ε̇_zz reconstructed from incompressibility.
-function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance, I)
+#
+# `I` is annotated `::Integer` (it is the flat `@index(Global, Linear)` of the kernel above,
+# so this is behaviour-neutral) purely to keep this 4-argument per-element method from being
+# ambiguous with the 4-argument staggered `raw_strainrate!(sr, vel, momentum, rt::Runtime)`
+# further down. Left untyped, `(Any, Any, FullColumnMomentumBalance, Any)` and
+# `(StrainRateState, VelocityState, AbstractMomentumBalance, Runtime)` match the same call
+# with neither more specific, and `Runtime` has an empty type intersection with `Integer`,
+# so annotating removes the ambiguity without narrowing anything real.
+function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance, I::Integer)
     dxx = velocity.x_dx[I]
     dyy = velocity.y_dy[I]
     strainrate.xx[I] = dxx
@@ -136,7 +144,8 @@ function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance
 end
 
 # Full-column: ε̇_zz read directly from the resolved vertical velocity gradient.
-function raw_strainrate!(strainrate, velocity, momentum::FullColumnMomentumBalance, I)
+function raw_strainrate!(strainrate, velocity, momentum::FullColumnMomentumBalance,
+                         I::Integer)
     strainrate.xx[I] = velocity.x_dx[I]
     strainrate.yy[I] = velocity.y_dy[I]
     strainrate.zz[I] = velocity.z_dz[I]                        # ∂w/∂z directly
@@ -184,5 +193,234 @@ function velocitygradients!(v_x_dx, v_x_dy, v_y_dx, v_y_dy, v_dx, v_dy, dx, dy)
     ∂y!(v_x_dy, v_dx, dy)
     ∂x!(v_y_dx, v_dy, dx)
     ∂y!(v_y_dy, v_dy, dy)
+    return nothing
+end
+
+###############################################################
+# Chmy-native, C-grid staggered velocity gradients and strain rates
+###############################################################
+#
+# This is where the C-grid layout is supposed to pay for itself, and the check that it
+# does is that **no interpolation appears anywhere in the tensor**. Assigning `u` to `acx`,
+# `v` to `acy` and `w` to `aa`/z-`Vertex` fixes every gradient by operator algebra:
+#
+#   ∂u/∂x : acx    → aa       ∂v/∂x : acy    → ab       ∂w/∂x : aa_ac → acx_ac
+#   ∂u/∂y : acx    → ab       ∂v/∂y : acy    → aa       ∂w/∂y : aa_ac → acy_ac
+#   ∂u/∂z : acx    → acx_ac   ∂v/∂z : acy    → acy_ac   ∂w/∂z : aa_ac → aa
+#
+# so each strain-rate component is a sum of terms that already live on the *same* node:
+# ε̇_xx = ∂u/∂x at `aa`; ε̇_xy = (∂u/∂y + ∂v/∂x)/2 with both at `ab`; ε̇_xz =
+# (∂u/∂z + ∂w/∂x)/2 with both at `acx_ac`. Nothing is staggered mid-formula. The
+# interpolations that remain are exactly the two places where physics genuinely mixes node
+# classes: the viscosity, which lives at `aa` but has to scale off-diagonal strain rates
+# elsewhere, and the second invariants, which are cell-centred quantities built from
+# off-diagonal components that are not.
+#
+# Two structural differences from the collocated kernels above, both forced:
+#
+#  1. **No shared flat `@index(Global, Linear)`.** The components have four different
+#     shapes on the C-grid (`aa`, `ab`, `acx_ac`, `acy_ac`), so one linear index addresses
+#     a different physical point in each. The kernels below index every field at *its own*
+#     `(i, j, k)`, which is the same physical location precisely because each field's index
+#     space is anchored to its own node class. The `Launcher`'s `size(grid, Center()) .+ 2`
+#     sweep covers every one of those index spaces at once (`aa` needs `1:nx`, `ab` and
+#     `acx_ac` need `1:nx+1`, and the sweep provides `0:nx+1`), so a single fused kernel is
+#     still possible — it is the flat index that has to go, not the fusion.
+#  2. **The invariants need their own launch.** `ε̇_e` at `aa` reads `ε̇_xy` at neighbouring
+#     `ab` nodes, so it cannot be computed in the same pass that writes them — the
+#     neighbour may not exist yet. The collocated version got away with one pass because
+#     every component was at the same point. Hence `raw_strainrate!` then
+#     `raw_strainrate_effective!`, in that order.
+
+# Physical vertical derivative on the terrain-following sigma axis: `∂/∂z = (1/H) ∂/∂ζ`,
+# matching the legacy `∂x₃!(du, u, H, transform)` convention (`Δu / (Δζ · H)`). `∂z_σ`
+# supplies `∂/∂ζ` — Chmy's own `∂z` is wrong on a non-uniform axis, see
+# `src/api/sigma_operators.jl`. Unlike the legacy kernel this returns zero rather than
+# `Inf`/`NaN` where there is no ice; an `Inf` here propagates into the whole tensor.
+@inline _dz_over_H(dζ, H) = H > zero(H) ? dζ / H : zero(dζ)
+
+@kernel inbounds = true function _velocity_gradients!(velocity, H, mask, grid, grid2d, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    u, v, w = velocity.x, velocity.y, velocity.z
+    Z = zero(eltype(velocity.x_dx))
+
+    # `node_active` consults only the horizontal part of the node class, so the `_AC`
+    # (z-`Vertex`) variants share their activity with `NODE_ACX`/`NODE_ACY`.
+    act_aa  = node_active(mask, NODE_AA, i, j)
+    act_ab  = node_active(mask, NODE_AB, i, j)
+    act_acx = node_active(mask, NODE_ACX, i, j)
+    act_acy = node_active(mask, NODE_ACY, i, j)
+
+    velocity.x_dx[I...] = act_aa ? ∂x(u, grid, I...) : Z    # acx   → aa
+    velocity.y_dy[I...] = act_aa ? ∂y(v, grid, I...) : Z    # acy   → aa
+    velocity.x_dy[I...] = act_ab ? ∂y(u, grid, I...) : Z    # acx   → ab
+    velocity.y_dx[I...] = act_ab ? ∂x(v, grid, I...) : Z    # acy   → ab
+    velocity.z_dx[I...] = act_acx ? ∂x(w, grid, I...) : Z   # aa_ac → acx_ac
+    velocity.z_dy[I...] = act_acy ? ∂y(w, grid, I...) : Z   # aa_ac → acy_ac
+
+    # H is a `grid2d` field, so it is indexed at k = 1 regardless of the sweep's k, and
+    # staggered onto the same horizontal face as the derivative it scales.
+    velocity.x_dz[I...] = act_acx ?
+        _dz_over_H(∂z_σ(u, grid, I...), lerp(H, NODE_ACX, grid2d, i, j, 1)) : Z
+    velocity.y_dz[I...] = act_acy ?
+        _dz_over_H(∂z_σ(v, grid, I...), lerp(H, NODE_ACY, grid2d, i, j, 1)) : Z
+    velocity.z_dz[I...] = act_aa ?
+        _dz_over_H(∂z_σ(w, grid, I...), H[i, j, 1]) : Z
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native [`velocitygradients!`](@ref): fill all nine velocity-gradient fields of
+`velocity` from its `x`/`y`/`z` components, each at the node class the corresponding
+operator maps to (see the table in the source). `H` is the cell-centred ice thickness on
+`rt.grid2d`, needed for the sigma-coordinate vertical scaling `∂/∂z = (1/H) ∂/∂ζ`.
+
+Distinguished from the collocated method by taking a [`Runtime`](@ref) instead of `dx`,
+`dy`. Launched on the column grid, since the gradients are column fields.
+
+!!! note "Vertical derivatives use `∂z_σ`, not Chmy's `∂z`"
+    On the sigma `Chmy.FunctionAxis` Chmy's own `∂z` scales by the wrong spacing (see
+    [`∂z_σ`](@ref)). The horizontal axes are uniform, so `∂x`/`∂y` are unaffected.
+
+!!! warning "No sigma correction on the horizontal derivatives"
+    `∂u/∂x` here is taken at constant ζ, not at constant z — the terrain-following
+    correction `-(∂z/∂x)/(∂z/∂ζ) · ∂u/∂ζ` is *not* applied. This matches the collocated
+    implementation it replaces (which uses plain `∂x!`), so the two are comparable, but it
+    is an approximation both share: it is accurate where the surface and bed slopes are
+    small, which is the shallow-ice regime these balances assume anyway.
+"""
+function velocitygradients!(velocity::VelocityState, H, rt::Runtime,
+                            mask::AbstractIceMask = NoMask())
+    rt.launch(rt.arch, rt.grid,
+              _velocity_gradients! => (velocity, H, mask, rt.grid, rt.grid2d))
+    return nothing
+end
+
+# `yx`/`zx`/`zy` are the symmetric duplicates of `xy`/`xz`/`yz` and live at the same node
+# classes. The collocated kernels leave them untouched; filling them costs three stores and
+# removes a "why is `strainrate.yx` zero" trap for anything that reads the full tensor.
+@inline function _raw_strainrate_at!(sr, vel, ::AbstractMomentumBalance, mask,
+                                     I::Vararg{Integer, 3})
+    if node_active(mask, NODE_AA, I[1], I[2])
+        dxx = vel.x_dx[I...]
+        dyy = vel.y_dy[I...]
+        sr.xx[I...] = dxx
+        sr.yy[I...] = dyy
+        sr.zz[I...] = -(dxx + dyy)                   # incompressibility (continuity)
+    else
+        Z = zero(eltype(sr.xx))
+        sr.xx[I...] = Z; sr.yy[I...] = Z; sr.zz[I...] = Z
+    end
+    _raw_strainrate_shear!(sr, vel, mask, I...)
+    return nothing
+end
+
+@inline function _raw_strainrate_at!(sr, vel, ::FullColumnMomentumBalance, mask,
+                                     I::Vararg{Integer, 3})
+    if node_active(mask, NODE_AA, I[1], I[2])
+        sr.xx[I...] = vel.x_dx[I...]
+        sr.yy[I...] = vel.y_dy[I...]
+        sr.zz[I...] = vel.z_dz[I...]                 # ∂w/∂z directly
+    else
+        Z = zero(eltype(sr.xx))
+        sr.xx[I...] = Z; sr.yy[I...] = Z; sr.zz[I...] = Z
+    end
+    _raw_strainrate_shear!(sr, vel, mask, I...)
+    return nothing
+end
+
+@inline function _raw_strainrate_shear!(sr, vel, mask, I::Vararg{Integer, 3})
+    i, j = I[1], I[2]
+    Z = zero(eltype(sr.xy))
+    exy = node_active(mask, NODE_AB, i, j) ?
+          (vel.x_dy[I...] + vel.y_dx[I...]) / 2 : Z          # both at ab
+    exz = node_active(mask, NODE_ACX_AC, i, j) ?
+          (vel.x_dz[I...] + vel.z_dx[I...]) / 2 : Z          # both at acx_ac
+    eyz = node_active(mask, NODE_ACY_AC, i, j) ?
+          (vel.y_dz[I...] + vel.z_dy[I...]) / 2 : Z          # both at acy_ac
+    sr.xy[I...] = exy; sr.yx[I...] = exy
+    sr.xz[I...] = exz; sr.zx[I...] = exz
+    sr.yz[I...] = eyz; sr.zy[I...] = eyz
+    return nothing
+end
+
+@kernel inbounds = true function _raw_strainrate_staggered!(sr, vel, momentum, mask, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    _raw_strainrate_at!(sr, vel, momentum, mask, I...)
+end
+
+@kernel inbounds = true function _raw_strainrate_effective_staggered!(sr, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    if node_active(mask, NODE_AA, I[1], I[2])
+        # The off-diagonals are the only terms not already at `aa`, so they are the only
+        # ones interpolated — once, here, rather than inside each user.
+        exy = lerp(sr.xy, NODE_AA, grid, I...)
+        exz = lerp(sr.xz, NODE_AA, grid, I...)
+        eyz = lerp(sr.yz, NODE_AA, grid, I...)
+        sr.effective[I...] = sqrt((sr.xx[I...]^2 + sr.yy[I...]^2 + sr.zz[I...]^2) / 2 +
+                                  exy^2 + exz^2 + eyz^2)
+    else
+        sr.effective[I...] = zero(eltype(sr.effective))
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native [`raw_strainrate!`](@ref): write the strain-rate tensor components from the
+velocity gradients, each at its own node class — normal components at `aa`, `ε̇_xy` at `ab`,
+`ε̇_xz` at `acx`/z-`Vertex`, `ε̇_yz` at `acy`/z-`Vertex`. Every component is a sum of terms
+that already live on the same node, so no interpolation enters.
+
+`ε̇_zz` follows incompressibility (`-(ε̇_xx + ε̇_yy)`) unless `momentum` resolves the
+vertical velocity ([`FullColumnMomentumBalance`](@ref)), in which case `∂w/∂z` is used
+directly — the same dispatch as the collocated method.
+
+Does **not** compute the effective strain rate: that needs its own launch, because at `aa`
+it reads `ε̇_xy` at neighbouring `ab` nodes, which the same pass may not have written yet.
+Call [`raw_strainrate_effective!`](@ref) after this, or use the state-level method which
+sequences all three steps.
+"""
+function raw_strainrate!(strainrate::StrainRateState, velocity::VelocityState,
+                         momentum::AbstractMomentumBalance, rt::Runtime,
+                         mask::AbstractIceMask = NoMask())
+    rt.launch(rt.arch, rt.grid,
+              _raw_strainrate_staggered! => (strainrate, velocity, momentum, mask))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native [`raw_strainrate_effective!`](@ref): the second invariant at `aa`, with the
+off-diagonal components interpolated back from their own node classes by `lerp`.
+
+Must run *after* [`raw_strainrate!`](@ref) — it is a stencil, not a pointwise map. Only
+`interior(strainrate.effective)` is meaningful: the halo ring of the sweep reads
+off-diagonal cells one further out than `raw_strainrate!`'s own sweep reached.
+"""
+function raw_strainrate_effective!(strainrate::StrainRateState, rt::Runtime,
+                                  mask::AbstractIceMask = NoMask())
+    rt.launch(rt.arch, rt.grid,
+              _raw_strainrate_effective_staggered! => (strainrate, mask, rt.grid))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level Chmy-native [`raw_strainrate!`](@ref): velocity gradients, then tensor
+components, then the second invariant, in the order they depend on each other.
+"""
+function raw_strainrate!(mech::MechanicState, momentum::AbstractMomentumBalance,
+                         rt::Runtime, mask::AbstractIceMask = NoMask())
+    velocitygradients!(mech.velocity, mech.topography.thickness, rt, mask)
+    raw_strainrate!(mech.strainrate, mech.velocity, momentum, rt, mask)
+    raw_strainrate_effective!(mech.strainrate, rt, mask)
     return nothing
 end

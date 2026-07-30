@@ -44,6 +44,7 @@ _field(arch, grid, loc, T, halo) = Field(arch, grid, loc, T; halo)
 
 struct TopographicMasks{AA}
     is_ice::AA
+    is_ice_neighbour::AA        # ice-free but touching ice: the ring the margin advances into
     is_ice_allowed::AA
     is_grounded::AA
     is_floating::AA
@@ -129,7 +130,7 @@ function TopographicState(grid::RegularGrid)
     b = KernelAbstractions.zeros(backend, Bool, nx, ny)
     m = KernelAbstractions.zeros(backend, T, nx, ny)
     return TopographicState(
-        TopographicMasks([copy(b) for _ in 1:5]...),
+        TopographicMasks([copy(b) for _ in 1:6]...),
         DistanceState([copy(m) for _ in 1:2]...),
         FractionState([copy(m) for _ in 1:1]...),
         ThicknessState([copy(m) for _ in 1:6]...),
@@ -155,7 +156,7 @@ function TopographicState(grid::StaggeredGrid; halo = 1)
     acx() = _field(arch, g, NODE_ACX, T, halo)
     acy() = _field(arch, g, NODE_ACY, T, halo)
     return TopographicState(
-        TopographicMasks(ntuple(_ -> b(), 5)...),
+        TopographicMasks(ntuple(_ -> b(), 6)...),
         DistanceState(ntuple(_ -> aa(), 2)...),
         FractionState(aa()),
         ThicknessState(ntuple(_ -> aa(), 6)...),
