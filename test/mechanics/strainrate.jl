@@ -9,6 +9,11 @@ function grid3d(T, lx, ly, dx, dy, nz)
         g.Lon, g.Lat, g.area, g.distortion, g.basins, g.regions)
 end
 
+# `raw_strainrate!(strainrate, velocity, momentum)` is the low-level entry point that
+# reconstructs/dispatches ε̇_zz exactly like the old `strainrate!(mech[, balance])` used
+# to (see raw_strainrate! docstring). `SSAMomentumBalance` stands in for "any
+# depth-integrated balance" below: the fallback method is shared by all of them.
+
 # ---------------------------------------------------------------------------
 # Plane dynamics (nz == 1): vertical velocity gradients are zero
 # ---------------------------------------------------------------------------
@@ -17,23 +22,23 @@ end
     grid = RegularGrid(Float64, 4.0, 4.0, 1.0, 1.0)
     mech = MechanicState(grid)
 
-    fill!(mech.v_x_dx,  2.0)   # ε̇xx = 2
-    fill!(mech.v_y_dy, -1.0)   # ε̇yy = -1
-    fill!(mech.v_x_dy,  1.0)
-    fill!(mech.v_y_dx,  3.0)   # ε̇xy = (1 + 3)/2 = 2
+    fill!(mech.velocity.x_dx,  2.0)   # ε̇xx = 2
+    fill!(mech.velocity.y_dy, -1.0)   # ε̇yy = -1
+    fill!(mech.velocity.x_dy,  1.0)
+    fill!(mech.velocity.y_dx,  3.0)   # ε̇xy = (1 + 3)/2 = 2
 
-    strainrate!(mech)
+    raw_strainrate!(mech.strainrate, mech.velocity, SSAMomentumBalance())
 
-    @test all(mech.strain_rate_dxx .≈  2.0)
-    @test all(mech.strain_rate_dyy .≈ -1.0)
-    @test all(mech.strain_rate_dxy .≈  2.0)
+    @test all(mech.strainrate.xx .≈  2.0)
+    @test all(mech.strainrate.yy .≈ -1.0)
+    @test all(mech.strainrate.xy .≈  2.0)
     # ε̇zz reconstructed: -(2 - 1) = -1
-    @test all(mech.strain_rate_dzz .≈ -1.0)
+    @test all(mech.strainrate.zz .≈ -1.0)
     # no resolved vertical shear
-    @test all(mech.strain_rate_dxz .== 0.0)
-    @test all(mech.strain_rate_dyz .== 0.0)
+    @test all(mech.strainrate.xz .== 0.0)
+    @test all(mech.strainrate.yz .== 0.0)
     # effective: √(½(4 + 1 + 1) + 4) = √(3 + 4) = √7
-    @test all(mech.strain_rate_effective .≈ sqrt(7.0))
+    @test all(mech.strainrate.effective .≈ sqrt(7.0))
 end
 
 # ---------------------------------------------------------------------------
@@ -44,25 +49,25 @@ end
     grid = grid3d(Float64, 4.0, 4.0, 1.0, 1.0, 4)
     mech = MechanicState(grid)
 
-    fill!(mech.v_x_dx,  2.0)   # ε̇xx = 2
-    fill!(mech.v_y_dy, -1.0)   # ε̇yy = -1
-    fill!(mech.v_x_dy,  1.0)
-    fill!(mech.v_y_dx,  3.0)   # ε̇xy = 2
-    fill!(mech.v_x_dz,  4.0)
-    fill!(mech.v_z_dx,  0.0)   # ε̇xz = (4 + 0)/2 = 2
-    fill!(mech.v_y_dz, -2.0)
-    fill!(mech.v_z_dy,  2.0)   # ε̇yz = (-2 + 2)/2 = 0
+    fill!(mech.velocity.x_dx,  2.0)   # ε̇xx = 2
+    fill!(mech.velocity.y_dy, -1.0)   # ε̇yy = -1
+    fill!(mech.velocity.x_dy,  1.0)
+    fill!(mech.velocity.y_dx,  3.0)   # ε̇xy = 2
+    fill!(mech.velocity.x_dz,  4.0)
+    fill!(mech.velocity.z_dx,  0.0)   # ε̇xz = (4 + 0)/2 = 2
+    fill!(mech.velocity.y_dz, -2.0)
+    fill!(mech.velocity.z_dy,  2.0)   # ε̇yz = (-2 + 2)/2 = 0
 
-    strainrate!(mech)
+    raw_strainrate!(mech.strainrate, mech.velocity, SSAMomentumBalance())
 
-    @test all(mech.strain_rate_dxx .≈  2.0)
-    @test all(mech.strain_rate_dyy .≈ -1.0)
-    @test all(mech.strain_rate_dzz .≈ -1.0)   # reconstructed
-    @test all(mech.strain_rate_dxy .≈  2.0)
-    @test all(mech.strain_rate_dxz .≈  2.0)
-    @test all(mech.strain_rate_dyz .≈  0.0)
+    @test all(mech.strainrate.xx .≈  2.0)
+    @test all(mech.strainrate.yy .≈ -1.0)
+    @test all(mech.strainrate.zz .≈ -1.0)   # reconstructed
+    @test all(mech.strainrate.xy .≈  2.0)
+    @test all(mech.strainrate.xz .≈  2.0)
+    @test all(mech.strainrate.yz .≈  0.0)
     # effective: √(½(4 + 1 + 1) + 4 + 4 + 0) = √(3 + 8) = √11
-    @test all(mech.strain_rate_effective .≈ sqrt(11.0))
+    @test all(mech.strainrate.effective .≈ sqrt(11.0))
 end
 
 # ---------------------------------------------------------------------------
@@ -73,26 +78,26 @@ end
     grid = grid3d(Float64, 4.0, 4.0, 1.0, 1.0, 4)
     mech = MechanicState(grid)
 
-    fill!(mech.v_x_dx,  2.0)   # ε̇xx = 2
-    fill!(mech.v_y_dy, -1.0)   # ε̇yy = -1
+    fill!(mech.velocity.x_dx,  2.0)   # ε̇xx = 2
+    fill!(mech.velocity.y_dy, -1.0)   # ε̇yy = -1
     # ∂w/∂z deliberately ≠ -(ε̇xx + ε̇yy) = -1, to distinguish the two paths
-    fill!(mech.v_z_dz,  5.0)
+    fill!(mech.velocity.z_dz,  5.0)
 
     # Full-column balances read ∂w/∂z directly
     for balance in (StokesMomentumBalance(), BlatterPattynMomentumBalance())
-        fill!(mech.strain_rate_dzz, 0.0)
-        strainrate!(mech, balance)
-        @test all(mech.strain_rate_dzz .≈ 5.0)
+        fill!(mech.strainrate.zz, 0.0)
+        raw_strainrate!(mech.strainrate, mech.velocity, balance)
+        @test all(mech.strainrate.zz .≈ 5.0)
         # only the diagonal is set: √(½(4 + 1 + 25)) = √15
-        @test all(mech.strain_rate_effective .≈ sqrt(15.0))
+        @test all(mech.strainrate.effective .≈ sqrt(15.0))
     end
 
     # Depth-integrated balance reconstructs from incompressibility
-    strainrate!(mech, SSAMomentumBalance())
-    @test all(mech.strain_rate_dzz .≈ -1.0)
-    # ... matching the dynamics-independent mech-only form
-    strainrate!(mech)
-    @test all(mech.strain_rate_dzz .≈ -1.0)
+    raw_strainrate!(mech.strainrate, mech.velocity, SSAMomentumBalance())
+    @test all(mech.strainrate.zz .≈ -1.0)
+    # ... any other depth-integrated balance hits the same generic fallback
+    raw_strainrate!(mech.strainrate, mech.velocity, SIAMomentumBalance())
+    @test all(mech.strainrate.zz .≈ -1.0)
 end
 
 # ---------------------------------------------------------------------------
@@ -104,18 +109,18 @@ end
     mech = MechanicState(grid)
     mat  = MaterialState(grid)
 
-    fill!(mech.v_x_dx,  2.0); fill!(mech.v_y_dy, -1.0)
-    fill!(mech.v_x_dy,  1.0); fill!(mech.v_y_dx,  3.0)
-    fill!(mech.v_x_dz,  4.0); fill!(mech.v_z_dx,  0.0)
-    fill!(mech.v_y_dz, -2.0); fill!(mech.v_z_dy,  2.0)
+    fill!(mech.velocity.x_dx,  2.0); fill!(mech.velocity.y_dy, -1.0)
+    fill!(mech.velocity.x_dy,  1.0); fill!(mech.velocity.y_dx,  3.0)
+    fill!(mech.velocity.x_dz,  4.0); fill!(mech.velocity.z_dx,  0.0)
+    fill!(mech.velocity.y_dz, -2.0); fill!(mech.velocity.z_dy,  2.0)
     η = 2.0
     fill!(mat.eta_ice, η)
 
-    strainrate!(mech)
+    raw_strainrate!(mech.strainrate, mech.velocity, SSAMomentumBalance())
     deviatoric_stress!(mech, mat)
 
-    @test all(mech.stress_xx .≈ 2η .* mech.strain_rate_dxx)
-    @test all(mech.stress_xz .≈ 2η .* mech.strain_rate_dxz)
+    @test all(mech.stress.xx .≈ 2η .* mech.strainrate.xx)
+    @test all(mech.stress.xz .≈ 2η .* mech.strainrate.xz)
     # effective stress is 2 η times effective strain rate
-    @test all(mech.stress_effective .≈ 2η .* mech.strain_rate_effective)
+    @test all(mech.stress.effective .≈ 2η .* mech.strainrate.effective)
 end
