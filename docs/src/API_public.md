@@ -202,21 +202,26 @@ stencil_fd
 stencil
 ```
 
-### Active cells map
-
-```@docs
-ActiveCellsMap
-apply!
-```
-
 ### Staggered grids
 
+Provided by [Chmy.jl](https://github.com/PTsolvers/Chmy.jl), re-exported in full by
+Pagos. See [Staggered grids](@ref staggered_grids) for the Pagos node-naming
+conventions (`aa`/`acx`/`acy`/`ab`) mapped onto Chmy locations.
+
 ```@docs
-StaggeredGrids
-StaggeredGrids.RectilinearGrid
-StaggeredGrids.Field
-StaggeredGrids.interpolate
-StaggeredGrids.compute
-StaggeredGrids.compute!
-StaggeredGrids.@at
+StaggeredGrid
+Arch
+UniformGrid
+Center
+Vertex
+Field
+VectorField
+Launcher
+set!
+interior
+∂x
+∂y
+lerp
+hlerp
+bc!
 ```
