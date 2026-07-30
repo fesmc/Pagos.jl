@@ -173,6 +173,27 @@ include("../test_helpers/chmy.jl")
                   cst32.density_ice * cst32.gravity * 800.0f0 * 0.02f0)
     end
 
+    # The one place where applying a collocated kernel to a Field-based state would be
+    # silently wrong rather than an error: `deviatoric_stress!`'s fused flat index assumes
+    # all tensor components share a shape, and on the C-grid they do not (four node
+    # classes, three lengths, and the shortest one drives `ndrange`, so nothing throws).
+    @testset "deviatoric_stress! rejects a Field-based state" begin
+        layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 6))
+        grid = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
+        mech, mat = MechanicState(grid), MaterialState(grid)
+
+        # the premise of the guard: the components genuinely differ in shape
+        @test size(mech.stress.xx) != size(mech.stress.xy)
+        @test length(mech.stress.xx) < length(mech.stress.xy)
+
+        @test_throws ErrorException deviatoric_stress!(mech, mat)
+
+        # ...while the plain-array state still works, unchanged.
+        rmech = MechanicState(RegularGrid(Float64, lx, ly, dx, dy))
+        rmat  = MaterialState(RegularGrid(Float64, lx, ly, dx, dy))
+        @test deviatoric_stress!(rmech, rmat) === nothing
+    end
+
     # The collocated methods are untouched and still dispatch on their own signature
     # (8 positional args ending in dx, dy) rather than being shadowed by the Runtime one.
     @testset "the collocated method still exists" begin
