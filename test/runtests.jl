@@ -2,8 +2,12 @@ using Pagos
 using Test
 
 include("aqua.jl")
+include("api/staggered_grid.jl")
+include("api/sigma_operators.jl")
+include("api/runtime.jl")
+include("api/state.jl")
+include("api/sigma_gradients.jl")
 include("utils/indices.jl")
-include("utils/mask.jl")
 include("utils/integrators.jl")
 include("numerics/differences.jl")
 include("mechanics/stress.jl")

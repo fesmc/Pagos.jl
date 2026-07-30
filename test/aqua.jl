@@ -6,8 +6,8 @@ using Test
     Aqua.test_all(
         Pagos;
         # `undefined_exports` and `undocumented_names` are relaxed until the dead exports
-        # (names moved to `src/legacy/` or still WIP, e.g. `ActiveCellsMap`, `apply!`,
-        # `ζ_aa`, `AbstractFloatingCalving`, `depthaveraged_velocity!`, `scaledstrainrate!`)
+        # (names moved to `src/legacy/` or still WIP, e.g. `ζ_aa`, `AbstractFloatingCalving`,
+        # `depthaveraged_velocity!`, `scaledstrainrate!`)
         # are either removed from the export lists in `src/Pagos.jl` or given definitions.
         # Once that is done, both can be re-enabled: every *defined* public name is already
         # documented. See also the `undocumented_names`/`undefined_exports` findings.

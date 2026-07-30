@@ -152,3 +152,75 @@ using KernelAbstractions: CPU
         @test_throws ErrorException grid.not_a_real_property
     end
 end
+
+
+@testset "set! (Chmy's Initialization, plus the StaggeredGrid extension)" begin
+    lx, ly, dx, dy = 4.0, 4.0, 1.0, 1.0
+
+    @testset "Chmy's own set! methods, unaffected" begin
+        sg = StaggeredGrid(Float64, lx, ly, dx, dy)
+        f  = Field(sg.arch, sg.grid, Center())
+
+        set!(f, 2.0)
+        @test all(interior(f) .== 2.0)
+
+        A = rand(sg.nx, sg.ny, sg.nz)
+        set!(f, A)
+        @test interior(f) == A
+
+        g = Field(sg.arch, sg.grid, Center())
+        set!(g, f)
+        @test interior(g) == interior(f)
+    end
+
+    @testset "set!(f, sg, fun): auto-selects grid2d vs grid by f's own z-extent" begin
+        layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 6))
+        sg       = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
+
+        # A genuine column field: the third coordinate is the sigma level ζ.
+        fcol = Field(sg.arch, sg.grid, Center())
+        set!(fcol, sg, (x, y, ζ) -> ζ)
+        @test interior(fcol)[1, 1, :] ≈ layering.ζ_aa
+
+        # A depth-integrated-*shaped* field, even though `sg` itself is a full-column
+        # grid: must resolve to `sg.grid2d`'s own z-axis (center at 0.5), not `sg.grid`'s
+        # first sigma layer (ζ_aa[1] ≈ 0.0139) — these are different numbers, so getting
+        # the wrong grid here would be a silently wrong value, not a MethodError.
+        f2d = Field(sg.arch, sg.grid2d, Center())
+        set!(f2d, sg, (x, y, ζ) -> ζ)
+        @test interior(f2d)[1, 1, 1] ≈ 0.5
+        @test !(interior(f2d)[1, 1, 1] ≈ layering.ζ_aa[1])
+
+        # The footgun this method exists to prevent: calling Chmy's own `set!` directly
+        # with the *wrong* grid does not error — both grids are 3D StructuredGrids, so
+        # it silently returns the wrong ζ instead.
+        f2d_raw = Field(sg.arch, sg.grid2d, Center())
+        Chmy.set!(f2d_raw, sg.grid, (x, y, ζ) -> ζ)
+        @test interior(f2d_raw)[1, 1, 1] ≈ layering.ζ_aa[1]
+        @test !(interior(f2d_raw)[1, 1, 1] ≈ 0.5)
+
+        # On a depth-integrated StaggeredGrid, grid === grid2d, so there is no wrong
+        # choice to make either way.
+        sgu  = StaggeredGrid(Float64, lx, ly, dx, dy)
+        fu   = Field(sgu.arch, sgu.grid, Center())
+        set!(fu, sgu, (x, y, ζ) -> x)
+        @test interior(fu)[:, 1, 1] ≈ collect(sgu.x)
+    end
+
+    @testset "set!(f, sg, fun; discrete = true)" begin
+        layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 6))
+        sg       = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
+        f        = Field(sg.arch, sg.grid, Center())
+
+        set!(f, sg, (grid, loc, i, j, k) -> Float64(k); discrete = true)
+        @test interior(f)[1, 1, :] == collect(1.0:sg.nz)
+    end
+
+    @testset "set!(f, sg, fun; parameters)" begin
+        sg = StaggeredGrid(Float64, lx, ly, dx, dy)
+        f  = Field(sg.arch, sg.grid, Center())
+
+        set!(f, sg, (x, y, ζ, a, b) -> a * x + b * y; parameters = (2.0, 3.0))
+        @test interior(f)[1, 1, 1] ≈ 2.0 * sg.x[1] + 3.0 * sg.y[1]
+    end
+end
