@@ -57,6 +57,9 @@ export Runtime
 include("api/state.jl")
 export TopographicState, MechanicState, ThermodynamicState, MaterialState
 
+include("api/boundary.jl")
+export asarray, setdata!
+
 include("api/constants.jl")
 export Constants
 
@@ -96,8 +99,13 @@ export LipscombCalving, LevermannCalving, CrawfordCalving, BassisCalving
 export EigenCalving, FlotationCalving, PollardDeContoCalving
 export calving_rate, calving_rate!
 
-# TODO: update to new API (State → TopographicState/MechanicState, Domain → RegularGrid)
-# include("topography/advection.jl")
+include("topography/masks.jl")
+export AbstractIceMask, NoMask, IceMask, node_active, node_fully_active, icemasks!
+
+include("topography/advection.jl")
+export AbstractAdvection, NoAdvection, CenteredAdvection, UpwindAdvection
+export LevelSetAdvection
+export mass_flux!, thickness_rate!, advect!
 
 ###########################################################
 # Dynamics
@@ -145,7 +153,7 @@ export inertial_velocity!
 
 include("mechanics/stress.jl")
 export shearstress!, basalstress!, drivingstress!
-export deviatoric_stress!
+export deviatoric_stress!, surface_gradient!
 
 include("mechanics/strainrate.jl")
 export strainrate!, scaledstrainrate!, velocitygradients!
