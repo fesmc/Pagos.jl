@@ -189,6 +189,19 @@ struct FrictionState{AA}
 end
 Adapt.@adapt_structure FrictionState
 
+# The depth-integrated mass flux q = H ū is what the continuity equation differentiates,
+# and `∂H/∂t = -divg(q)` is only conservative if the two components sit on the cell faces
+# the divergence reads (`acx`/`acy`) — a single `aa` flux would have to be re-staggered
+# inside the divergence, which is exactly the half-cell shift the C-grid exists to avoid.
+# `grline` is a grounding-line diagnostic, not a term in the continuity equation, so it
+# stays a cell-centred scalar at `aa`.
+struct FluxState{ACX2, ACY2, AA2}
+    x::ACX2
+    y::ACY2
+    grline::AA2
+end
+Adapt.@adapt_structure FluxState
+
 struct StressState{ACX2, ACY2, AA2, AA3, AB3, ACXZ3, ACYZ3}
     driving_x::ACX2
     driving_y::ACY2
@@ -278,8 +291,7 @@ dynamics-independent (no 2D/3D special-casing).
 """
 struct MechanicState{ACX2, ACY2, AA2, AB2, ACX3, ACY3, AA3, AB3, AAZ3, ACXZ3, ACYZ3}
     friction::FrictionState{AA2}
-    flux::AA2
-    flux_grline::AA2
+    flux::FluxState{ACX2, ACY2, AA2}
 
     topography::MechanicTopographyState{AA2}
     material::MechanicMaterialState{AA2, AA3}
@@ -297,7 +309,7 @@ function MechanicState(grid::RegularGrid)
     m3() = KernelAbstractions.zeros(backend, T, nx, ny, nz)
     return MechanicState(
         FrictionState(m2(), m2(), m2()),                    # beta, beta_eff, c_bed
-        m2(), m2(),                                         # flux, flux_grline
+        FluxState(m2(), m2(), m2()),                       # flux x, y, grline
         MechanicTopographyState(m2(), m2()),               # surface, thickness
         MechanicMaterialState(m2(), m3()),                 # viscosity_depthaveraged, viscosity
         StrainRateState(ntuple(_ -> m3(), 10)...),         # 10 column tensor fields
@@ -331,7 +343,7 @@ function MechanicState(grid::StaggeredGrid; halo = 1)
     acyz3() = _field(arch, g3, NODE_ACY_AC, T, halo)
     return MechanicState(
         FrictionState(aa2(), aa2(), aa2()),
-        aa2(), aa2(),
+        FluxState(acx2(), acy2(), aa2()),                  # flux x, y, grline
         MechanicTopographyState(aa2(), aa2()),
         MechanicMaterialState(aa2(), aa3()),
         StrainRateState(
