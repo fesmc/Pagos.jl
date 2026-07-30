@@ -55,11 +55,44 @@ end
         # depend on this worksize convention.
         @test worksize(rt.launch) == (sgrid.nx + 2, sgrid.ny + 2, sgrid.nz + 2)
         @test outer_width(rt.launch) === nothing
+
+        # nz == 1: the two grids are the same object, so the same Launcher is reused
+        # rather than a second one allocated (which, with outer_width set, would spawn a
+        # duplicate set of Worker Tasks).
+        @test rt.grid2d === sgrid.grid2d === rt.grid
+        @test rt.launch2d === rt.launch
+    end
+
+    # A Field's size comes from the grid it was built on, and the state structs mix
+    # depth-integrated fields (on grid2d) with column ones (on grid) — so a Runtime has to
+    # carry a Launcher for each. Launching a depth-integrated kernel with the column
+    # launcher does not error, it just over-runs the shallow field's single layer.
+    @testset "second launcher for the depth-integrated grid" begin
+        layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 6))
+        sgrid    = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
+        rt       = Runtime(sgrid)
+
+        @test rt.grid2d === sgrid.grid2d
+        @test rt.grid2d !== rt.grid
+        @test rt.launch2d !== rt.launch
+        @test worksize(rt.launch)   == (sgrid.nx + 2, sgrid.ny + 2, sgrid.nz + 2)
+        @test worksize(rt.launch2d) == (sgrid.nx + 2, sgrid.ny + 2, 3)
+
+        # ...and it launches, filling the single layer of a grid2d field.
+        f = Field(rt.arch, rt.grid2d, Center())
+        rt.launch2d(rt.arch, rt.grid2d, _fill_x! => (f, rt.grid2d))
+        @test size(interior(f), 3) == 1
+        @test interior(f)[:, 1, 1] ≈ collect(sgrid.x)
     end
 
     @testset "outer_width forwarded" begin
         rt = Runtime(StaggeredGrid(Float64, lx, ly, dx, dy); outer_width = (2, 2, 1))
         @test outer_width(rt.launch) == (2, 2, 1)
+
+        layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 4))
+        rt2 = Runtime(StaggeredGrid(Float64, lx, ly, dx, dy, layering);
+                      outer_width = (2, 2, 1))
+        @test outer_width(rt2.launch2d) == (2, 2, 1)
     end
 
     @testset "launches with Chmy's documented signature" begin
