@@ -22,9 +22,12 @@ using LinearAlgebra
 using LinearSolve           # TODO: externalize
 using LoopVectorization
 using Random
+using Reexport
 using StatsBase
 using SparseArrays
 using Tullio
+
+@reexport using Chmy
 
 ###########################################################
 # Structs
@@ -32,6 +35,24 @@ using Tullio
 
 include("api/domain.jl")
 export AbstractGrid, RegularGrid, CommonGrid
+
+# The vertical layering defines the sigma axis of a `StaggeredGrid`, which in turn
+# dimensions the state structs, so the three are included in that order.
+include("topography/sigmatransform.jl")
+export AbstractSigmaTransform, PowerSigmaTransform
+export LinearSigmaTransform, QuadraticSigmaTransform
+export VerticalLayering, CorrectedVerticalLayering
+export ζ_aa, ζ_ac, sigma
+export get_ζ_aa, get_ζ_ac
+
+include("api/staggered_grid.jl")
+export StaggeredGrid
+
+include("api/sigma_operators.jl")
+export ∂z_σ
+
+include("api/runtime.jl")
+export Runtime
 
 include("api/state.jl")
 export TopographicState, MechanicState, ThermodynamicState, MaterialState
@@ -64,19 +85,9 @@ export AbstractIntegrationMethod, Euler, RungeKutta4, BogackiShampine32, Tsitour
 export SSPRK33, SSPRK43, ssp_coefficient
 export Integrator, step!, substep!, estimate_spectral_radius!
 
-include("utils/oceananigans.jl")
-export StaggeredGrids
-
 ###########################################################
 # Topography
 ###########################################################
-
-include("topography/sigmatransform.jl")
-export AbstractSigmaTransform, PowerSigmaTransform
-export LinearSigmaTransform, QuadraticSigmaTransform
-export VerticalLayering, CorrectedVerticalLayering
-export ζ_aa, ζ_ac, sigma
-export get_ζ_aa, get_ζ_ac
 
 include("topography/calving.jl")
 export AbstractCalving, AbstractGroundedCalving, AbstractFloatingCalving
