@@ -23,6 +23,27 @@ function fill_analytic!(f, grid, fun)
 end
 
 """
+    fill_analytic3d!(f, grid, fun)
+
+As [`fill_analytic!`](@ref) but for `fun(x, y, ζ)`, for fields that also vary with the sigma
+level. Each dimension is swept over *this field's own* extent, which matters: node classes
+differ in every dimension (a z-`Vertex` field has `nz + 1` layers, an x-`Vertex` field
+`nx + 1` columns), so a loop range shared between components runs off the end of the
+shallowest one.
+"""
+function fill_analytic3d!(f, grid, fun)
+    loc = location(f)
+    for k in -1:(size(interior(f), 3) + 2),
+        j in -1:(size(interior(f), 2) + 2),
+        i in -1:(size(interior(f), 1) + 2)
+
+        x, y, ζ = coord(grid, loc, i, j, k)
+        f[i, j, k] = fun(x, y, ζ)
+    end
+    return f
+end
+
+"""
     analytic_like(f, grid, fun)
 
 A plain array shaped like `interior(f)`, holding `fun(x, y)` at each of `f`'s own nodes.
