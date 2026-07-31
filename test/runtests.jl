@@ -2,6 +2,7 @@ using Pagos
 using Test
 
 include("aqua.jl")
+include("jet.jl")
 include("api/staggered_grid.jl")
 include("api/sigma_operators.jl")
 include("api/runtime.jl")
