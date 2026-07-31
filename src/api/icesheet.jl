@@ -15,9 +15,8 @@ sim = Simulation(ais)
 step!(sim, Δt_sync)
 ```
 """
-struct IceSheet{TP, TR, DN, TD, MT, C, CG, BE, PR}
+struct IceSheet{TP, DN, TD, MT, C, CG, BE, PR}
     topography::TP      # <: Topography
-    tracers::TR         # <: Tracers
     dynamics::DN        # <: Dynamics
     thermodynamics::TD  # <: Thermodynamics
     material::MT        # <: Material
@@ -51,6 +50,8 @@ end
 
 """
 $(TYPEDSIGNATURES)
+
+This should go into Ichnos
 
 # Fields
  - `state`: the tracer state variables

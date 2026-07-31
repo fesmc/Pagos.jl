@@ -53,7 +53,7 @@ method for the thermal step.
 | A cheap RHS, or you only need crude accuracy | [`BogackiShampine32`](@ref) (BS32) | accuracy: `atol`, `rtol` |
 | A need for a fixed, reproducible step | [`RungeKutta4`](@ref) / [`Euler`](@ref) | fixed `dt` |
 | A diffusion-dominated / stiff problem (SIA thickness, vertical heat) | [`RKL2`](@ref) | `dt` + `spectral_radius` |
-| Advection of a non-negative field with sharp fronts (thickness, tracers) | [`SSPRK43`](@ref) / [`SSPRK33`](@ref) | CFL: `dt_fe` |
+| Advection of a non-negative field with sharp fronts (thickness) | [`SSPRK43`](@ref) / [`SSPRK33`](@ref) | CFL: `dt_fe` |
 | A genuinely stiff problem needing unconditional stability | *not in this toolbox* (use an implicit / IMEX solver) | — |
 
 The two questions that decide almost everything are: **is the problem stiff?** and
@@ -120,8 +120,7 @@ rkl2_fixed = RKL2(x; dt = 0.1, spectral_radius = 4.0) # ρ supplied (e.g. 2D(1/�
 
 ### "I'm advecting a non-negative field with sharp fronts"
 
-Ice thickness must stay ``\ge 0`` and develops sharp margins; tracers are advected with the
-flow. Here the priority is **positivity / monotonicity**, not high order. Strong-stability-
+Ice thickness must stay ``\ge 0`` and develops sharp margins. Here the priority is **positivity / monotonicity**, not high order. Strong-stability-
 preserving methods preserve any bound that forward Euler satisfies, as long as the step
 obeys a CFL limit.
 
