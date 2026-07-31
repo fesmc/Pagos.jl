@@ -208,9 +208,20 @@ struct MechanicTopographyState{AA}
 end
 Adapt.@adapt_structure MechanicTopographyState
 
+"""
+$(TYPEDSIGNATURES)
+
+`rate_factor_depthaveraged` is a prescribed input, exactly like `viscosity_depthaveraged`
+itself — nothing in `MechanicState` derives it from temperature (`ThermodynamicState` is a
+separate, unconnected sibling; see `roadmaps/PT-autotune.md`, Phase 1). It exists so the
+pseudo-transient solver's Glen-law viscosity continuation
+([`GlenViscosityContinuation`](@ref)) has a rate factor to read; solvers that never enable
+continuation (the default) never read it.
+"""
 struct MechanicMaterialState{AA2, AA3}
     viscosity_depthaveraged::AA2
     viscosity::AA3
+    rate_factor_depthaveraged::AA2
 end
 Adapt.@adapt_structure MechanicMaterialState
 
@@ -348,7 +359,7 @@ function MechanicState(grid::RegularGrid)
         FrictionState(m2(), m2(), m2()),                    # beta, beta_eff, c_bed
         FluxState(m2(), m2(), m2()),                       # flux x, y, grline
         MechanicTopographyState(m2(), m2()),               # surface, thickness
-        MechanicMaterialState(m2(), m3()),                 # viscosity_depthaveraged, viscosity
+        MechanicMaterialState(m2(), m3(), m2()),  # viscosity_depthaveraged, viscosity, rate_factor_depthaveraged
         StrainRateState(ntuple(_ -> m3(), 10)...),         # 10 column tensor fields
         StressState(ntuple(_ -> m2(), 5)..., ntuple(_ -> m3(), 13)...),  # 3 depth-averaged + 13 column
         VelocityState(ntuple(_ -> m2(), 14)..., ntuple(_ -> m3(), 13)...),  # 14 depth-averaged + 13 column
@@ -382,7 +393,7 @@ function MechanicState(grid::StaggeredGrid; halo = 1)
         FrictionState(aa2(), aa2(), aa2()),
         FluxState(acx2(), acy2(), aa2()),                  # flux x, y, grline
         MechanicTopographyState(aa2(), aa2()),
-        MechanicMaterialState(aa2(), aa3()),
+        MechanicMaterialState(aa2(), aa3(), aa2()),  # viscosity_depthaveraged, viscosity, rate_factor_depthaveraged
         StrainRateState(
             aa3(), ab3(), acxz3(), ab3(), aa3(),         # xx, xy, xz, yx, yy
             acyz3(), acxz3(), acyz3(), aa3(), aa3(),     # yz, zx, zy, zz, effective

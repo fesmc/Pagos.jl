@@ -149,7 +149,9 @@ export basal_velocity_from_surface_velocity!, depthavg_velocity!
 
 include("mechanics/pseudotransient.jl")
 export PseudoTransientSolver
-export pseudo_transient!, pseudo_rate!, pseudo_dt, pseudo_vel!, dotvel!
+export AbstractViscosityContinuation, NoViscosityContinuation, GlenViscosityContinuation
+export pseudo_transient!, pseudo_rate!, pseudo_dt, pseudo_dt!, pseudo_vel!, dotvel!
+export update_viscosity!
 
 include("mechanics/inertial.jl")
 export inertial_velocity!
@@ -164,6 +166,7 @@ export deviatoric_stress!, surface_gradient!
 include("mechanics/strainrate.jl")
 export strainrate!, scaledstrainrate!, velocitygradients!
 export raw_strainrate!, raw_strainrate_effective!, FullColumnMomentumBalance
+export effective_strainrate_ssa!
 
 ###########################################################
 # Material

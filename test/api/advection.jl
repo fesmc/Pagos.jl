@@ -38,8 +38,8 @@ end
         # The Phase-2 deferred item: `flux` was a single `aa` scalar, which the divergence
         # would have had to re-stagger. It is now a face pair at the same node classes as
         # the depth-averaged velocity it is built from.
-        @test location(mech.flux.x) === location(mech.velocity.x_bar)
-        @test location(mech.flux.y) === location(mech.velocity.y_bar)
+        @test location(mech.flux.x) === location(mech.velocity.depthaverage_x)
+        @test location(mech.flux.y) === location(mech.velocity.depthaverage_y)
         @test size(interior(mech.flux.x)) == (grid.nx + 1, grid.ny, 1)
         @test size(interior(mech.flux.y)) == (grid.nx, grid.ny + 1, 1)
         @test size(interior(mech.flux.grline)) == (grid.nx, grid.ny, 1)
@@ -58,7 +58,7 @@ end
 
         for scheme in (CenteredAdvection(), UpwindAdvection())
             grid, rt, topo, mech = setup()
-            H, u, v = topo.thickness.ice, mech.velocity.x_bar, mech.velocity.y_bar
+            H, u, v = topo.thickness.ice, mech.velocity.depthaverage_x, mech.velocity.depthaverage_y
 
             fill_analytic!(H, rt.grid2d, (x, y) -> a + b * x)
             fill_analytic!(u, rt.grid2d, (x, y) -> U)
@@ -79,7 +79,7 @@ end
     @testset "exact: linear H in y, uniform v̄, with mass balance" begin
         a, b, V, mb = 50.0, -1.5, 4.0, 7.0
         grid, rt, topo, mech = setup()
-        H, u, v = topo.thickness.ice, mech.velocity.x_bar, mech.velocity.y_bar
+        H, u, v = topo.thickness.ice, mech.velocity.depthaverage_x, mech.velocity.depthaverage_y
 
         fill_analytic!(H, rt.grid2d, (x, y) -> a + b * y)
         fill_analytic!(u, rt.grid2d, (x, y) -> 0.0)
@@ -100,8 +100,8 @@ end
         grid, rt, topo, mech = setup()
 
         fill_analytic!(topo.thickness.ice, rt.grid2d, (x, y) -> H0)
-        fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> α * x)
-        fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> β * y)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> α * x)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> β * y)
 
         advect!(topo, mech, CenteredAdvection(), rt)
         @test all(interior(topo.thickness.ice_dt) .≈ -H0 * (α + β))
@@ -109,7 +109,7 @@ end
 
     @testset "upwind picks the upstream cell" begin
         grid, rt, topo, mech = setup()
-        H, u, v = topo.thickness.ice, mech.velocity.x_bar, mech.velocity.y_bar
+        H, u, v = topo.thickness.ice, mech.velocity.depthaverage_x, mech.velocity.depthaverage_y
 
         # A thickness that is not symmetric about any face, so left ≠ right ≠ average.
         fill_analytic!(H, rt.grid2d, (x, y) -> exp(x / lx))
@@ -142,8 +142,8 @@ end
 
             fill_analytic!(topo.thickness.ice, rt.grid2d,
                            (x, y) -> 500 + 100 * sin(3x) * cos(2y))
-            fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> sin(x) + 0.5cos(y))
-            fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> cos(2x) - 0.3sin(y))
+            fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> sin(x) + 0.5cos(y))
+            fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> cos(2x) - 0.3sin(y))
             fill_analytic!(topo.massbalance.net, rt.grid2d, (x, y) -> mb)
 
             advect!(topo, mech, scheme, rt)
@@ -168,8 +168,8 @@ end
             topo, mech = TopographicState(grid), MechanicState(grid)
 
             fill_analytic!(topo.thickness.ice, rt.grid2d, Hfun)
-            fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> U)
-            fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> 0.0)
+            fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> U)
+            fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 0.0)
 
             advect!(topo, mech, CenteredAdvection(), rt)
 
@@ -196,8 +196,8 @@ end
             topo, mech = TopographicState(grid), MechanicState(grid)
 
             fill_analytic!(topo.thickness.ice, rt.grid2d, Hfun)
-            fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> U)
-            fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> 0.0)
+            fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> U)
+            fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 0.0)
 
             advect!(topo, mech, UpwindAdvection(), rt)
 
@@ -213,8 +213,8 @@ end
         grid, rt, topo, mech = setup()
 
         fill_analytic!(topo.thickness.ice, rt.grid2d, (x, y) -> 500 + 10x)
-        fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> 3.0)
-        fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> 3.0)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> 3.0)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 3.0)
         fill_analytic!(topo.massbalance.net, rt.grid2d, (x, y) -> 2x - y)
 
         advect!(topo, mech, NoAdvection(), rt)
@@ -227,11 +227,11 @@ end
     @testset "scalar mass balance" begin
         grid, rt, topo, mech = setup()
         fill_analytic!(topo.thickness.ice, rt.grid2d, (x, y) -> 500.0)
-        fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> 0.0)
-        fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> 0.0)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> 0.0)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 0.0)
 
         mass_flux!(mech.flux.x, mech.flux.y, topo.thickness.ice,
-                   mech.velocity.x_bar, mech.velocity.y_bar, CenteredAdvection(), rt)
+                   mech.velocity.depthaverage_x, mech.velocity.depthaverage_y, CenteredAdvection(), rt)
         thickness_rate!(topo.thickness.ice_dt, mech.flux.x, mech.flux.y, 1.25, rt)
 
         @test all(interior(topo.thickness.ice_dt) .≈ 1.25)
@@ -246,7 +246,7 @@ end
 
     # A column grid is the case where `grid2d !== grid`: the fluxes and the thickness live
     # on the shallow grid while the velocity *columns* live on the deep one, so a kernel
-    # launched with the wrong launcher would mis-sweep. `x_bar`/`y_bar` are depth-averaged
+    # launched with the wrong launcher would mis-sweep. `depthaverage_x`/`depthaverage_y` are depth-averaged
     # and therefore on `grid2d` in both cases — this pins that the 2D path is selected by
     # the field's grid and not by `nz == 1` accidentally making them the same object.
     @testset "full-column grid: continuity still runs on grid2d" begin
@@ -258,8 +258,8 @@ end
         @test worksize(rt.launch2d) == (grid.nx + 2, grid.ny + 2, 3)
 
         fill_analytic!(topo.thickness.ice, rt.grid2d, (x, y) -> a + b * x)
-        fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> U)
-        fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> 0.0)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> U)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 0.0)
 
         advect!(topo, mech, CenteredAdvection(), rt)
 
@@ -278,8 +278,8 @@ end
         grid, rt, topo, mech = setup(Float32)
 
         fill_analytic!(topo.thickness.ice, rt.grid2d, (x, y) -> a + b * x)
-        fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> U)
-        fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> 0.0f0)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> U)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 0.0f0)
 
         advect!(topo, mech, UpwindAdvection(), rt)
 

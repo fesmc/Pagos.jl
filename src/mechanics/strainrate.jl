@@ -516,3 +516,56 @@ strainrate!(mech::MechanicState, momentum::Union{SSAMomentumBalance, DIVAMomentu
            rt::Runtime, mask::AbstractIceMask = NoMask()) =
     strainrate!(mech.strainrate, mech.velocity, mech.material, mech.topography,
                momentum, rt, mask)
+
+###############################################################
+# Chmy-native, C-grid staggered SSA/DIVA effective strain rate
+###############################################################
+#
+# The true (not membrane-stress) second invariant ε̇_e, needed by
+# `GlenViscosityContinuation` (`src/mechanics/solvers.jl`, wired in
+# `src/mechanics/pseudotransient.jl`) to derive a viscosity from the current velocity
+# iterate. Writes `strainrate.effective` only — never `.xx`/`.xy`/`.yy`, which the SSA/DIVA
+# `strainrate!` above uses for the (differently named, see its docstring) membrane stress.
+# Sharing `.effective` with `raw_strainrate_effective!` is intentional (same physical
+# quantity, same home); reusing that function outright is not an option here since it
+# reads `strainrate.xy` at `ab` as *already written*, computed by `raw_strainrate!` (which
+# in turn wants to write `strainrate.xx`/`yy`), the exact fields the membrane-stress
+# `strainrate!` also owns — the same clash this function exists to sidestep. Formula
+# matches the collocated `strainrate_effective!(..., ::SSAMomentumBalance, ...)`, with no
+# vertical-shear terms (DIVA is the SSA limit on this path, see the module note above).
+
+@kernel inbounds = true function _effective_strainrate_ssa_staggered!(eff, velocity, mask,
+                                                                       grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    if node_active(mask, NODE_AA, i, j)
+        dxx = velocity.x_dx[I...]
+        dyy = velocity.y_dy[I...]
+        dxy = lerp(velocity.x_dy, NODE_AA, grid, I...)
+        dyx = lerp(velocity.y_dx, NODE_AA, grid, I...)
+        eff[I...] = sqrt(dxx^2 + dyy^2 + dxx * dyy + ((dxy + dyx) / 2)^2)
+    else
+        eff[I...] = zero(eltype(eff))
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native SSA/DIVA effective strain rate at `aa`:
+`ε̇_e = √(ε̇xx² + ε̇yy² + ε̇xx·ε̇yy + ε̇xy²)`, with `ε̇xx = ∂u/∂x`, `ε̇yy = ∂v/∂y` already at
+`aa` and `ε̇xy = (∂u/∂y + ∂v/∂x)/2` interpolated there from `ab` by `lerp`. Writes
+`strainrate.effective` only (see the module note above for why not `.xx`/`.xy`/`.yy` too).
+
+Requires `velocity`'s gradient fields to already be current — call
+[`velocitygradients!`](@ref) first, exactly as the membrane-stress [`strainrate!`](@ref)
+does.
+"""
+function effective_strainrate_ssa!(strainrate::StrainRateState, velocity::VelocityState,
+                                   rt::Runtime, mask::AbstractIceMask = NoMask())
+    rt.launch2d(rt.arch, rt.grid2d,
+              _effective_strainrate_ssa_staggered! => (strainrate.effective, velocity,
+                                                       mask, rt.grid2d))
+    return nothing
+end
