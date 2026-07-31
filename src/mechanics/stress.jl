@@ -259,7 +259,59 @@ function basalstress!(base_x, base_y, β, v_x, v_y)
     @. base_y = β * v_y
     return nothing
 end
-# TODO: this should be staggered!
+
+###############################################################
+# Chmy-native, C-grid staggered basal stress
+###############################################################
+#
+# Resolves the deferred half of the Phase 2 `FrictionState` item (`roadmaps/chmy.md`):
+# `β`/`β_eff` live at `aa`, but `τ_b = β v_b` needs `β` on the velocity faces (`acx`/`acy`).
+# Resolved by an inline `lerp`, the same choice `drivingstress!` makes for `H`, rather than
+# storing `β_acx`/`β_acy` copies: one memory sweep, and the face value can never go stale
+# relative to `friction.beta_eff`. Arithmetic, not harmonic: unlike the viscosity, `β` is a
+# local friction coefficient with no "two cells in series" physical argument for a harmonic
+# mean, and `lerp` carries no `NaN` risk even where `β = 0` (a frozen-bed or ice-free cell
+# on one side of a face simply contributes no drag from that side).
+
+@kernel inbounds = true function _basalstress_staggered!(base_x, base_y, β, v_x, v_y,
+                                                          mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    Z = zero(eltype(base_x))
+    base_x[I...] = node_active(mask, NODE_ACX, i, j) ?
+                   lerp(β, NODE_ACX, grid, I...) * v_x[I...] : Z
+    base_y[I...] = node_active(mask, NODE_ACY, i, j) ?
+                   lerp(β, NODE_ACY, grid, I...) * v_y[I...] : Z
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native, C-grid staggered [`basalstress!`](@ref): writes `base_x` at `acx`, `base_y`
+at `acy` as `β_face · v_face`, with the cell-centred friction coefficient `β` interpolated
+onto the velocity faces by (arithmetic) `lerp` — see the note above for why arithmetic,
+not harmonic like the viscosity.
+
+Distinguished from the collocated method by taking a [`Runtime`](@ref). Depth-integrated
+throughout, so it runs on `rt.grid2d`.
+"""
+function basalstress!(base_x, base_y, β, v_x, v_y, rt::Runtime,
+                      mask::AbstractIceMask = NoMask())
+    rt.launch2d(rt.arch, rt.grid2d,
+              _basalstress_staggered! => (base_x, base_y, β, v_x, v_y, mask, rt.grid2d))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level Chmy-native [`basalstress!`](@ref): writes `mech.stress.base_x`/`base_y` from
+`mech.friction.beta_eff` and `mech.velocity.base_x`/`base_y`.
+"""
+basalstress!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMask()) =
+    basalstress!(mech.stress.base_x, mech.stress.base_y, mech.friction.beta_eff,
+                mech.velocity.base_x, mech.velocity.base_y, rt, mask)
 
 """
 $(TYPEDSIGNATURES)
