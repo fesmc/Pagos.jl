@@ -22,8 +22,8 @@ include("../test_helpers/chmy.jl")
     # forces lives, with no interpolation of the gradient.
     @testset "the driving stress lands on the velocity faces" begin
         grid, _, mech, _ = setup()
-        @test location(mech.stress.driving_x) === location(mech.velocity.x_bar)
-        @test location(mech.stress.driving_y) === location(mech.velocity.y_bar)
+        @test location(mech.stress.driving_x) === location(mech.velocity.depthaverage_x)
+        @test location(mech.stress.driving_y) === location(mech.velocity.depthaverage_y)
         @test size(interior(mech.stress.driving_x)) == (grid.nx + 1, grid.ny, 1)
         @test size(interior(mech.stress.driving_y)) == (grid.nx, grid.ny + 1, 1)
     end

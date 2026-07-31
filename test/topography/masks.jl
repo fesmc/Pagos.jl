@@ -340,8 +340,8 @@ include("../test_helpers/chmy.jl")
         grid, rt, topo, mech = setup()
         fill_analytic!(topo.thickness.ice, rt.grid2d,
                        (x, y) -> x < 0 ? 500 + 100sin(3x) * cos(2y) : 0.0)
-        fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> sin(x) + 0.5cos(y))
-        fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> cos(2x) - 0.3sin(y))
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> sin(x) + 0.5cos(y))
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> cos(2x) - 0.3sin(y))
         icemasks!(topo, rt)
         mask = IceMask(topo.mask.is_ice)
 
@@ -358,8 +358,8 @@ include("../test_helpers/chmy.jl")
     @testset "the margin can still advance under an is_ice mask" begin
         grid, rt, topo, mech = setup()
         fill_analytic!(topo.thickness.ice, rt.grid2d, (x, y) -> left_half(x, y))
-        fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> 1.0)   # eastward
-        fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> 0.0)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> 1.0)   # eastward
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 0.0)
         icemasks!(topo, rt)
 
         advect!(topo, mech, UpwindAdvection(), rt, IceMask(topo.mask.is_ice))
@@ -377,8 +377,8 @@ include("../test_helpers/chmy.jl")
     @testset "an `allowed` wall blocks advance without destroying mass" begin
         grid, rt, topo, mech = setup()
         fill_analytic!(topo.thickness.ice, rt.grid2d, (x, y) -> left_half(x, y))
-        fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> 1.0)
-        fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> 0.0)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> 1.0)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 0.0)
         icemasks!(topo, rt)
         for k in -1:2, j in -1:(grid.ny + 2), i in -1:(grid.nx + 2)
             x, = coord(rt.grid2d, Pagos.NODE_AA, i, j, 1)
@@ -420,8 +420,8 @@ include("../test_helpers/chmy.jl")
             fill_analytic3d!(mech.velocity.y, rt.grid, (x, y, ζ) -> -x + 0.5y)
             fill_analytic3d!(mech.velocity.z, rt.grid, (x, y, ζ) -> 0.0)
             fill_analytic3d!(mat.eta_ice, rt.grid, (x, y, ζ) -> 1.0e13)
-            fill_analytic!(mech.velocity.x_bar, rt.grid2d, (x, y) -> 2.0)
-            fill_analytic!(mech.velocity.y_bar, rt.grid2d, (x, y) -> 1.0)
+            fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> 2.0)
+            fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 1.0)
 
             drivingstress!(mech, cst, rt, args...)
             surface_gradient!(topo, rt, args...)

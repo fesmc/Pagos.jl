@@ -76,9 +76,9 @@ end
 
         # Depth-averaged velocity and its gradients follow the same algebra as the
         # column ones, on the single-layer grid.
-        @test location(mech.velocity.x_bar) == Pagos.NODE_ACX
-        @test location(mech.velocity.x_bar_dy) == Pagos.NODE_AB
-        @test location(mech.velocity.y_bar_dx) == Pagos.NODE_AB
+        @test location(mech.velocity.depthaverage_x) == Pagos.NODE_ACX
+        @test location(mech.velocity.depthaverage_x_dy) == Pagos.NODE_AB
+        @test location(mech.velocity.depthaverage_y_dx) == Pagos.NODE_AB
         @test location(mech.friction.beta) == Pagos.NODE_AA
 
         @test location(mat.eta_ice) == Pagos.NODE_AA
@@ -107,7 +107,7 @@ end
         # Depth-integrated fields are single-layer, on `grid2d` — but still 3D, so they
         # are indexed `f[i, j, 1]`.
         @test size(mech.stress.driving_x) == (nx + 1, ny, 1)
-        @test size(mech.velocity.x_bar) == (nx + 1, ny, 1)
+        @test size(mech.velocity.depthaverage_x) == (nx + 1, ny, 1)
         @test size(mech.friction.beta) == (nx, ny, 1)
         @test size(topo.thickness.ice) == (nx, ny, 1)
         @test size(therm.temperature.ice_surface) == (nx, ny, 1)
