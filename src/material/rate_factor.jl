@@ -323,7 +323,6 @@ function rate_factor(
 ) where {T<:Real}
 
     (; p1, p2, e1, e2) = smr
-    T_bar = (T - T_0) / ΔT
     A = p1 * exp(e1 * T_relative) + p2 * exp(e2 * T_relative)
     return A
 end
@@ -363,11 +362,7 @@ $(TYPEDSIGNATURES)
 
 Get the rate factor `A` based on the temperature relative to the pressure melt point `T_relative` and the rate factor parameterization `arf<:AbstractRateFactor`. Optionally, a mask can be provided to only compute the rate factor for specific indices.
 """
-function rate_factor!(A::AbstractVector, T_relative, arf::AbstractRateFactor)
-    @tullio A[i] = rate_factor(T_relative[i], arf)
-    return
-end
-function rate_factor!(A::AbstractMatrix, T_relative, arf::AbstractRateFactor)
-    @tullio A[i, j] = rate_factor(T_relative[i, j], arf)
-    return
+function rate_factor!(A::AbstractArray, T_relative, arf::AbstractRateFactor)
+    pointwise!(rate_factor, A, (T_relative,), (arf,))
+    return nothing
 end

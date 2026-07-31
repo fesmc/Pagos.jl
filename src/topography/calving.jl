@@ -275,14 +275,14 @@ function calving_rate(H, H_eff, calving::ThicknessCalving)
     return -saturate(rate, 0, max_rate)
 end
 
-function calving_rate(H, H_eff, tau1, tau2, calving::LipscombCalving)
+function calving_rate(H, H_eff, tau1, tau2, dx, dy, calving::LipscombCalving)
     (; k_τ, w2, max_rate) = calving
     tau_eff = sqrt(max(tau1, 0)^2 + w2 * max(tau2, 0)^2)
     rate = H_eff * k_τ * tau_eff / sqrt(dx * dy)
     return -saturate(rate, 0, max_rate)
 end
 
-function calving_rate(H_eff, eps_eff, calving::LevermannCalving)
+function calving_rate(H_eff, eps_eff, dx, dy, calving::LevermannCalving)
     (; k2, max_rate) = calving
     calving_ref = max(k2 * eps_eff, 0)
     rate = H_eff * calving_ref / sqrt(dx * dy)
@@ -300,21 +300,25 @@ function calving_rate(z_srf, z_sl, z_bed, calving::CrawfordCalving)
     return -saturate(c_dt, 0, max_rate)
 end
 
+# TODO: this needs a `seawater_depth` implementation, and the formula re-checked, before
+# it can be used (see roadmaps/todo.md).
 function calving_rate(H_eff, z_sl, z_bed, f_ice, c, calving::BassisCalving)
-    (; C0, α, r, max_rate) = calving
-    (; ρ_ice, ρ_seawater, g) = c
+    error("calving_rate(::BassisCalving) is not yet implemented: seawater_depth is undefined")
 
-    # TODO: this needs to be checked and seawater depth should be removed
-    H_ocn = seawater_depth(ρ_seawater / ρ_ice, z_sl - z_bed)
-    timescale = C0 + 0.5 * α * ρ_ice * g * H_eff
-    H_max = (1 - r) * timescale / ρ_ice * g +
-        sqrt((1 - r)^2 * (timescale / ρ_ice * g)^2 + ρ_seawater / ρ_ice * H_ocn ^ 2)
+    # (; C0, α, r, max_rate) = calving
+    # (; ρ_ice, ρ_seawater, g) = c
 
-    if H_eff <= H_max
-        return 0.0
-    else
-        return f_ice * max(H_eff - H_max, 0) / timescale
-    end
+    # # TODO: this needs to be checked and seawater depth should be removed
+    # H_ocn = seawater_depth(ρ_seawater / ρ_ice, z_sl - z_bed)
+    # timescale = C0 + 0.5 * α * ρ_ice * g * H_eff
+    # H_max = (1 - r) * timescale / ρ_ice * g +
+    #     sqrt((1 - r)^2 * (timescale / ρ_ice * g)^2 + ρ_seawater / ρ_ice * H_ocn ^ 2)
+
+    # if H_eff <= H_max
+    #     return 0.0
+    # else
+    #     return f_ice * max(H_eff - H_max, 0) / timescale
+    # end
 end
 
 function calving_rate(eps1, eps2, calving::EigenCalving)
@@ -336,47 +340,47 @@ $(TYPEDSIGNATURES)
 Update the calving flux `c_dt` based on the calving law `calving<:AbstractCalving` and the ice thickness `H`.
 """
 function calving_rate!(c_dt, calving::PrescribedCalving)
-    @tullio c_dt[i, j] = calving_rate(calving)
+    pointwise!(calving_rate, c_dt, (), (calving,))
     return nothing
 end
 
 function calving_rate!(c_dt, H, calving::RelaxedCalving)
-    @tullio c_dt[i, j] = calving_rate(H[i, j], calving)
+    pointwise!(calving_rate, c_dt, (H,), (calving,))
     return nothing
 end
 
 function calving_rate!(c_dt, H, H_eff, calving::ThicknessCalving)
-    @tullio c_dt[i, j] = calving_rate(H[i, j], H_eff[i, j], calving)
+    pointwise!(calving_rate, c_dt, (H, H_eff), (calving,))
     return nothing
 end
 
-function calving_rate!(c_dt, H, H_eff, tau1, tau2, calving::LipscombCalving)
-    @tullio c_dt[i, j] = calving_rate(H[i, j], H_eff[i, j], tau1[i, j], tau2[i, j], calving)
+function calving_rate!(c_dt, H, H_eff, tau1, tau2, dx, dy, calving::LipscombCalving)
+    pointwise!(calving_rate, c_dt, (H, H_eff, tau1, tau2), (dx, dy, calving))
     return nothing
 end
 
-function calving_rate!(c_dt, H_eff, eps_eff, calving::LevermannCalving)
-    @tullio c_dt[i, j] = calving_rate(H_eff[i, j], eps_eff[i, j], calving)
+function calving_rate!(c_dt, H_eff, eps_eff, dx, dy, calving::LevermannCalving)
+    pointwise!(calving_rate, c_dt, (H_eff, eps_eff), (dx, dy, calving))
     return nothing
 end
 
 function calving_rate!(c_dt, z_srf, z_sl, z_bed, calving::CrawfordCalving)
-    @tullio c_dt[i, j] = calving_rate(z_srf[i, j], z_sl[i, j], z_bed[i, j], calving)
+    pointwise!(calving_rate, c_dt, (z_srf, z_sl, z_bed), (calving,))
     return nothing
 end
 
 function calving_rate!(c_dt, H_eff, z_sl, z_bed, f_ice, c, calving::BassisCalving)
-    @tullio c_dt[i, j] = calving_rate(H_eff[i, j], z_sl[i, j], z_bed[i, j], f_ice[i, j], c, calving)
+    pointwise!(calving_rate, c_dt, (H_eff, z_sl, z_bed, f_ice), (c, calving))
     return nothing
 end
 
 function calving_rate!(c_dt, eps1, eps2, calving::EigenCalving)
-    @tullio c_dt[i, j] = calving_rate(eps1[i, j], eps2[i, j], calving)
+    pointwise!(calving_rate, c_dt, (eps1, eps2), (calving,))
     return nothing
 end
 
 function calving_rate!(c_dt, H, H_eff, calving::FlotationCalving)
-    @tullio c_dt[i, j] = calving_rate(H[i, j], H_eff[i, j], calving)
+    pointwise!(calving_rate, c_dt, (H, H_eff), (calving,))
     return nothing
 end
 
@@ -392,6 +396,6 @@ function calving_rate(z_srf, z_sl, z_bed, calving::PollardDeContoCalving)
 end
 
 function calving_rate!(c_dt, z_srf, z_sl, z_bed, calving::PollardDeContoCalving)
-    @tullio c_dt[i, j] = calving_rate(z_srf[i, j], z_sl[i, j], z_bed[i, j], calving)
+    pointwise!(calving_rate, c_dt, (z_srf, z_sl, z_bed), (calving,))
     return nothing
 end

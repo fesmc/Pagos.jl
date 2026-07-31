@@ -93,7 +93,7 @@ end
 $(TYPEDSIGNATURES)
 """
 function basal_shear_stress!(τ_basal, v_basal, β_basal)
-    @tullio τ_basal[i, j] = basal_shear_stress(v_basal[i, j], β_basal[i, j])
+    pointwise!(basal_shear_stress, τ_basal, (v_basal, β_basal))
     return nothing
 end
 
@@ -228,7 +228,7 @@ function basal_beta!(
     v_basal,
     bb::AbstractBasalBeta,
 )
-    @tullio β_basal[i, j] = basal_beta(c_bed[i, j], v_basal[i, j], bb)
+    pointwise!(basal_beta, β_basal, (c_bed, v_basal), (bb,))
     return nothing
 end
 
@@ -240,7 +240,13 @@ abstract type AbstractBasalBetaGroundingZone end
 """
 $(TYPEDSIGNATURES)
 """
-struct FgroundBasalBetaGroundingZone <: AbstractBasalBetaGroundingZone
+@kwdef struct FgroundBasalBetaGroundingZone{T} <: AbstractBasalBetaGroundingZone
+    # TODO: this struct had no fields at all even though `basal_beta_gz!` below reads
+    # `bbgz.β_min` — pre-existing, untested bug (nothing in test/ exercises
+    # basal_friction.jl), found while migrating off `@tullio`. `0.0` is a neutral
+    # placeholder (no additional floor beyond `saturate_basal_beta`'s own branches);
+    # set a real minimum once one is known.
+    β_min::T = 0.0
 end
 
 """
@@ -346,24 +352,25 @@ $(TYPEDSIGNATURES)
 """
 function basal_beta_gz!(β, topo, c::Constants, bbgz::FgroundBasalBetaGroundingZone)
     (; mask_gz, f_grounded, mask_grounded) = topo
-    @tullio β[i, j] = basal_beta_gz(β[i, j], mask_gz[i, j], f_grounded[i, j], bbgz)
-    @tullio β[i, j] = saturate_basal_beta(β[i, j], f_grounded[i, j], bbgz.β_min)
+    pointwise!(basal_beta_gz, β, (β, mask_gz, f_grounded), (bbgz,))
+    pointwise!(saturate_basal_beta, β, (β, f_grounded), (bbgz.β_min,))
     return nothing
 end
 function basal_beta_gz!(β, topo, c::Constants, bbgz::FractionBasalBetaGroundingZone)
     (; mask_gz, f_gzone) = topo
-    @tullio β[i, j] = basal_beta_gz(β[i, j], mask_gz[i, j], f_gzone[i, j], bbgz)
+    pointwise!(basal_beta_gz, β, (β, mask_gz, f_gzone), (bbgz,))
     return nothing
 end
 function basal_beta_gz!(β, topo, c::Constants, bbgz::HgroundBasalBetaGroundingZone)
     (; mask_gz, H_grounded) = topo
-    @tullio β[i, j] = basal_beta_gz(β[i, j], mask_gz[i, j], H_grounded[i, j], bbgz)
+    pointwise!(basal_beta_gz, β, (β, mask_gz, H_grounded), (bbgz,))
     return nothing
 end
 function basal_beta_gz!(β, topo, c::Constants, bbgz::ZstarBasalBetaGroundingZone)
     (; z_bed, z_sl, H_eff) = topo
-    (; ρ_seawater_div_ρ_ice) = c
-    @tullio β[i, j] = basal_beta_gz(β[i, j], H_eff[i, j], z_bed[i, j], z_sl[i, j], ρ_seawater_div_ρ_ice, bbgz)
+    (; density_seawater, density_ice) = c
+    ρ_seawater_div_ρ_ice = density_seawater / density_ice
+    pointwise!(basal_beta_gz, β, (β, H_eff, z_bed, z_sl), (ρ_seawater_div_ρ_ice, bbgz))
     return nothing
 end
 
@@ -469,7 +476,9 @@ function c_bed_ref(
     (; n_sd, f_sd, w_sd, samples) = brs
     for q in 1:n_sd
         λ_bed = lambda_bed(z_bed + f_sd[q] * z_bed_σ, z_sl, bt.z0, bt.z1, bt)
-        samples[q] = max(cf_ref * λ_bed, cf_min)
+        # TODO: `cf_min` was referenced here without being defined anywhere; floored at
+        # zero as a placeholder (non-negative friction) until an actual minimum is wired in.
+        samples[q] = max(cf_ref * λ_bed, zero(cf_ref))
     end
 
     return sum(samples .* w_sd) * (1 - f_sediment(H_sediment, ss))
@@ -509,6 +518,14 @@ end
 
 function c_bed(c_bed_ref, N_eff, cb::LinearCbed)
     return c_bed_ref * N_eff
+end
+
+"""
+$(TYPEDSIGNATURES)
+"""
+function c_bed!(c_bed_out, c_bed_ref, N_eff, cb::AbstractCbed)
+    pointwise!(c_bed, c_bed_out, (c_bed_ref, N_eff), (cb,))
+    return nothing
 end
 
 
@@ -561,7 +578,13 @@ function basal_shear_stress!(
     c_basal,
     friction::BasalFriction,
 )
-    @tullio τ_basal[i, j] = basal_shear_stress(v_basal[i, j], c_basal[i, j], friction)
+    # NOTE: untested (nothing in test/ exercises basal_friction.jl) and possibly already
+    # broken pre-migration — `basal_shear_stress(::Any, ::Any, ::BasalFriction)` has no
+    # dedicated scalar method, only the generic array-wrapper (line ~554) and the
+    # `PseudoPlasticPowerBasalBeta`/`CoulombBasalBeta` methods, neither of which matches a
+    # scalar call with a `BasalFriction`. Translated faithfully (same call, same behavior
+    # either way); not a regression introduced by the Tullio→KA swap.
+    pointwise!(basal_shear_stress, τ_basal, (v_basal, c_basal), (friction,))
     return nothing
 end
 

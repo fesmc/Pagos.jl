@@ -94,22 +94,14 @@ $(TYPEDSIGNATURES)
 
 Same as [`pressure_melting_point`](@ref) but operates in place.
 """
-function pressure_melting_point!(Tm::AbstractVector, p, law)
-    @tullio Tm[i] = pressure_melting_point(p[i], law)
-    return
-end
-function pressure_melting_point!(Tm::AbstractMatrix, p, law)
-    @tullio Tm[i, j] = pressure_melting_point(p[i, j], law)
-    return
+function pressure_melting_point!(Tm::AbstractArray, p, law)
+    pointwise!(pressure_melting_point, Tm, (p,), (law,))
+    return nothing
 end
 
-function pressure_melting_point!(Tf::AbstractVector, p, S, law::LinearSalinityPressureMeltingPoint)
-    @tullio Tf[i] = pressure_melting_point(p[i], S[i], law)
-    return
-end
-function pressure_melting_point!(Tf::AbstractMatrix, p, S, law::LinearSalinityPressureMeltingPoint)
-    @tullio Tf[i, j] = pressure_melting_point(p[i, j], S[i, j], law)
-    return
+function pressure_melting_point!(Tf::AbstractArray, p, S, law::LinearSalinityPressureMeltingPoint)
+    pointwise!(pressure_melting_point, Tf, (p, S), (law,))
+    return nothing
 end
 
 """
@@ -130,13 +122,9 @@ $(TYPEDSIGNATURES)
 
 Same as [`relative_temperature`](@ref) but operates in place.
 """
-function relative_temperature!(Tprime::AbstractVector, T, p, law::LinearPressureMeltingPoint)
-    @tullio Tprime[i] = relative_temperature(T[i], p[i], law)
-    return
-end
-function relative_temperature!(Tprime::AbstractMatrix, T, p, law::LinearPressureMeltingPoint)
-    @tullio Tprime[i, j] = relative_temperature(T[i, j], p[i, j], law)
-    return
+function relative_temperature!(Tprime::AbstractArray, T, p, law::LinearPressureMeltingPoint)
+    pointwise!(relative_temperature, Tprime, (T, p), (law,))
+    return nothing
 end
 
 """
@@ -155,13 +143,9 @@ $(TYPEDSIGNATURES)
 
 Same as [`thermal_forcing`](@ref) but operates in place.
 """
-function thermal_forcing!(ΔT::AbstractVector, T, p, S, law::LinearSalinityPressureMeltingPoint)
-    @tullio ΔT[i] = thermal_forcing(T[i], p[i], S[i], law)
-    return
-end
-function thermal_forcing!(ΔT::AbstractMatrix, T, p, S, law::LinearSalinityPressureMeltingPoint)
-    @tullio ΔT[i, j] = thermal_forcing(T[i, j], p[i, j], S[i, j], law)
-    return
+function thermal_forcing!(ΔT::AbstractArray, T, p, S, law::LinearSalinityPressureMeltingPoint)
+    pointwise!(thermal_forcing, ΔT, (T, p, S), (law,))
+    return nothing
 end
 
 # function update_relative_temperature!(
