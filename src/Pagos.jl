@@ -20,12 +20,10 @@ using Downloads
 using KernelAbstractions
 using LinearAlgebra
 using LinearSolve           # TODO: externalize
-using LoopVectorization
 using Random
 using Reexport
 using StatsBase
 using SparseArrays
-using Tullio
 
 @reexport using Chmy
 
@@ -64,7 +62,7 @@ include("api/constants.jl")
 export Constants
 
 include("api/icesheet.jl")
-export IceSheet, Topography, Tracers, Mechanics, Thermodynamics, Material
+export IceSheet, Topography, Mechanics, Thermodynamics, Material
 
 include("api/simulation.jl")
 export Simulation
@@ -87,6 +85,12 @@ include("utils/integrators.jl")
 export AbstractIntegrationMethod, Euler, RungeKutta4, BogackiShampine32, Tsitouras54, RKL2
 export SSPRK33, SSPRK43, ssp_coefficient
 export Integrator, step!, substep!, estimate_spectral_radius!
+
+###########################################################
+# Numerics
+###########################################################
+
+include("numerics/pointwise.jl")
 
 ###########################################################
 # Topography
@@ -123,6 +127,8 @@ export populate_vectors!, velocity!
 
 include("legacy/performance/velocities.jl")
 export LegacyLinearMomentumSolver2D
+
+include("legacy/differences.jl")
 
 include("mechanics/effective_pressure.jl")
 export AbstractEffectivePressure, PrescribedEffectivePressure
