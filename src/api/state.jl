@@ -7,10 +7,10 @@
 #
 #   | Yelmo node | horizontal location  | typical fields                              |
 #   |------------|----------------------|---------------------------------------------|
-#   | `aa`       | `(Center, Center)`   | H, z_srf, z_bed, T, A, η, ε̇_xx, ε̇_yy       |
+#   | `aa`       | `(Center, Center)`   | H, z_srf, z_bed, T, A, η, ε̇_xx, ε̇_yy      |
 #   | `acx`      | `(Vertex, Center)`   | u, taud_acx, β_acx, q_x                     |
 #   | `acy`      | `(Center, Vertex)`   | v, taud_acy, β_acy, q_y                     |
-#   | `ab`       | `(Vertex, Vertex)`   | ε̇_xy, σ_xy, corner viscosity                |
+#   | `ab`       | `(Vertex, Vertex)`   | ε̇_xy, σ_xy, corner viscosity               |
 #
 # Vertically, layer midpoints (`ζ_aa`) are z-`Center` and layer interfaces (`ζ_ac`) are
 # z-`Vertex`; the `_AC` suffix below marks the interface variants (vertical shear ε̇_xz,
@@ -42,6 +42,17 @@ _field(arch, grid, loc, T, halo) = Field(arch, grid, loc, T; halo)
 
 ###############################################################
 
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `is_ice`: ice-covered cells
+- `is_ice_neighbour`: ice-free but touching ice: the ring the margin advances into
+- `is_ice_allowed`: ice is allowed to exist here
+- `is_grounded`: ice is grounded here
+- `is_floating`: ice is floating here
+- `is_margin`: cell has at least one ice-free neighbour
+"""
 struct TopographicMasks{AA}
     is_ice::AA
     is_ice_neighbour::AA        # ice-free but touching ice: the ring the margin advances into
@@ -52,17 +63,41 @@ struct TopographicMasks{AA}
 end
 Adapt.@adapt_structure TopographicMasks
 
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `distance_to_margin`: distance to the nearest ice-free cell
+- `distance_to_grline`: distance to the nearest grounding line cell
+"""
 struct DistanceState{AA}
     distance_to_margin::AA
     distance_to_grline::AA
 end
 Adapt.@adapt_structure DistanceState
 
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `fraction_grounded`: fraction of the cell that is grounded ice
+"""
 struct FractionState{AA}
     fraction_grounded::AA
 end
 Adapt.@adapt_structure FractionState
 
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `base`: basal mass balance (m/yr)
+- `base_floating`: basal mass balance from subshelf melting (m/yr)
+- `base_grounded`: basal mass balance from strain heating, geothermal flux, etc. (m/yr)
+- `calving_floating`: calving mass loss from floating ice (m/yr)
+- `calving_grounded`: calving mass loss from grounded ice (m/yr)
+- `discharge`: mass loss from ice flowing out of the grounded domain (m/yr)
+"""
 struct MassBalanceState{AA}
     base::AA
     base_floating::AA
@@ -241,21 +276,22 @@ end
 Adapt.@adapt_structure StrainRateState
 
 struct VelocityState{ACX2, ACY2, AA2, AB2, ACX3, ACY3, AA3, AB3, AAZ3, ACXZ3, ACYZ3}
-    x_bar::ACX2
-    y_bar::ACY2
-    x_bar_dx::AA2
-    x_bar_dy::AB2
-    x_bar_dz::ACX2
-    y_bar_dx::AB2
-    y_bar_dy::AA2
-    y_bar_dz::ACY2
+    depthaverage_x::ACX2
+    depthaverage_y::ACY2
+    depthaverage_x_dx::AA2
+    depthaverage_x_dy::AB2
+    depthaverage_x_dz::ACX2
+    depthaverage_y_dx::AB2
+    depthaverage_y_dy::AA2
+    depthaverage_y_dz::ACY2
 
-    x_base::ACX2
-    y_base::ACY2
-    x_surf::ACX2
-    y_surf::ACY2
-    norm_base::AA2
-    norm_surface::AA2
+    base_x::ACX2
+    base_y::ACY2
+    base_norm::AA2
+
+    surface_x::ACX2
+    surface_y::ACY2
+    surface_norm::AA2
 
     x::ACX3
     y::ACY3
@@ -358,9 +394,10 @@ function MechanicState(grid::StaggeredGrid; halo = 1)
             aa3(), aa3(), aa3(), aa3(),                  # effective, lateral, eigenvalue_1/2
         ),
         VelocityState(
-            acx2(), acy2(), aa2(), ab2(), acx2(),        # x_bar, y_bar, x_bar_dx/dy/dz
-            ab2(), aa2(), acy2(),                        # y_bar_dx/dy/dz
-            acx2(), acy2(), acx2(), acy2(), aa2(), aa2(),  # x/y_base, x/y_surf, norm_base/surface
+            acx2(), acy2(), aa2(), ab2(), acx2(),        # depthaverage_x, depthaverage_y, depthaverage_x_dx/dy/dz
+            ab2(), aa2(), acy2(),                        # depthaverage_y_dx/dy/dz
+            acx2(), acy2(), aa2(),                       # base_x, base_y, base_norm
+            acx2(), acy2(), aa2(),                       # surface_x, surface_y, surface_norm
             acx3(), acy3(), aaz3(),                      # x, y, z
             aa3(), ab3(), acxz3(),                       # x_dx, x_dy, x_dz
             ab3(), aa3(), acyz3(),                       # y_dx, y_dy, y_dz
@@ -403,9 +440,11 @@ struct ThermodynamicState{AA3, AA2}
     temperature::TemperatureState{AA3, AA2}
     enthalpy::EnthalpyState{AA3}
     ice_water_content::AA3
+
     heat_strain_internal::AA3
     heat_strain_internal_dt::AA3
     heat_base_friction::AA2
+    
     heatflux_base_ice::AA2
     heatflux_bedrock::AA2
     heatflux_geothermal::AA2
