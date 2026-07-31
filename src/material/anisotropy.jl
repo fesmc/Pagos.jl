@@ -156,7 +156,7 @@ Compute the deformability scalar from the loading direction `n` and the deviator
 ```
 """
 function deformability(n, t_D)
-    return 5 * square_tangential_invariant(n, t_D) / trace(t_D) ^ 2
+    return 5 * square_tangential_invariant(n, t_D) / tr(t_D) ^ 2
 end
 
 """
