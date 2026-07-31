@@ -172,10 +172,10 @@ end
 # Dispatch functions
 ###############################################################
 
-# Functions to calculate velocity 
-function calc_F_integral(visc_eff,H_ice,f_ice,zeta_aa,n)
-    # To do...
-    return Fn
+# Functions to calculate velocity
+function calc_F_integral(visc_eff, H_ice, f_ice, zeta_aa, n)
+    # TODO: not yet implemented.
+    error("calc_F_integral is not yet implemented")
 end
 
 # function velocity( solver::LinearSolver, dynamics::DIVA)
