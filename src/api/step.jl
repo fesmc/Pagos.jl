@@ -11,11 +11,9 @@ fields between components before each dependent step.
 function step!(sim::Simulation, Δt_sync)
     step!(sim.ice_sheet.topography, sim.ice_sheet.topography.time_stepper, Δt_sync)
 
-    couple!(sim.ice_sheet.tracers,         sim.ice_sheet.topography)
     couple!(sim.ice_sheet.dynamics,        sim.ice_sheet.topography)
     couple!(sim.ice_sheet.thermodynamics,  sim.ice_sheet.topography)
 
-    step!(sim.ice_sheet.tracers,  sim.ice_sheet.tracers.time_stepper,  Δt_sync)
     step!(sim.ice_sheet.dynamics, sim.ice_sheet.dynamics.time_stepper, Δt_sync)
 
     couple!(sim.ice_sheet.thermodynamics, sim.ice_sheet.dynamics)
