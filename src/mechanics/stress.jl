@@ -232,7 +232,7 @@ Compute the basal-stress components `stress.base_x` and `stress.base_y` of `m` i
 
 The basal stress follows the friction law `` \\boldsymbol{\\tau}_b = \\beta\\,\\mathbf{v}_b ``,
 i.e. the effective basal friction coefficient `friction.beta_eff` times the basal velocity
-`velocity.x_base`, `velocity.y_base`. Like the driving stress it is a depth-averaged 2D
+`velocity.base_x`, `velocity.base_y`. Like the driving stress it is a depth-averaged 2D
 field and dynamics-independent, so no dispatch on the momentum balance is needed.
 
 Staggering of `beta_eff` onto the velocity points is assumed to be handled externally, so
@@ -243,7 +243,7 @@ function basalstress!(m::Mechanics)
     (; stress, friction, velocity) = state
     return basalstress!(
         stress.base_x, stress.base_y,
-        friction.beta_eff, velocity.x_base, velocity.y_base,
+        friction.beta_eff, velocity.base_x, velocity.base_y,
     )
 end
 

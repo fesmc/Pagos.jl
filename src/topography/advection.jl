@@ -229,6 +229,6 @@ depth-averaged velocity from `mech`, stores the fluxes in `mech.flux` and the te
 function advect!(topo::TopographicState, mech::MechanicState, scheme::AbstractAdvection,
                  rt::Runtime, mask::AbstractIceMask = NoMask(); bc = nothing)
     return advect!(topo.thickness.ice_dt, mech.flux.x, mech.flux.y,
-                   topo.thickness.ice, mech.velocity.x_bar, mech.velocity.y_bar,
+                   topo.thickness.ice, mech.velocity.depthaverage_x, mech.velocity.depthaverage_y,
                    topo.massbalance.net, scheme, rt, mask; bc)
 end

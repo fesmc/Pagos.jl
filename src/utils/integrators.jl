@@ -191,7 +191,7 @@ Three-stage, third-order strong-stability-preserving Runge–Kutta (SSPRK33, Shu
 1988), SSP coefficient `C = 1`. Each stage is a convex combination of the previous stage
 and a forward-Euler update, which guarantees that any monotonicity/positivity/TVD bound
 satisfied by forward Euler is preserved — ideal for advective transport of a non-negative
-quantity (ice thickness, tracers) with sharp fronts.
+quantity (ice thickness) with sharp fronts.
 
 The admissible step is `C · dt_fe`, where `dt_fe` is the **forward-Euler-stable
 (CFL-limited) step for the current state**, supplied externally (e.g.

@@ -100,10 +100,10 @@ function pseudo_rate!(m::Mechanics, c::Constants)
 
     # TODO: basal velocity from depth-averaged velocity via the F₂ integral (DIVA);
     # for now the basal velocity is taken equal to the depth-averaged one (SSA limit).
-    copyto!(velocity.x_base, view(velocity.x, :, :, 1))
-    copyto!(velocity.y_base, view(velocity.y, :, :, 1))
+    copyto!(velocity.base_x, view(velocity.x, :, :, 1))
+    copyto!(velocity.base_y, view(velocity.y, :, :, 1))
     basalstress!(stress.base_x, stress.base_y, friction.beta_eff,
-        velocity.x_base, velocity.y_base)
+        velocity.base_x, velocity.base_y)
 
     dotvel!(solver.velocity_x_dt, solver.velocity_y_dt,
         view(strainrate.xx, :, :, 1), view(strainrate.xy, :, :, 1),

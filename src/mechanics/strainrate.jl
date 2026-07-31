@@ -26,8 +26,8 @@ end
 
 function strainrate!(strainrate, velocity, material, topo, momentum::SIAMomentumBalance, I)
     # For SIA: depth-averaged viscosity, thickness, strainrate.xz/yz, velocity.*_bar_dz are all 2D
-    strainrate.xz[I] = material.viscosity_depthaveraged[I] * topo.thickness[I] * velocity.x_bar_dz[I]
-    strainrate.yz[I] = material.viscosity_depthaveraged[I] * topo.thickness[I] * velocity.y_bar_dz[I]
+    strainrate.xz[I] = material.viscosity_depthaveraged[I] * topo.thickness[I] * velocity.depthaverage_x_dz[I]
+    strainrate.yz[I] = material.viscosity_depthaveraged[I] * topo.thickness[I] * velocity.depthaverage_y_dz[I]
 end
 
 function strainrate!(strainrate, velocity, material, topo, momentum::MB, I) where MB<:Union{SSAMomentumBalance, DIVAMomentumBalance}
@@ -65,7 +65,7 @@ function strainrate_effective!(strainrate, velocity, momentum::AbstractMomentumB
 end
 
 function strainrate_effective!(strainrate, velocity, momentum::SIAMomentumBalance, I)
-    strainrate.effective[I] = sqrt(1 / 4 * (velocity.x_bar_dz[I] + velocity.y_bar_dz[I]) ^ 2)
+    strainrate.effective[I] = sqrt(1 / 4 * (velocity.depthaverage_x_dz[I] + velocity.depthaverage_y_dz[I]) ^ 2)
 end
 
 function strainrate_effective!(strainrate, velocity, momentum::SSAMomentumBalance, I)
@@ -424,3 +424,95 @@ function raw_strainrate!(mech::MechanicState, momentum::AbstractMomentumBalance,
     raw_strainrate_effective!(mech.strainrate, rt, mask)
     return nothing
 end
+
+###############################################################
+# Chmy-native, C-grid staggered membrane stress (SSA/DIVA `strainrate!`)
+###############################################################
+#
+# This is the piece the strain-rate port above deliberately left out (see its notes in
+# `roadmaps/chmy.md`, Phase 3): despite sharing the name `strainrate!` with the collocated
+# dispatch it extends, the SSA/DIVA branch below is **not** the strain rate. It is the
+# vertically-integrated membrane stress `2ηH·(2ε̇_xx + ε̇_yy)` and friends that the SSA/DIVA
+# momentum balance actually differentiates (see the collocated method's own docstring one
+# screen up). It is written into the same `StrainRateState` fields as the real strain rate
+# purely for parity with the collocated code path — a legacy naming quirk kept, not fixed,
+# by this port.
+#
+# `N_xx`, `N_yy` land at `aa`: both velocity-gradient terms they combine (`x_dx`, `y_dy`)
+# already live there, so no interpolation enters, exactly like `deviatoric_stress!`'s `aa`
+# branch. `N_xy` lands at `ab` and needs *two* quantities interpolated onto the corner —
+# `η` harmonically (`hlerp`, the same stress-continuity argument as `deviatoric_stress!`)
+# and `H` arithmetically (`lerp`, the same choice `drivingstress!` makes for thickness).
+# The strict mask (`node_fully_active`) applies only to that `ab` term, for the identical
+# NaN-avoidance reason as `deviatoric_stress!`: `hlerp` of `η = 0` is `NaN`, not `0`.
+
+@kernel inbounds = true function _membrane_stress_staggered!(sxx, sxy, syy, η, H, vel,
+                                                              mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    Z = zero(eltype(sxx))
+
+    if node_active(mask, NODE_AA, i, j)
+        ηH  = 2 * η[I...] * H[I...]
+        dux = vel.x_dx[I...]
+        dvy = vel.y_dy[I...]
+        sxx[I...] = ηH * (2 * dux + dvy)
+        syy[I...] = ηH * (dux + 2 * dvy)
+    else
+        sxx[I...] = Z
+        syy[I...] = Z
+    end
+
+    sxy[I...] = node_fully_active(mask, NODE_AB, i, j) ?
+        2 * hlerp(η, NODE_AB, grid, I...) * lerp(H, NODE_AB, grid, I...) *
+        (vel.x_dy[I...] + vel.y_dx[I...]) / 2 : Z
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native, C-grid staggered [`strainrate!`](@ref) for the SSA/DIVA momentum balance:
+writes the vertically-integrated membrane-stress components `strainrate.xx`/`yy` (at `aa`)
+and `strainrate.xy` (at `ab`) from the depth-averaged viscosity `material.viscosity_depthaveraged`,
+the thickness `topo.thickness` and the velocity gradients already written by
+[`velocitygradients!`](@ref) — which must run first.
+
+Despite the shared name, kept for parity with the collocated dispatch this extends, the
+result is not the strain rate: it is `2ηH·(2ε̇_xx + ε̇_yy)` and friends, the quantity the
+SSA/DIVA momentum balance's stress divergence actually needs (see the collocated method's
+docstring above). `η` is interpolated onto `ab` harmonically (matching
+[`deviatoric_stress!`](@ref) — stress, not strain rate, is continuous across a viscosity
+contrast); `H` arithmetically (matching [`drivingstress!`](@ref)).
+
+Distinguished from the collocated method by taking a [`Runtime`](@ref). Depth-integrated
+throughout, so it runs on `rt.grid2d`.
+
+!!! warning "A zero viscosity gives `NaN`, not zero — same trap as `deviatoric_stress!`"
+    `hlerp` averages reciprocals, so an unmasked ice-free corner produces `NaN` in
+    `strainrate.xy` rather than `0`; pass an [`IceMask`](@ref) once the material state has
+    ice-free cells.
+"""
+function strainrate!(strainrate::StrainRateState, velocity::VelocityState,
+                     material::MechanicMaterialState, topo::MechanicTopographyState,
+                     momentum::Union{SSAMomentumBalance, DIVAMomentumBalance}, rt::Runtime,
+                     mask::AbstractIceMask = NoMask())
+    rt.launch2d(rt.arch, rt.grid2d,
+              _membrane_stress_staggered! =>
+                  (strainrate.xx, strainrate.xy, strainrate.yy,
+                   material.viscosity_depthaveraged, topo.thickness, velocity,
+                   mask, rt.grid2d))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level Chmy-native [`strainrate!`](@ref) for the SSA/DIVA momentum balance: writes
+`mech.strainrate.xx`/`xy`/`yy` from `mech.material`, `mech.topography` and `mech.velocity`
+(which must already carry velocity gradients, see [`velocitygradients!`](@ref)).
+"""
+strainrate!(mech::MechanicState, momentum::Union{SSAMomentumBalance, DIVAMomentumBalance},
+           rt::Runtime, mask::AbstractIceMask = NoMask()) =
+    strainrate!(mech.strainrate, mech.velocity, mech.material, mech.topography,
+               momentum, rt, mask)
