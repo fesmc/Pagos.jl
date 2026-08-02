@@ -223,3 +223,136 @@ State-level [`icemasks!`](@ref): derives the masks from `topo.thickness.ice`.
 """
 icemasks!(topo::TopographicState, rt::Runtime; kwargs...) =
     icemasks!(topo.mask, topo.thickness.ice, rt; kwargs...)
+
+###############################################################
+# Where the momentum balance is well-posed
+###############################################################
+#
+# Detached floating ice — an iceberg — has no basal drag and no membrane connection to the
+# rest of the sheet, so *nothing* balances its driving stress. A free body under a net
+# force has no steady velocity, and the SSA/DIVA system restricted to it is singular in its
+# rigid-translation modes. That is not a discretization defect and no solver setting fixes
+# it: the problem posed there has no answer to converge to. What each solver class does with
+# it merely differs — a direct solve returns some bounded number (Yelmo's own restart gives
+# 0.6–189 m/yr on the Antarctic bergs), while an explicit pseudo-transient iteration drifts
+# linearly forever, and the resulting residual plateau masquerades as a solver failure over
+# the whole domain (`roadmaps/PT-autotune.md`, Phase 1.5).
+#
+# Three reasons this earns a mask rather than a note in a docstring:
+#
+#  1. **It poisons global norms.** The stopping criterion is a max-norm, so a handful of
+#     runaway faces set `err` for 200k well-behaved ones. On the AIS example this pinned the
+#     scaled residual at 3.8e-3 — 48 cells, 0.02% of the ice, 0.0008% of the volume.
+#  2. **It will poison the autotuner.** Duretz Eq. 21 estimates λ_min from a Rayleigh
+#     quotient; a rigid-translation null mode drives λ_min → 0 and hence the damping
+#     `c = c_damp·2√λ_min` → 0 for the *entire* domain. A few bergs would silently detune
+#     every solve. This is why the mask lands before Phase 2, not after.
+#  3. **It costs nothing to act on.** Masks are already a per-call argument, so the momentum
+#     solve takes `IceMask(is_momentum_solved)` while advection keeps taking
+#     `IceMask(is_ice, is_ice_neighbour)` — bergs still advect and calve, they just stop
+#     being asked to satisfy a force balance. No solver code changes.
+#
+# Connectivity is **4-way, and that is a discretization fact rather than a convention**. A
+# corner-only contact does reach `N_xy`, which lives at `ab` — but
+# `_membrane_stress_staggered!` gates that term on `node_fully_active`, so a diagonally
+# touching berg transmits exactly zero stress in *this* discretization. 4-connectivity is
+# what the operator implies; 8 would mark ice as load-bearing that carries no load.
+
+# Growth is monotone (false → true only, never back), which is what makes the in-place
+# update safe without a ping-pong buffer: a thread that reads a stale `false` simply does
+# not grow this sweep and grows on the next one. The fixed point is identical either way —
+# only the number of sweeps varies, and reading fresher neighbours makes it *smaller*.
+@kernel inbounds = true function _grow_momentum_mask!(m, is_ice, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, k = I
+    if is_ice[I...] & !m[I...]
+        m[I...] = m[i - 1, j, k] | m[i + 1, j, k] | m[i, j - 1, k] | m[i, j + 1, k]
+    end
+end
+
+@kernel inbounds = true function _seed_momentum_mask!(m, is_ice, is_grounded, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    m[I...] = is_ice[I...] & is_grounded[I...]
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Fill `is_momentum_solved`: the cells where the momentum balance is well-posed, i.e. ice
+that is connected to grounded ice through ice. Detached icebergs are excluded — see the
+source note above for why they are not merely uninteresting but unsolvable, and why
+4-connectivity is the right rule for our stencil.
+
+Pass the result to the momentum solver as its mask, in place of `is_ice`:
+
+```julia
+momentum_mask!(topo, rt)
+pseudo_transient!(mech, cst, solver, rt, momentum, IceMask(topo.mask.is_momentum_solved))
+```
+
+and keep giving advection its own `IceMask(topo.mask.is_ice, topo.mask.is_ice_neighbour)`,
+so detached ice still advects and calves — it is only excused from a force balance it
+cannot satisfy. Nothing in the solver needs to know this mask exists; masks are already a
+per-call argument.
+
+`is_grounded` is the seed and is **read, not computed** (like `is_ice_allowed`, and unlike
+`is_ice`): grounding is a flotation/grounding-line question that belongs to whatever
+produced it, and this function works the same whether it came from a flotation criterion or
+a sub-grid `f_grnd` threshold. Cells that are grounded but ice-free are ignored, so the
+seed is `is_ice & is_grounded`.
+
+# Implementation
+
+Unlike every other mask here, connectivity is a *global* property and cannot be settled by
+one local stencil pass. This is iterative label propagation — seed, then repeatedly grow
+into ice neighbours until nothing changes — rather than a serial flood fill, so it stays one
+`Launcher` sweep per iteration and runs unchanged on GPU. The cost is `O(sweeps)` boolean
+passes, paid once per change of ice extent (not per PT iteration, and not per time step
+unless the extent moved): against the thousands of PT iterations of a single solve it does
+not register.
+
+Termination is two *consecutive* unchanged interior counts, not one. The `Launcher` sweeps
+one halo ring beyond the interior, so the halo can be one sweep ahead of the interior;
+stopping on the first unchanged count could therefore drop a cell that was about to be
+reached from the ring. The second ghost ring is never written and so is never a source.
+
+Throws if `maxsweeps` is exhausted rather than returning a partial mask: an under-grown mask
+does not fail loudly, it silently freezes real, connected shelf ice at zero velocity — the
+same class of quiet wrong answer that `is_momentum_solved` exists to eliminate.
+"""
+function momentum_mask!(is_momentum_solved, is_ice, is_grounded, rt::Runtime;
+                        maxsweeps = 4 * sum(size(rt.grid2d, Center())))
+    rt.launch2d(rt.arch, rt.grid2d,
+                _seed_momentum_mask! => (is_momentum_solved, is_ice, is_grounded))
+
+    m = asarray(is_momentum_solved)
+    count_prev = sum(m)
+    quiet = 0
+    for _ in 1:maxsweeps
+        rt.launch2d(rt.arch, rt.grid2d,
+                    _grow_momentum_mask! => (is_momentum_solved, is_ice))
+        count_now = sum(m)
+        quiet = count_now == count_prev ? quiet + 1 : 0
+        quiet == 2 && return nothing
+        count_prev = count_now
+    end
+    throw(ErrorException(
+        "momentum_mask!: connectivity did not converge in maxsweeps = $maxsweeps sweeps. " *
+        "Raise `maxsweeps` — the count needed scales with the longest ice path across the " *
+        "domain, which a serpentine geometry can make much longer than its diameter. " *
+        "Returning the partial mask instead would silently freeze connected ice at zero " *
+        "velocity, so this throws."))
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level [`momentum_mask!`](@ref): writes `topo.mask.is_momentum_solved` from
+`topo.mask.is_ice` and `topo.mask.is_grounded`. Call after [`icemasks!`](@ref) (it reads
+`is_ice`) and after whatever sets `is_grounded`.
+"""
+momentum_mask!(topo::TopographicState, rt::Runtime; kwargs...) =
+    momentum_mask!(topo.mask.is_momentum_solved, topo.mask.is_ice, topo.mask.is_grounded,
+                   rt; kwargs...)

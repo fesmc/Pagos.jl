@@ -444,4 +444,134 @@ include("../test_helpers/chmy.jl")
             @test a == b                # bit-for-bit, not ≈
         end
     end
+
+    # -------------------------------------------------------------------
+    # momentum_mask!: connectivity to grounded ice. The reference is a serial flood fill —
+    # the same oracle the AIS geometry was validated against — because the kernel's
+    # iterative propagation is the thing under test, not the definition.
+    # -------------------------------------------------------------------
+
+    # Deliberately not `momentum_mask!`'s algorithm: an explicit stack-based flood fill,
+    # so agreement is evidence about the propagation kernel rather than a tautology.
+    function floodfill(ice, grounded)
+        nx, ny = size(ice)
+        out = ice .& grounded
+        stack = [(i, j) for j in 1:ny, i in 1:nx if out[i, j]]
+        while !isempty(stack)
+            i, j = pop!(stack)
+            for (a, b) in ((i-1, j), (i+1, j), (i, j-1), (i, j+1))
+                if 1 <= a <= nx && 1 <= b <= ny && ice[a, b] && !out[a, b]
+                    out[a, b] = true
+                    push!(stack, (a, b))
+                end
+            end
+        end
+        return out
+    end
+
+    function momentum_setup(H, grounded)
+        nx, ny = size(H)
+        g  = StaggeredGrid(Float64, nx * 1.0, ny * 1.0, 1.0, 1.0)
+        r  = Runtime(g)
+        tp = TopographicState(g)
+        setdata!(tp.thickness.ice, H)
+        setdata!(tp.mask.is_grounded, grounded)
+        icemasks!(tp, r)
+        momentum_mask!(tp, r)
+        return asarray(tp.mask.is_momentum_solved)[:, :, 1]
+    end
+
+    @testset "momentum_mask!: excludes detached ice, keeps everything connected" begin
+        nx, ny = 12, 12
+        H = zeros(nx, ny)
+        H[1:5, :]   .= 1000.0        # grounded sheet + attached shelf
+        H[9:10, 3:4] .= 300.0        # detached berg
+        H[7, 7]      = 200.0         # single detached cell
+        grounded = falses(nx, ny)
+        grounded[1:2, :] .= true
+
+        solved = momentum_setup(H, grounded)
+
+        @test solved == floodfill(H .> 0, grounded)
+        @test all(solved[1:5, :])                     # sheet and its shelf: solved
+        @test !any(solved[9:10, 3:4])                 # berg: not solved
+        @test !solved[7, 7]
+        @test !any(solved[H .== 0])                   # never marks ice-free cells
+
+        # A berg that touches the sheet only at a corner stays excluded: our membrane
+        # stress gates the `ab` corner term on `node_fully_active`, so a diagonal contact
+        # transmits exactly zero stress. 4-connectivity is the discretization's rule, not
+        # a convention — 8-connectivity would mark this cell load-bearing.
+        H_diag = zeros(nx, ny)
+        H_diag[1:5, 1:5] .= 1000.0
+        H_diag[6, 6] = 300.0                          # touches (5,5) only diagonally
+        solved_diag = momentum_setup(H_diag, grounded)
+        @test all(solved_diag[1:5, 1:5])
+        @test !solved_diag[6, 6]
+    end
+
+    # The seed is `is_ice & is_grounded`, so grounded-but-ice-free bedrock must not seed a
+    # component, and floating ice reachable only through such a cell stays excluded.
+    @testset "momentum_mask!: grounded but ice-free cells do not seed" begin
+        nx, ny = 8, 8
+        H = zeros(nx, ny)
+        H[5:6, 5:6] .= 400.0                          # floating patch, no grounded ice at all
+        grounded = falses(nx, ny)
+        grounded[1:2, 1:2] .= true                    # grounded, but H = 0 there
+
+        solved = momentum_setup(H, grounded)
+        @test !any(solved)                            # nothing is well-posed: no seed
+        @test solved == floodfill(H .> 0, grounded)
+    end
+
+    # A serpentine channel is the case where propagation needs many sweeps: the path length
+    # is far longer than the domain diameter, which is exactly what `maxsweeps` guards.
+    @testset "momentum_mask!: serpentine path, and maxsweeps throws rather than truncating" begin
+        nx, ny = 21, 21
+        H = zeros(nx, ny)
+        for (r, row) in enumerate(1:2:ny)             # horizontal bars ...
+            H[:, row] .= 500.0
+            r <= (ny - 1) ÷ 2 &&                      # ... joined alternately at each end
+                (H[isodd(r) ? nx : 1, row + 1] = 500.0)
+        end
+        grounded = falses(nx, ny)
+        grounded[1, 1] = true
+
+        solved = momentum_setup(H, grounded)
+        @test solved == floodfill(H .> 0, grounded)
+        @test all(solved[:, 1])
+        @test all(solved[:, ny])                      # reached the far end of the serpentine
+
+        # Truncating would silently freeze connected ice at zero velocity, so it throws.
+        g  = StaggeredGrid(Float64, nx * 1.0, ny * 1.0, 1.0, 1.0)
+        r  = Runtime(g)
+        tp = TopographicState(g)
+        setdata!(tp.thickness.ice, H)
+        setdata!(tp.mask.is_grounded, grounded)
+        icemasks!(tp, r)
+        @test_throws ErrorException momentum_mask!(tp, r; maxsweeps = 1)
+    end
+
+    # The point of the whole exercise: swap the mask, no solver change.
+    @testset "momentum_mask! feeds IceMask directly" begin
+        nx, ny = 10, 10
+        H = zeros(nx, ny); H[1:4, :] .= 1000.0; H[8:9, 4:5] .= 200.0
+        grounded = falses(nx, ny); grounded[1:2, :] .= true
+
+        g  = StaggeredGrid(Float64, nx * 1.0, ny * 1.0, 1.0, 1.0)
+        r  = Runtime(g)
+        tp = TopographicState(g)
+        setdata!(tp.thickness.ice, H)
+        setdata!(tp.mask.is_grounded, grounded)
+        icemasks!(tp, r)
+        momentum_mask!(tp, r)
+
+        mask = IceMask(tp.mask.is_momentum_solved)
+        @test node_active(mask, Pagos.NODE_AA, 2, 5)          # inside the sheet
+        @test !node_active(mask, Pagos.NODE_AA, 9, 5)         # inside the berg
+        # A face is permissive (any adjacent cell active), the `ab` corner strict — the
+        # existing IceMask rules apply unchanged to this field, which is the design point.
+        @test node_active(mask, Pagos.NODE_ACX, 5, 5)         # sheet edge face: still active
+        @test !node_fully_active(mask, Pagos.NODE_ACX, 5, 5)
+    end
 end
