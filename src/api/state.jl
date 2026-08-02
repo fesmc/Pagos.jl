@@ -52,6 +52,9 @@ $(TYPEDSIGNATURES)
 - `is_grounded`: ice is grounded here
 - `is_floating`: ice is floating here
 - `is_margin`: cell has at least one ice-free neighbour
+- `is_momentum_solved`: the momentum balance is well-posed here — ice connected to
+  grounded ice through ice, i.e. everything except detached icebergs. Written by
+  [`momentum_mask!`](@ref); see its docstring for why this is not the same as `is_ice`.
 """
 struct TopographicMasks{AA}
     is_ice::AA
@@ -60,6 +63,7 @@ struct TopographicMasks{AA}
     is_grounded::AA
     is_floating::AA
     is_margin::AA
+    is_momentum_solved::AA
 end
 Adapt.@adapt_structure TopographicMasks
 
@@ -165,7 +169,7 @@ function TopographicState(grid::RegularGrid)
     b = KernelAbstractions.zeros(backend, Bool, nx, ny)
     m = KernelAbstractions.zeros(backend, T, nx, ny)
     return TopographicState(
-        TopographicMasks([copy(b) for _ in 1:6]...),
+        TopographicMasks([copy(b) for _ in 1:7]...),
         DistanceState([copy(m) for _ in 1:2]...),
         FractionState([copy(m) for _ in 1:1]...),
         ThicknessState([copy(m) for _ in 1:6]...),
@@ -191,7 +195,7 @@ function TopographicState(grid::StaggeredGrid; halo = 1)
     acx() = _field(arch, g, NODE_ACX, T, halo)
     acy() = _field(arch, g, NODE_ACY, T, halo)
     return TopographicState(
-        TopographicMasks(ntuple(_ -> b(), 6)...),
+        TopographicMasks(ntuple(_ -> b(), 7)...),
         DistanceState(ntuple(_ -> aa(), 2)...),
         FractionState(aa()),
         ThicknessState(ntuple(_ -> aa(), 6)...),
