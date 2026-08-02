@@ -249,6 +249,129 @@ end
     dtau_y[I...] = scaling / lerp(mu, NODE_ACY, grid, I...)
 end
 
+###############################################################
+# Gershgorin pseudo-time step
+###############################################################
+#
+# `ViscosityPseudoTimeStep` (Sandip Eq. 7) bounds the *membrane* part of the operator and
+# nothing else. That is fine on the uniform-slab tests, where β is small and there is no ice
+# margin, and wrong in both directions on real geometry:
+#
+#  - it omits the basal-drag term β/(ρH) from the bound, which under grounded Antarctic ice
+#    (β_eff up to ~5e13 Pa s m⁻¹) is the *dominant* eigenvalue — a solve that recomputes
+#    friction from the velocity (`ActiveFrictionUpdate`) diverges within ~20 iterations;
+#  - it `lerp`s the viscosity straight across the ice margin, so an ice-free cell's
+#    placeholder viscosity throttles Δτ on exactly the faces that carry the calving-front
+#    forcing.
+#
+# The bound below is Gershgorin's: λ_max ≤ max row sum of |coefficients| of the mass-scaled
+# residual operator, and explicit stability is Δτ ≤ 2/λ_max. The coefficients are read off
+# the discretisation the solver actually runs — `_membrane_stress_staggered!`'s `ηH` at `aa`
+# and `hlerp(η)·lerp(H)` at `ab`, `_basalstress_staggered!`'s `lerp(β)`, and
+# `_dotvel_staggered!`'s `lerp(H)` — and every one of them is evaluated through the same
+# mask those kernels use, so an ice-free neighbour contributes exactly the zero it
+# contributes to the residual itself.
+#
+# Row sum for the u-equation at `acx(i, j)`, writing P = ηH at `aa` and Q = hlerp(η)·lerp(H)
+# at `ab` (derivation: expand ∂x(N_xx) + ∂y(N_xy) - βu and sum |coefficients| over both the
+# u and the v unknowns, since the two equations are coupled):
+#
+#   ∂x(N_xx) : u-terms 8(P₋+P₊)/dx²   v-terms 4(P₋+P₊)/(dx·dy)
+#   ∂y(N_xy) : u-terms 2(Q₋+Q₊)/dy²   v-terms 2(Q₋+Q₊)/(dx·dy)
+#   basal    : β_face
+#
+# all divided by ρ·H_face. Sanity check: uniform η, H, no drag, dx = dy gives
+# Λ = 32η/(ρdx²) hence Δτ = ρdx²/(16η) — which is Sandip's Eq. 7 at muB = 0, ndim2 = 4.1
+# (ρdx²/16.4η). The two agree where they should; they differ only by the terms Eq. 7 omits.
+
+@inline _etaH_aa(η, H, mask, i, j, k) =
+    node_active(mask, NODE_AA, i, j) ? η[i, j, k] * H[i, j, k] : zero(eltype(η))
+
+# `node_fully_active`, matching `_membrane_stress_staggered!`: `hlerp` of a zero-viscosity
+# neighbour is `NaN`, not zero, so the strict rule is what makes this evaluable at all.
+@inline _etaH_ab(η, H, mask, grid, i, j, k) =
+    node_fully_active(mask, NODE_AB, i, j) ?
+    hlerp(η, NODE_AB, grid, i, j, k) * lerp(H, NODE_AB, grid, i, j, k) : zero(eltype(η))
+
+# Drag enters the bound only if the drag term actually depends on the velocity being
+# iterated. Under `NoFrictionUpdate` the basal stress is a prescribed constant field, i.e. a
+# forcing like the driving stress, contributing nothing to the operator's spectrum.
+@inline _drag_in_spectrum(::ActiveFrictionUpdate) = true
+@inline _drag_in_spectrum(::NoFrictionUpdate) = false
+
+@kernel inbounds = true function _pseudo_dt_gershgorin!(dtau_x, dtau_y, η, H, β, ρ, cfl,
+                                                        drag, mask, dx, dy, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, k = I
+    Z = zero(eltype(dtau_x))
+
+    if node_active(mask, NODE_ACX, i, j)
+        Hx = lerp(H, NODE_ACX, grid, I...)
+        Ps = _etaH_aa(η, H, mask, i - 1, j, k) + _etaH_aa(η, H, mask, i, j, k)
+        Qs = _etaH_ab(η, H, mask, grid, i, j, k) + _etaH_ab(η, H, mask, grid, i, j + 1, k)
+        drag_x = drag ? lerp(β, NODE_ACX, grid, I...) : Z
+        Λ = (8Ps / dx^2 + 4Ps / (dx * dy) + 2Qs / dy^2 + 2Qs / (dx * dy) + drag_x) / (ρ * Hx)
+        dtau_x[I...] = (Hx > Z && Λ > Z) ? 2 * cfl / Λ : Z
+    else
+        dtau_x[I...] = Z
+    end
+
+    if node_active(mask, NODE_ACY, i, j)
+        Hy = lerp(H, NODE_ACY, grid, I...)
+        Ps = _etaH_aa(η, H, mask, i, j - 1, k) + _etaH_aa(η, H, mask, i, j, k)
+        Qs = _etaH_ab(η, H, mask, grid, i, j, k) + _etaH_ab(η, H, mask, grid, i + 1, j, k)
+        drag_y = drag ? lerp(β, NODE_ACY, grid, I...) : Z
+        Λ = (8Ps / dy^2 + 4Ps / (dx * dy) + 2Qs / dx^2 + 2Qs / (dx * dy) + drag_y) / (ρ * Hy)
+        dtau_y[I...] = (Hy > Z && Λ > Z) ? 2 * cfl / Λ : Z
+    else
+        dtau_y[I...] = Z
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Fill `solver.dtau_x`/`dtau_y` for one solve, dispatching on `solver.pseudo_timestep`:
+[`ViscosityPseudoTimeStep`](@ref) (the default) delegates to the Sandip Eq. 7 method above,
+[`GershgorinPseudoTimeStep`](@ref) bounds the spectral radius of the residual operator the
+solver actually iterates — including the basal-drag term and the ice mask (see the source
+note above for the row sums, and [`GershgorinPseudoTimeStep`](@ref) for why they matter).
+
+Called once by [`pseudo_transient!`](@ref) before the PT loop; `mask` and
+`solver.friction_update` must be the same ones the loop itself will use, or the bound
+describes a different operator than the one being iterated.
+"""
+function pseudo_dt!(solver::PseudoTransientSolver, mech::MechanicState, c::Constants,
+                    rt::Runtime, mask::AbstractIceMask = NoMask())
+    dx = Δx(rt.grid2d, Center(), 1, 1, 1)
+    dy = Δy(rt.grid2d, Center(), 1, 1, 1)
+    return pseudo_dt!(solver, solver.pseudo_timestep, mech, c, rt, mask, dx, dy)
+end
+
+function pseudo_dt!(solver::PseudoTransientSolver, ::ViscosityPseudoTimeStep,
+                    mech::MechanicState, c::Constants, rt::Runtime,
+                    ::AbstractIceMask, dx, dy)
+    pseudo_dt!(solver.dtau_x, solver.dtau_y, c.density_ice, dx, dy,
+               mech.material.viscosity_depthaveraged, solver.muB, solver.ndim2,
+               solver.dtau_scaling, rt)
+    return nothing
+end
+
+function pseudo_dt!(solver::PseudoTransientSolver, pt::GershgorinPseudoTimeStep,
+                    mech::MechanicState, c::Constants, rt::Runtime,
+                    mask::AbstractIceMask, dx, dy)
+    T = eltype(solver.dtau_x)
+    rt.launch2d(rt.arch, rt.grid2d,
+                _pseudo_dt_gershgorin! =>
+                    (solver.dtau_x, solver.dtau_y, mech.material.viscosity_depthaveraged,
+                     mech.topography.thickness, mech.friction.beta_eff,
+                     convert(T, c.density_ice), convert(T, pt.cfl * solver.dtau_scaling),
+                     _drag_in_spectrum(solver.friction_update), mask,
+                     convert(T, dx), convert(T, dy), rt.grid2d))
+    return nothing
+end
+
 """
 $(TYPEDSIGNATURES)
 
@@ -323,6 +446,64 @@ end
 end
 
 ###############################################################
+# Convergence criteria
+###############################################################
+
+# `_pt_error` is what the PT loop compares against `abstol`. Both methods reduce fields the
+# loop already maintains, so neither costs an extra kernel — only the reduction the
+# `ncheck` cadence exists to amortize.
+
+@inline _abs_diff(a, b) = abs(a - b)
+
+_pt_error(::VelocityIncrement, solver, ux, uy, ref) =
+    max(mapreduce(_abs_diff, max, asarray(ux), asarray(solver.velocity_x_old)),
+        mapreduce(_abs_diff, max, asarray(uy), asarray(solver.velocity_y_old)))
+
+_pt_error(::ScaledResidual, solver, ux, uy, ref) =
+    max(maximum(abs, asarray(solver.residual_x)),
+        maximum(abs, asarray(solver.residual_y))) / ref
+
+@kernel inbounds = true function _driving_rate!(rate_x, rate_y, driving_x, driving_y, H, ρ,
+                                                 mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    Z = zero(eltype(rate_x))
+    Hx = lerp(H, NODE_ACX, grid, I...)
+    Hy = lerp(H, NODE_ACY, grid, I...)
+    rate_x[I...] = (node_active(mask, NODE_ACX, i, j) && Hx > Z) ?
+                   driving_x[I...] / (ρ * Hx) : Z
+    rate_y[I...] = (node_active(mask, NODE_ACY, i, j) && Hy > Z) ?
+                   driving_y[I...] / (ρ * Hy) : Z
+end
+
+# The scale `_pt_error(::ScaledResidual, ...)` divides by: the velocity rate the driving
+# stress alone would produce, i.e. `dotvel!`'s residual with the membrane and basal terms
+# dropped. Computed once per solve, before the loop.
+#
+# `solver.residual_x`/`residual_y` are borrowed as scratch: `dotvel!` overwrites them
+# unconditionally on the first iteration, so nothing that is read afterwards is lost, and
+# the alternative — two more `acx`/`acy` fields on every solver ever constructed — would be
+# paid for by every solve to serve one convergence criterion.
+_convergence_scale(::VelocityIncrement, mech, c, solver, rt, mask) = one(eltype(asarray(mech.velocity.x)))
+
+function _convergence_scale(::ScaledResidual, mech::MechanicState, c::Constants,
+                            solver::PseudoTransientSolver, rt::Runtime,
+                            mask::AbstractIceMask)
+    T = eltype(solver.residual_x)
+    rt.launch2d(rt.arch, rt.grid2d,
+                _driving_rate! => (solver.residual_x, solver.residual_y,
+                                   mech.stress.driving_x, mech.stress.driving_y,
+                                   mech.topography.thickness, convert(T, c.density_ice),
+                                   mask, rt.grid2d))
+    scale = max(maximum(abs, asarray(solver.residual_x)),
+                maximum(abs, asarray(solver.residual_y)))
+    # A domain with no driving stress at all (a flat, ice-free or perfectly level state) is
+    # already in balance; falling back to 1 makes `err` the raw residual rather than `Inf`.
+    return scale > zero(scale) ? scale : one(scale)
+end
+
+###############################################################
 # Chmy-native Glen viscosity continuation
 ###############################################################
 #
@@ -374,31 +555,67 @@ end
     end
 end
 
+###############################################################
+# Chmy-native basal friction update
+###############################################################
+#
+# `AbstractFrictionUpdate`/`ActiveFrictionUpdate`/`NoFrictionUpdate` live in
+# `src/mechanics/solvers.jl` next to `PseudoTransientSolver` (the dispatch type they
+# extend), exactly like the viscosity-continuation trio above; `update_basalstress!` lives
+# here for the same reason `update_viscosity!` does.
+
+"""
+$(TYPEDSIGNATURES)
+
+[`ActiveFrictionUpdate`](@ref): the ordinary basal friction law. Overwrites
+`velocity.base_x`/`base_y` from the current (SSA-limit) depth-averaged velocity, then
+`stress.base_x`/`base_y` from `friction.beta_eff * velocity.base_{x,y}` via
+[`basalstress!`](@ref) — the behaviour every solver had before
+[`AbstractFrictionUpdate`](@ref) existed.
+"""
+function update_basalstress!(mech::MechanicState, ::ActiveFrictionUpdate, rt::Runtime,
+                             mask::AbstractIceMask = NoMask())
+    (; velocity, stress, friction) = mech
+    copyto!(asarray(velocity.base_x), asarray(velocity.x))
+    copyto!(asarray(velocity.base_y), asarray(velocity.y))
+    basalstress!(stress.base_x, stress.base_y, friction.beta_eff,
+                velocity.base_x, velocity.base_y, rt, mask)
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+No-op: `stress.base_x`/`base_y` are untouched, since [`NoFrictionUpdate`](@ref) means
+"hold the basal stress fixed at whatever was written there before the solve" — bypassing
+the friction law entirely.
+"""
+update_basalstress!(::MechanicState, ::NoFrictionUpdate, ::Runtime,
+                    ::AbstractIceMask = NoMask()) = nothing
+
 """
 $(TYPEDSIGNATURES)
 
 Chmy-native [`pseudo_rate!`](@ref): velocity gradients, viscosity continuation
 ([`update_viscosity!`](@ref), a no-op unless `solver.viscosity_continuation` enables it —
 must run after the gradients it reads and before the membrane stress that reads its
-output, hence its place in this order), membrane stress, basal stress (from the SSA-limit
-basal velocity — same `TODO` as the collocated method: a real DIVA `F₂` integral is Phase 3
-future work), then the PT velocity rate. Writes `solver.velocity_x_dt`/`velocity_y_dt`,
-damped by `solver.gamma`, and `solver.residual_x`/`residual_y`, the undamped rate (see
-[`dotvel!`](@ref)).
+output, hence its place in this order), membrane stress, basal stress
+([`update_basalstress!`](@ref), a no-op if `solver.friction_update` is
+[`NoFrictionUpdate`](@ref) — from the SSA-limit basal velocity otherwise, same `TODO` as
+the collocated method: a real DIVA `F₂` integral is Phase 3 future work), then the PT
+velocity rate. Writes `solver.velocity_x_dt`/`velocity_y_dt`, damped by `solver.gamma`,
+and `solver.residual_x`/`residual_y`, the undamped rate (see [`dotvel!`](@ref)).
 """
 function pseudo_rate!(mech::MechanicState, c::Constants, rt::Runtime,
                       momentum::Union{SSAMomentumBalance, DIVAMomentumBalance},
                       solver::PseudoTransientSolver, mask::AbstractIceMask = NoMask())
-    (; velocity, strainrate, material, topography, stress, friction) = mech
+    (; velocity, strainrate, material, topography, stress) = mech
 
     velocitygradients!(velocity, topography.thickness, rt, mask)
     update_viscosity!(mech, solver.viscosity_continuation, rt, mask)
     strainrate!(strainrate, velocity, material, topography, momentum, rt, mask)
 
-    copyto!(asarray(velocity.base_x), asarray(velocity.x))
-    copyto!(asarray(velocity.base_y), asarray(velocity.y))
-    basalstress!(stress.base_x, stress.base_y, friction.beta_eff,
-                velocity.base_x, velocity.base_y, rt, mask)
+    update_basalstress!(mech, solver.friction_update, rt, mask)
 
     dotvel!(solver.velocity_x_dt, solver.velocity_y_dt,
            strainrate.xx, strainrate.xy, strainrate.yy,
@@ -416,11 +633,29 @@ in pseudo-time until the SSA/DIVA momentum-balance residual vanishes — the sam
 as the collocated method (see its docstring), with every array-level op routed through
 `asarray` and a `Neumann(0)` halo refresh on the velocity each iteration (see the module
 note above). Returns a named tuple `(; iterations, error, converged, residual)`: the first
-three as the collocated method does (`error`/`converged` are decided from the max-norm
-velocity increment); `residual` is the additional max-norm raw rate `‖r(u)/(ρH)‖`
-(`solver.residual_x`/`residual_y`, see [`dotvel!`](@ref)) at the final iterate — a
-diagnostic only, not part of the stopping condition (see `roadmaps/PT-autotune.md`, Phase 1,
-for why: unifying the two would change what `abstol` means, which needs its own pass).
+three as the collocated method does (`error`/`converged` are decided by
+`solver.convergence`); `residual` is the max-norm raw rate `‖r(u)/(ρH)‖`
+(`solver.residual_x`/`residual_y`, see [`dotvel!`](@ref)) at the final iterate — always
+reported, whether or not it also gates the loop.
+
+Two solver-held strategies steer the iteration, both defaulting to the behaviour this
+method had before they existed, so an unadorned `PseudoTransientSolver(grid)` runs the
+original scheme unchanged:
+
+ - `solver.pseudo_timestep` ([`AbstractPseudoTimeStep`](@ref)) — how `Δτ` is chosen.
+   [`ViscosityPseudoTimeStep`](@ref) (default) is Sandip's `Δτ ∝ 1/η`;
+   [`GershgorinPseudoTimeStep`](@ref) bounds the residual operator's spectral radius
+   including the basal-drag term. **On real geometry with a friction law being solved for,
+   the default diverges** — Sandip's bound omits `β/(ρH)`, which dominates under grounded
+   ice. See [`GershgorinPseudoTimeStep`](@ref).
+ - `solver.convergence` ([`AbstractPTConvergence`](@ref)) — what `abstol` measures.
+   [`VelocityIncrement`](@ref) (default) is the exact max-norm increment `|u_new - u_old|`
+   (`ux`/`uy` still hold the pre-update iterate in `ux_old`/`uy_old` at that point) rather
+   than the algebraic reconstruction `theta_v * dtau * dv` an earlier version used — that
+   reconstruction relied on `dtau` being the same scalar everywhere, which a local `Δτ`
+   field is not. [`ScaledResidual`](@ref) is the driving-stress-normalized momentum
+   residual, and is what a domain mixing drag regimes (grounded ice + ice shelves) needs:
+   the increment criterion cannot distinguish a converged shelf from a stalled one.
 
 !!! warning "`material.viscosity_depthaveraged`, `topography.thickness` and `friction.beta_eff` need their halo filled by the caller"
     Unlike the velocity, these are fixed inputs for the whole solve, so this function does
@@ -448,11 +683,6 @@ solver-level parameters (`solver.gamma`, `roadmaps/PT-autotune.md` Phase 1):
  - the velocity rate is damped (`solver.gamma`, via [`dotvel!`](@ref)) rather than fully
    recomputed from scratch every iteration, which is what buys sub-quadratic iteration
    scaling. `gamma = 1` (the default) disables damping and recovers the plain iteration.
-
-The convergence check is the exact max-norm velocity increment `|u_new - u_old|`
-(`ux`/`uy` still hold the pre-update iterate in `ux_old`/`uy_old` at that point) rather
-than an algebraic reconstruction from `theta_v * dtau * dv` — that reconstruction relied on
-`dtau` being the same scalar everywhere, which a local `Δτ` field no longer is.
 """
 function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTransientSolver,
                            rt::Runtime,
@@ -463,8 +693,8 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
         "(nz == 1, i.e. rt.grid === rt.grid2d); DIVA's vertical shear integral is not " *
         "yet ported (roadmaps/chmy.md, Phase 3)."))
 
-    (; velocity, material) = mech
-    (; theta_v, abstol, maxiter, muB, ndim2, dtau_scaling, printout_every, ncheck) = solver
+    (; velocity) = mech
+    (; theta_v, abstol, maxiter, printout_every, ncheck) = solver
 
     ux, uy = velocity.x, velocity.y
     ux_old, uy_old = solver.velocity_x_old, solver.velocity_y_old
@@ -472,18 +702,16 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
     dtau_x, dtau_y = solver.dtau_x, solver.dtau_y
     resid_x, resid_y = solver.residual_x, solver.residual_y
 
-    dx = Δx(rt.grid2d, Center(), 1, 1, 1)
-    dy = Δy(rt.grid2d, Center(), 1, 1, 1)
-
     # Fields held fixed over the PT iteration.
     drivingstress!(mech, c, rt, mask)
-    pseudo_dt!(dtau_x, dtau_y, c.density_ice, dx, dy, material.viscosity_depthaveraged,
-              muB, ndim2, dtau_scaling, rt)
+    pseudo_dt!(solver, mech, c, rt, mask)
+    # After `drivingstress!` (it reads the driving stress) and before the loop (it borrows
+    # `residual_x`/`residual_y` as scratch, which `dotvel!` overwrites on iteration 1).
+    scale = _convergence_scale(solver.convergence, mech, c, solver, rt, mask)
 
     T = eltype(asarray(ux))
     err  = typemax(T)
     iter = 0
-    abs_diff(a, b) = abs(a - b)
     while err > abstol && iter < maxiter
         iter += 1
         copyto!(asarray(ux_old), asarray(ux))
@@ -497,8 +725,7 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
         bc!(rt.arch, rt.grid2d, uy => Neumann())
 
         if iter % ncheck == 0 || iter == maxiter
-            err = max(mapreduce(abs_diff, max, asarray(ux), asarray(ux_old)),
-                      mapreduce(abs_diff, max, asarray(uy), asarray(uy_old)))
+            err = _pt_error(solver.convergence, solver, ux, uy, scale)
         end
         if iter % printout_every == 0
             println("PT iteration $iter: err = $err")

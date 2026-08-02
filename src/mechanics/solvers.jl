@@ -128,6 +128,181 @@ end
 """
 $(TYPEDSIGNATURES)
 
+An abstract type to multiple-dispatch how [`PseudoTransientSolver`](@ref) chooses its
+pseudo-time step `Δτ`, following the same "dispatch, not `if`/`else`" convention as
+[`AbstractViscosityContinuation`](@ref). [`ViscosityPseudoTimeStep`](@ref) (the default) is
+Sandip et al. (2024) Eq. 7, `Δτ ∝ 1/η`; [`GershgorinPseudoTimeStep`](@ref) bounds the
+spectral radius of the *actual* SSA/DIVA residual operator instead.
+
+Only read by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref); the collocated
+solver always uses its own global scalar [`pseudo_dt`](@ref).
+"""
+abstract type AbstractPseudoTimeStep end
+
+"""
+$(TYPEDSIGNATURES)
+
+Sandip et al. (2024) Eq. 7: `Δτ = dtau_scaling · ρ dx dy / (4 (1 + muB) ndim2 · η_face)`,
+evaluated per grid point from the local depth-averaged viscosity ([`pseudo_dt!`](@ref)).
+The default, and the only behaviour prior to [`AbstractPseudoTimeStep`](@ref) existing.
+
+!!! warning "Ignores basal drag and the ice mask"
+    The formula bounds the membrane-stress (diffusive) part of the operator only. It knows
+    nothing about the basal-drag term `β u`, which is the *dominant* diagonal contribution
+    under grounded ice, and it interpolates the viscosity across the ice margin, so an
+    ice-free cell's placeholder viscosity throttles `Δτ` on the margin faces. Both are why
+    a real-geometry solve needs [`GershgorinPseudoTimeStep`](@ref) — see its docstring and
+    `roadmaps/PT-autotune.md`.
+"""
+struct ViscosityPseudoTimeStep <: AbstractPseudoTimeStep end
+
+"""
+$(TYPEDSIGNATURES)
+
+Pseudo-time step from a Gershgorin bound on the spectral radius of the SSA/DIVA residual
+operator (Duretz et al. 2026, Eq. 20 — `roadmaps/PT-autotune.md` Phase 2): the explicit
+stability limit is `Δτ ≤ 2/λ_max`, and `λ_max` is bounded by the largest absolute row sum
+of the (mass-scaled) operator, which for the `u`-equation at an `acx` face is
+
+```
+Λ_x = [ 8(P₋+P₊)/dx² + 4(P₋+P₊)/(dx dy) + 2(Q₋+Q₊)/dy² + 2(Q₋+Q₊)/(dx dy) + β_face ] / (ρ H_face)
+```
+
+with `P = ηH` at the two adjacent `aa` cells, `Q = hlerp(η)·lerp(H)` at the two adjacent
+`ab` corners (exactly the coefficients the membrane-stress [`strainrate!`](@ref) builds),
+`β_face = lerp(β)` and `H_face = lerp(H)`. The `y`-equation is the mirror image.
+`Δτ = cfl · 2 / Λ`.
+
+Three things this buys over [`ViscosityPseudoTimeStep`](@ref):
+
+ 1. **The basal-drag term is in the bound.** `β/(ρH)` dominates `λ_max` under grounded ice
+    (`β_eff` up to ~5e13 Pa s m⁻¹ on real geometry), and a `Δτ` that ignores it diverges
+    outright as soon as friction is solved for rather than prescribed.
+ 2. **Correct magnitude for the membrane part.** With uniform `η`, `H`, no drag and
+    `dx = dy`, this gives `Δτ = ρ dx²/(16 η)` — which is what Sandip's Eq. 7 reduces to at
+    `muB = 0`, `ndim2 = 4.1`. The `PseudoTransientSolver` default `muB = 1e2` therefore
+    shrinks the step by ~101×, i.e. costs ~101× the iterations, for no stability benefit on
+    a depth-integrated balance (`muB` is a *bulk*-viscosity ratio: it belongs to the
+    compressible/full-Stokes pressure step of Räss et al. 2020, not to SSA/DIVA, which has
+    no pressure unknown).
+ 3. **Mask-consistent at the margin.** Every coefficient is evaluated through the same
+    [`AbstractIceMask`](@ref) the membrane stress uses, so an ice-free neighbour
+    contributes `0` (it transmits no stress) instead of throttling `Δτ` with whatever
+    placeholder viscosity that cell happens to hold.
+
+# Fields:
+ - `cfl`: safety factor on `2/λ_max`, `0 < cfl ≤ 1` (default `0.9`). The Gershgorin bound
+   is an upper bound on `λ_max`, so `cfl = 1` is already conservative in exact arithmetic;
+   the margin is there for the nonlinear case (`GlenViscosityContinuation` moves `η`
+   between the `Δτ` evaluation and its use).
+
+!!! note "Still computed once per solve"
+    Like [`ViscosityPseudoTimeStep`](@ref), this is evaluated once before the PT loop, from
+    the viscosity and friction fields as they stand then. Re-estimating it *during* the
+    loop (needed when `η` evolves under viscosity continuation) is the re-estimation cadence
+    item of `roadmaps/PT-autotune.md` Phase 2, not yet implemented.
+"""
+struct GershgorinPseudoTimeStep{T<:AbstractFloat} <: AbstractPseudoTimeStep
+    cfl::T
+end
+
+GershgorinPseudoTimeStep(T::Type{<:AbstractFloat} = Float64; cfl = 0.9) =
+    GershgorinPseudoTimeStep{T}(T(cfl))
+
+"""
+$(TYPEDSIGNATURES)
+
+An abstract type to multiple-dispatch what [`pseudo_transient!`](@ref) compares against
+`solver.abstol`, following the same "dispatch, not `if`/`else`" convention as
+[`AbstractViscosityContinuation`](@ref). [`VelocityIncrement`](@ref) (the default) is the
+max-norm velocity change per iteration; [`ScaledResidual`](@ref) is the momentum residual
+normalized by the driving-stress scale.
+
+Only read by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref).
+"""
+abstract type AbstractPTConvergence end
+
+"""
+$(TYPEDSIGNATURES)
+
+Stop on the max-norm velocity increment `max|u_new - u_old|` (units of `u`). The default,
+and the only behaviour prior to [`AbstractPTConvergence`](@ref) existing.
+
+!!! warning "Silently reports convergence on a stiff sub-domain"
+    The increment is `Δτ · r(u)`, so it goes to zero wherever `Δτ` is small — converged or
+    not. On real geometry that is not academic: an ice shelf has no basal drag, so it
+    relaxes purely diffusively and its per-iteration increment is orders of magnitude below
+    the grounded ice's from the very first iteration. A tolerance that the grounded ice has
+    to work to reach is one the shelf satisfies while still at ~0 velocity, and the solve
+    returns `converged = true` with the shelves empty. Use [`ScaledResidual`](@ref) when the
+    domain mixes drag regimes.
+"""
+struct VelocityIncrement <: AbstractPTConvergence end
+
+"""
+$(TYPEDSIGNATURES)
+
+Stop on the momentum residual, nondimensionalized by the driving-stress scale:
+
+```
+err = max|r(u)| / max|τ_d / (ρ H_face)|
+```
+
+where `r(u) = (∇·N - τ_b - τ_d)/(ρH)` is what [`dotvel!`](@ref) already writes into
+`solver.residual_x`/`residual_y`, and the normalization is the same quantity evaluated with
+the membrane and basal terms dropped — i.e. the rate the driving stress alone would produce.
+`err` is therefore dimensionless and `O(1)` at a zero initial guess, so `abstol` reads as
+"fraction of the driving-stress forcing left unbalanced" (`1e-3`–`1e-6` are sensible), not
+as a velocity.
+
+!!! warning "`abstol` changes units when you select this"
+    With [`VelocityIncrement`](@ref) `abstol` is in m s⁻¹; here it is dimensionless. This is
+    exactly the semantic change `roadmaps/PT-autotune.md` Phase 1 deferred rather than force
+    on every existing test — hence a dispatch type rather than a change of meaning in place.
+
+Normalized by the driving stress rather than by the *initial* residual on purpose: a
+transient run re-solves from the previous time step's velocity, where the initial residual
+is already small, and a relative-reduction criterion would then silently demand many orders
+more accuracy than the first solve got.
+"""
+struct ScaledResidual <: AbstractPTConvergence end
+
+"""
+$(TYPEDSIGNATURES)
+
+An abstract type to multiple-dispatch whether [`PseudoTransientSolver`](@ref) recomputes
+`stress.base_x`/`base_y` from the current velocity iterate during the PT loop, following
+the same "dispatch, not `if`/`else`" convention as [`AbstractViscosityContinuation`](@ref).
+[`ActiveFrictionUpdate`](@ref) (the default) is the ordinary basal friction law, recomputed
+every iteration. [`NoFrictionUpdate`](@ref) leaves `stress.base_x`/`base_y` untouched for
+the whole solve, so whatever was written there beforehand (e.g. a prescribed basal stress
+field) stays fixed instead of being overwritten from `beta_eff * velocity` — i.e. the
+friction law is bypassed.
+"""
+abstract type AbstractFrictionUpdate end
+
+"""
+$(TYPEDSIGNATURES)
+
+The ordinary basal friction law: `stress.base_x`/`base_y` are recomputed every PT
+iteration from `friction.beta_eff * velocity.base_{x,y}` via [`basalstress!`](@ref). The
+default for [`PseudoTransientSolver`](@ref), and the only behaviour prior to
+[`AbstractFrictionUpdate`](@ref) existing.
+"""
+struct ActiveFrictionUpdate <: AbstractFrictionUpdate end
+
+"""
+$(TYPEDSIGNATURES)
+
+Bypass the basal friction law: `stress.base_x`/`base_y` are never touched by the PT loop,
+so they stay at whatever value they were set to before the solve — a fixed, prescribed
+basal stress rather than one derived from a friction law and the current velocity.
+"""
+struct NoFrictionUpdate <: AbstractFrictionUpdate end
+
+"""
+$(TYPEDSIGNATURES)
+
 Solve the ice dynamics via a pseudo-transient (PT) solver following Sandip et al. (2024).
 The velocity field is relaxed in pseudo-time until the momentum balance is satisfied,
 which only requires local (stencil) operations. All work arrays live on the backend of
@@ -142,8 +317,10 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
 
 # Fields:
  - `ndim1`, `ndim2`, `ndim3`: numerical-dimensionality constants of the PT time step
-   (1D, 2D, 3D stencils).
- - `muB`: bulk-to-shear viscosity ratio entering the PT time step.
+   (1D, 2D, 3D stencils). Read only by [`ViscosityPseudoTimeStep`](@ref).
+ - `muB`: bulk-to-shear viscosity ratio entering the PT time step. Read only by
+   [`ViscosityPseudoTimeStep`](@ref) — see [`GershgorinPseudoTimeStep`](@ref) for why the
+   default `1e2` is ~101× too conservative on a depth-integrated balance.
  - `theta_v`: relaxation weight of the velocity update.
  - `gamma`: damping coefficient of the pseudo-transient rate (Sandip et al. 2024,
    Eq. 12–14; Frankel 1950). The rate is accumulated as
@@ -154,7 +331,9 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
    good value currently needs the same manual tuning as `theta_v`. Automatically
    selecting it from spectral estimates is the Duretz et al. (2026) autotuning work
    (`roadmaps/PT-autotune.md`), not yet implemented.
- - `abstol`: convergence tolerance on the max-norm velocity change per iteration.
+ - `abstol`: convergence tolerance on whatever `convergence` measures — a velocity change
+   per iteration (m s⁻¹) for [`VelocityIncrement`](@ref), a dimensionless residual for
+   [`ScaledResidual`](@ref).
  - `maxiter`: maximum number of PT iterations.
  - `ncheck`: check convergence every `ncheck` iterations. The check is the only
    operation that forces the host to wait for the device (see
@@ -178,10 +357,22 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
    for the accumulator to *not* equal the raw rate, so the raw rate needs its own home to
    remain readable. The Chmy-native [`pseudo_transient!`](@ref) reduces these into the
    `residual` diagnostic it returns; unused by the collocated solver, like `dtau_x`/`dtau_y`.
+ - `pseudo_timestep`: an [`AbstractPseudoTimeStep`](@ref), default
+   [`ViscosityPseudoTimeStep`](@ref). Selects how `dtau_x`/`dtau_y` are filled. Only read
+   by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref).
+ - `convergence`: an [`AbstractPTConvergence`](@ref), default [`VelocityIncrement`](@ref).
+   Selects what `abstol` is compared against — **and therefore what `abstol` means**. Only
+   read by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref).
  - `viscosity_continuation`: an [`AbstractViscosityContinuation`](@ref), default
    [`NoViscosityContinuation`](@ref). Only read by the Chmy-native, C-grid staggered
    [`pseudo_transient!`](@ref); the collocated solver never updates viscosity regardless
    of this field's value.
+ - `friction_update`: an [`AbstractFrictionUpdate`](@ref), default
+   [`ActiveFrictionUpdate`](@ref). Only read by the Chmy-native, C-grid staggered
+   [`pseudo_transient!`](@ref); the collocated solver always recomputes basal stress
+   inline regardless of this field's value. Set to [`NoFrictionUpdate`](@ref) to bypass
+   the basal friction law and hold `stress.base_x`/`base_y` fixed at whatever was written
+   there before the solve (e.g. a prescribed basal stress field).
 
 !!! note "Two type parameters for the work arrays, not one"
     On a [`StaggeredGrid`](@ref) the x- and y-velocity work arrays are Chmy `Field`s at
@@ -191,7 +382,7 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
     reject that combination outright, hence the `MX`/`MY` split below. They collapse to
     the same type on a `RegularGrid`, so that path is unaffected.
 """
-struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, VC<:AbstractViscosityContinuation} <: AbstractMomentumSolver
+struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeStep, CV<:AbstractPTConvergence, VC<:AbstractViscosityContinuation, FU<:AbstractFrictionUpdate} <: AbstractMomentumSolver
     ndim1::T
     ndim2::T
     ndim3::T
@@ -211,7 +402,10 @@ struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, VC<:AbstractViscosityCont
     dtau_y::MY
     residual_x::MX
     residual_y::MY
+    pseudo_timestep::PT
+    convergence::CV
     viscosity_continuation::VC
+    friction_update::FU
 end
 Adapt.@adapt_structure PseudoTransientSolver
 
@@ -227,7 +421,10 @@ function PseudoTransientSolver(grid::RegularGrid;
     ncheck = 1,
     printout_every = typemax(Int),
     dtau_scaling = 1,
+    pseudo_timestep::AbstractPseudoTimeStep = ViscosityPseudoTimeStep(),
+    convergence::AbstractPTConvergence = VelocityIncrement(),
     viscosity_continuation::AbstractViscosityContinuation = NoViscosityContinuation(),
+    friction_update::AbstractFrictionUpdate = ActiveFrictionUpdate(),
 )
     T = eltype(grid.x)
     backend = get_backend(grid.x)
@@ -236,7 +433,7 @@ function PseudoTransientSolver(grid::RegularGrid;
         T(ndim1), T(ndim2), T(ndim3), T(muB),
         T(theta_v), T(gamma), T(abstol), Int(maxiter), Int(ncheck),
         Int(printout_every), T(dtau_scaling), w(), w(), w(), w(), w(), w(), w(), w(),
-        viscosity_continuation,
+        pseudo_timestep, convergence, viscosity_continuation, friction_update,
     )
 end
 
@@ -268,7 +465,10 @@ function PseudoTransientSolver(grid::StaggeredGrid;
     printout_every = typemax(Int),
     dtau_scaling = 1,
     halo = 1,
+    pseudo_timestep::AbstractPseudoTimeStep = ViscosityPseudoTimeStep(),
+    convergence::AbstractPTConvergence = VelocityIncrement(),
     viscosity_continuation::AbstractViscosityContinuation = NoViscosityContinuation(),
+    friction_update::AbstractFrictionUpdate = ActiveFrictionUpdate(),
 )
     grid.grid2d === grid.grid || throw(ArgumentError(
         "PseudoTransientSolver(::StaggeredGrid) requires a depth-averaged grid " *
@@ -286,7 +486,7 @@ function PseudoTransientSolver(grid::StaggeredGrid;
         T(theta_v), T(gamma), T(abstol), Int(maxiter), Int(ncheck),
         Int(printout_every), T(dtau_scaling),
         acx(), acy(), acx(), acy(), acx(), acy(), acx(), acy(),
-        viscosity_continuation,
+        pseudo_timestep, convergence, viscosity_continuation, friction_update,
     )
 end
 

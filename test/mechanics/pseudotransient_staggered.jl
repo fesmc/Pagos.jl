@@ -591,4 +591,119 @@ end
         @test all(isapprox.(interior(mech_relaxed.velocity.x), interior(mech_glen.velocity.x);
                             rtol = 1e-4))
     end
+
+    # -------------------------------------------------------------------
+    # GershgorinPseudoTimeStep / ScaledResidual: the two dispatch points added after the
+    # AIS-geometry example (`docs/src/examples/ais-pt.jl`) came back with empty ice
+    # shelves. Each of the three tests below pins one leg of that failure.
+    # -------------------------------------------------------------------
+
+    # Λ is a sum of |stencil coefficients|, so a uniform slab makes it a closed form:
+    # with dx = dy, P = Q = ηH everywhere, the four membrane terms are
+    # (8 + 4 + 2 + 2)·2ηH/dx² = 32ηH/dx², and Λ = (32ηH/dx² + β)/(ρH).
+    @testset "pseudo_dt!(::GershgorinPseudoTimeStep): closed form on a uniform slab" begin
+        grid, rt, mech = setup_slab()
+        fill_slab!(mech, rt, const_case)
+        dx = Δx(rt.grid2d, Center(), 1, 1, 1)
+        ρ  = cst.density_ice
+        (; H0, μ0, β0) = const_case
+
+        for cfl in (1.0, 0.9, 0.5)
+            solver = PseudoTransientSolver(grid;
+                pseudo_timestep = GershgorinPseudoTimeStep(cfl = cfl))
+            pseudo_dt!(solver, mech, cst, rt)
+
+            Λ = (32 * μ0 * H0 / dx^2 + β0) / (ρ * H0)
+            @test all(≈(2 * cfl / Λ), interior(solver.dtau_x))
+            @test all(≈(2 * cfl / Λ), interior(solver.dtau_y))
+        end
+
+        # Without a friction law being solved for, the drag is a prescribed forcing, not a
+        # term of the operator, so it must drop out of the spectral bound.
+        solver_nofric = PseudoTransientSolver(grid;
+            pseudo_timestep = GershgorinPseudoTimeStep(cfl = 1.0),
+            friction_update = NoFrictionUpdate())
+        pseudo_dt!(solver_nofric, mech, cst, rt)
+        @test all(≈(2 * ρ * H0 / (32 * μ0 * H0 / dx^2)), interior(solver_nofric.dtau_x))
+
+        # And with no drag at all it reduces to Sandip's Eq. 7 at muB = 0, ndim2 = 4.1 —
+        # i.e. ρdx²/(16η) vs ρdx²/(16.4η), agreeing to within that constant. This is the
+        # check that the *default* muB = 1e2 is ~101x too conservative, not that Eq. 7 is
+        # wrong in the regime it was derived for.
+        sandip = pseudo_dt(ρ, dx, dx, mech.material.viscosity_depthaveraged, 0, 4.1)
+        gersh  = 2 * ρ * H0 / (32 * μ0 * H0 / dx^2)
+        @test gersh ≈ sandip * (16.4 / 16) rtol=1e-12
+        @test pseudo_dt(ρ, dx, dx, mech.material.viscosity_depthaveraged, 1e2, 4.1) <
+              gersh / 100
+    end
+
+    # The leg that made the AIS solve blow up rather than merely stall: Sandip's Δτ does
+    # not see the basal-drag term, so once β/(ρH) dominates the spectrum, θ·Δτ·β/(ρH) > 2
+    # and the iteration is unconditionally unstable. At these parameters that factor is
+    # ~9 for `ViscosityPseudoTimeStep` and ~1.8 for the Gershgorin bound.
+    @testset "GershgorinPseudoTimeStep: stable where the viscosity-only Δτ diverges" begin
+        stiff_case = (H0 = 1000.0, μ0 = 1e5, β0 = 1e5, α = 1e-3)
+        an = slab_analytical(; stiff_case...)
+
+        grid_v, rt_v, mech_v = setup_slab()
+        fill_slab!(mech_v, rt_v, stiff_case)
+        solver_v = PseudoTransientSolver(grid_v; maxiter = 200, abstol = 1e-8)
+        res_v = pseudo_transient!(mech_v, cst, solver_v, rt_v)
+
+        @test !res_v.converged
+        @test maximum(abs, interior(mech_v.velocity.x)) > 100 * abs(an.ub)   # blown up
+
+        grid_g, rt_g, mech_g = setup_slab()
+        fill_slab!(mech_g, rt_g, stiff_case)
+        solver_g = PseudoTransientSolver(grid_g; maxiter = 200, abstol = 1e-8,
+            theta_v = 1.0, pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.9))
+        res_g = pseudo_transient!(mech_g, cst, solver_g, rt_g)
+
+        @test res_g.converged
+        @test all(≈(an.ub, rtol = 1e-5), interior(mech_g.velocity.x))
+    end
+
+    @testset "ScaledResidual vs VelocityIncrement" begin
+        an = slab_analytical(; const_case...)
+
+        # The normalization is exactly the driving-stress rate, which for a uniform slab is
+        # τ_d/(ρH) = g·α — so `error` and `residual` (both taken at the final iterate) must
+        # differ by precisely that factor, with no free constant.
+        grid, rt, mech = setup_slab()
+        fill_slab!(mech, rt, const_case)
+        solver = PseudoTransientSolver(grid; maxiter = 200, abstol = 1e-9,
+            convergence = ScaledResidual())
+        res = pseudo_transient!(mech, cst, solver, rt)
+
+        # `abstol` here is a fraction of the driving stress left unbalanced, so the velocity
+        # accuracy it implies is `abstol · τ_d / β = abstol · ub` — hence rtol ≈ abstol,
+        # not the m/s reading a `VelocityIncrement` tolerance would have.
+        @test res.converged
+        @test all(≈(an.ub, rtol = 1e-7), interior(mech.velocity.x))
+        @test res.error ≈ res.residual / (cst.gravity * const_case.α) rtol=1e-12
+
+        # The failure mode itself, in miniature: `err = θ·Δτ·r` vanishes as Δτ → 0 whether
+        # or not the momentum balance is satisfied. Throttling Δτ by 1e-8 (what an ice
+        # shelf's drag-free, diffusion-limited relaxation does to its own increments
+        # relative to the grounded ice's) makes the increment criterion report success at
+        # essentially zero velocity — the empty Ross and Ronne of the original AIS figure.
+        grid_i, rt_i, mech_i = setup_slab()
+        fill_slab!(mech_i, rt_i, const_case)
+        solver_i = PseudoTransientSolver(grid_i; maxiter = 200, abstol = 1e-8,
+            dtau_scaling = 1e-8)
+        res_i = pseudo_transient!(mech_i, cst, solver_i, rt_i)
+
+        @test res_i.converged                                   # ... and yet:
+        @test maximum(abs, interior(mech_i.velocity.x)) < 1e-6 * abs(an.ub)
+
+        # Same throttled solver, residual criterion: no false positive.
+        grid_r, rt_r, mech_r = setup_slab()
+        fill_slab!(mech_r, rt_r, const_case)
+        solver_r = PseudoTransientSolver(grid_r; maxiter = 20, abstol = 1e-8,
+            dtau_scaling = 1e-8, convergence = ScaledResidual())
+        res_r = pseudo_transient!(mech_r, cst, solver_r, rt_r)
+
+        @test !res_r.converged
+        @test res_r.error > 0.99        # still ~all of the driving stress unbalanced
+    end
 end
