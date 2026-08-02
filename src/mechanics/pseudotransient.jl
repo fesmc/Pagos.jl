@@ -299,7 +299,7 @@ end
 @inline _drag_in_spectrum(::ActiveFrictionUpdate) = true
 @inline _drag_in_spectrum(::NoFrictionUpdate) = false
 
-@kernel inbounds = true function _pseudo_dt_gershgorin!(dtau_x, dtau_y, η, H, β, ρ, cfl,
+@kernel inbounds = true function _pseudo_dt_gershgorin!(dtau_x, dtau_y, η, H, β, ρ, scale,
                                                         drag, mask, dx, dy, grid, O)
     I = @index(Global, NTuple)
     I = I + O
@@ -312,7 +312,7 @@ end
         Qs = _etaH_ab(η, H, mask, grid, i, j, k) + _etaH_ab(η, H, mask, grid, i, j + 1, k)
         drag_x = drag ? lerp(β, NODE_ACX, grid, I...) : Z
         Λ = (8Ps / dx^2 + 4Ps / (dx * dy) + 2Qs / dy^2 + 2Qs / (dx * dy) + drag_x) / (ρ * Hx)
-        dtau_x[I...] = (Hx > Z && Λ > Z) ? 2 * cfl / Λ : Z
+        dtau_x[I...] = (Hx > Z && Λ > Z) ? scale / Λ : Z
     else
         dtau_x[I...] = Z
     end
@@ -323,7 +323,7 @@ end
         Qs = _etaH_ab(η, H, mask, grid, i, j, k) + _etaH_ab(η, H, mask, grid, i + 1, j, k)
         drag_y = drag ? lerp(β, NODE_ACY, grid, I...) : Z
         Λ = (8Ps / dy^2 + 4Ps / (dx * dy) + 2Qs / dx^2 + 2Qs / (dx * dy) + drag_y) / (ρ * Hy)
-        dtau_y[I...] = (Hy > Z && Λ > Z) ? 2 * cfl / Λ : Z
+        dtau_y[I...] = (Hy > Z && Λ > Z) ? scale / Λ : Z
     else
         dtau_y[I...] = Z
     end
@@ -361,12 +361,34 @@ end
 function pseudo_dt!(solver::PseudoTransientSolver, pt::GershgorinPseudoTimeStep,
                     mech::MechanicState, c::Constants, rt::Runtime,
                     mask::AbstractIceMask, dx, dy)
+    gershgorin_dt!(solver, mech, c, rt, mask, 2 * pt.cfl * solver.dtau_scaling)
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Fill `solver.dtau_x`/`dtau_y` with `scale / Λ`, where `Λ` is the Gershgorin absolute row sum
+of the mass-scaled residual operator (see the source note above). The prefactor is explicit
+because the two schemes that use this bound want different ones from the same `Λ`: the
+first-order iteration takes `scale = 2·cfl` (`Δτ ≤ 2/λ_max`), while
+[`AutotunedDynamicRelaxation`](@ref) takes `scale = Δτ_DR²` — its per-face pseudo-time step
+is `Δτ_DR²/Λ` because `Δτ_DR` enters the damped update *twice*, once on the residual and
+once on the accumulator (see that type's docstring for the algebra).
+
+`Λ` itself is recoverable from the output as `scale / dtau`, which is how the autotuner
+evaluates the Rayleigh quotient's `M`-inner product without storing a third field.
+"""
+function gershgorin_dt!(solver::PseudoTransientSolver, mech::MechanicState, c::Constants,
+                        rt::Runtime, mask::AbstractIceMask, scale)
     T = eltype(solver.dtau_x)
+    dx = Δx(rt.grid2d, Center(), 1, 1, 1)
+    dy = Δy(rt.grid2d, Center(), 1, 1, 1)
     rt.launch2d(rt.arch, rt.grid2d,
                 _pseudo_dt_gershgorin! =>
                     (solver.dtau_x, solver.dtau_y, mech.material.viscosity_depthaveraged,
                      mech.topography.thickness, mech.friction.beta_eff,
-                     convert(T, c.density_ice), convert(T, pt.cfl * solver.dtau_scaling),
+                     convert(T, c.density_ice), convert(T, scale),
                      _drag_in_spectrum(solver.friction_update), mask,
                      convert(T, dx), convert(T, dy), rt.grid2d))
     return nothing
@@ -504,6 +526,156 @@ function _convergence_scale(::ScaledResidual, mech::MechanicState, c::Constants,
 end
 
 ###############################################################
+# Autotuned dynamic relaxation (Duretz et al. 2026)
+###############################################################
+#
+# The scheme, the algebra and the warm-up are documented on `AutotunedDynamicRelaxation`
+# (`src/mechanics/solvers.jl`); this section is the machinery. Three things are worth
+# knowing before reading it.
+#
+#  1. **Nothing new is stored.** The Rayleigh quotient needs `Δu = u^k - u^{k-1}` and
+#     `Δr̃ = r̃(u^k) - r̃(u^{k-1})`, i.e. the residual at two consecutive iterates — and the
+#     loop only ever holds one. Rather than allocate a second residual pair for every solver
+#     ever constructed, the numerator is split across the two iterations that already have
+#     the pieces:
+#
+#       iteration k,   after `pseudo_vel!`:  u = u^k, u_old = u^{k-1}, resid = r̃(u^{k-1})
+#                                            ⟹ Δu·r̃(u^{k-1}) and Δuᵀ M Δu   (`_arm_tuning`)
+#       iteration k+1, after `pseudo_rate!`: u, u_old unchanged,       resid = r̃(u^k)
+#                                            ⟹ Δu·r̃(u^k)                    (`_tune!`)
+#
+#     Two scalars carried between them, no fields. This is why `pseudo_transient!` copies
+#     `u → u_old` *after* `pseudo_rate!` rather than at the top of the iteration: it is the
+#     only reordering that leaves `Δu` intact at both sample points, and it is invisible to
+#     everything else (`pseudo_rate!` never reads `u_old`, and `pseudo_vel!` still gets the
+#     current iterate as its base).
+#
+#  2. **`M = diag(Λ)` is recovered from `Δτ`, not stored either.** `gershgorin_dt!` writes
+#     `dtau = scale/Λ`, so `Λ = scale/dtau` and `Δuᵀ M Δu = scale · Σ Δu²/dtau`.
+#
+#  3. **The tuning state is an immutable `NamedTuple`** rebound at those two points, with
+#     the same field set for every `AbstractPTTuning`, so the loop is type stable whichever
+#     tuning is selected and `FixedTuning`'s methods compile away to nothing.
+
+# `scale`/`lambda_min` are meaningless under `FixedTuning` (nothing reads them); `NaN` says
+# so rather than a zero that could be mistaken for a measurement.
+_tuning_state(::Type{T}, gamma, theta_v, scale) where {T} =
+    (; gamma = T(gamma), theta_v = T(theta_v), scale = T(scale), lambda_min = T(NaN),
+       rayleigh_ur = zero(T), rayleigh_uu = zero(T), armed = false)
+
+"""
+$(TYPEDSIGNATURES)
+
+Fill `solver.dtau_x`/`dtau_y` for the first iteration and return the initial tuning state
+(`gamma`, `theta_v`, the `Δτ` prefactor and the `λ_min` bookkeeping) that
+[`pseudo_transient!`](@ref) threads through its loop.
+
+[`FixedTuning`](@ref) defers to [`pseudo_dt!`](@ref) and freezes `solver.gamma`/`theta_v`.
+[`AutotunedDynamicRelaxation`](@ref) starts in its warm-up: undamped (`γ = 1`) at the
+damped-Jacobi step `Δτ = 1/λ_max`, i.e. `scale = 1` — see that type's docstring for why the
+DR step cannot be used before the damping it is paired with is known.
+"""
+function _tuning_init!(::FixedTuning, solver::PseudoTransientSolver, mech::MechanicState,
+                       c::Constants, rt::Runtime, mask::AbstractIceMask)
+    pseudo_dt!(solver, mech, c, rt, mask)
+    return _tuning_state(typeof(solver.gamma), solver.gamma, solver.theta_v, NaN)
+end
+
+function _tuning_init!(::AutotunedDynamicRelaxation, solver::PseudoTransientSolver,
+                       mech::MechanicState, c::Constants, rt::Runtime,
+                       mask::AbstractIceMask)
+    T = typeof(solver.gamma)
+    scale = T(solver.dtau_scaling)
+    gershgorin_dt!(solver, mech, c, rt, mask, scale)
+    return _tuning_state(T, 1, 1, scale)
+end
+
+@inline _du_dot_r(u, u_old, r) = (u - u_old) * r
+
+# Guarded because `dtau` is exactly zero off-mask, where `Δu` is zero too: an unguarded
+# 0/0 would poison the whole reduction with `NaN`.
+@inline _du2_over_dtau(u, u_old, dtau) =
+    dtau > zero(dtau) ? (u - u_old)^2 / dtau : zero(dtau)
+
+_sum_du_dot_r(solver, ux, uy) =
+    mapreduce(_du_dot_r, +, asarray(ux), asarray(solver.velocity_x_old),
+              asarray(solver.residual_x)) +
+    mapreduce(_du_dot_r, +, asarray(uy), asarray(solver.velocity_y_old),
+              asarray(solver.residual_y))
+
+_sum_du2_over_dtau(solver, ux, uy) =
+    mapreduce(_du2_over_dtau, +, asarray(ux), asarray(solver.velocity_x_old),
+              asarray(solver.dtau_x)) +
+    mapreduce(_du2_over_dtau, +, asarray(uy), asarray(solver.velocity_y_old),
+              asarray(solver.dtau_y))
+
+"""
+$(TYPEDSIGNATURES)
+
+Sample the half of the Rayleigh quotient that is only available at the end of a PT
+iteration — `Δuᵀ r̃(u^{k-1})` and `Δuᵀ M Δu` — and arm [`_tune!`](@ref) to take the other
+half at the start of the next one. A no-op under [`FixedTuning`](@ref), and under
+[`AutotunedDynamicRelaxation`](@ref) except every `cadence` iterations.
+
+Must be called after `pseudo_vel!`, where `ux`/`uy` hold `u^k` and
+`solver.velocity_*_old` hold `u^{k-1}`.
+"""
+_arm_tuning(::FixedTuning, state, solver, ux, uy, iter) = state
+
+function _arm_tuning(tu::AutotunedDynamicRelaxation, state, solver::PseudoTransientSolver,
+                     ux, uy, iter::Int)
+    iter % tu.cadence == 0 || return state
+    return merge(state, (; rayleigh_ur = _sum_du_dot_r(solver, ux, uy),
+                           rayleigh_uu = _sum_du2_over_dtau(solver, ux, uy),
+                           armed = true))
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Close the Rayleigh quotient armed by [`_arm_tuning`](@ref), derive `Δτ` and the damping
+from it (Duretz et al. 2026 Eq. 19–21; the closed form is in
+[`AutotunedDynamicRelaxation`](@ref)'s docstring) and refill `solver.dtau_x`/`dtau_y` — the
+refill doubling as the `λ_max` re-estimation the nonlinear case needs, since it rebuilds
+the Gershgorin bound from the viscosity as it now stands.
+
+Must be called after `pseudo_rate!` and before the `u → u_old` copy, where `ux`/`uy` still
+hold `u^k`, `solver.velocity_*_old` still hold `u^{k-1}` and `solver.residual_*` hold
+`r̃(u^k)`. A no-op under [`FixedTuning`](@ref), and whenever the quotient is degenerate (a
+converged or stationary iterate leaves `Δu = 0`), in which case the previous parameters
+stand.
+"""
+_tune!(::FixedTuning, state, solver, mech, c, rt, mask, ux, uy) = state
+
+function _tune!(tu::AutotunedDynamicRelaxation, state, solver::PseudoTransientSolver,
+                mech::MechanicState, c::Constants, rt::Runtime, mask::AbstractIceMask,
+                ux, uy)
+    state.armed || return state
+    T = typeof(state.gamma)
+    numerator = abs(_sum_du_dot_r(solver, ux, uy) - state.rayleigh_ur)
+    denominator = state.scale * state.rayleigh_uu
+    (numerator > 0 && denominator > 0) || return merge(state, (; armed = false))
+
+    # A Rayleigh quotient of `Â` cannot exceed `λ_max ≤ 1`, so anything above is noise, not
+    # a measurement — which is what `Δu` degenerates into once the solve is converged to
+    # roundoff and the loop keeps re-estimating from an increment that is pure rounding.
+    λ_min = min(T(numerator / denominator), one(T))
+    # Duretz Eq. 19 (`c = c_damp·2√λ_min`) and Eq. 20 (`Δτ = c_CFL·2/√λ_max`, with
+    # `λ_max ≤ 1` by construction) solved jointly against the damped iteration's exact
+    # stability bound `Δτ² = c_CFL²·2(2 - γ)`, so that `γ = c·Δτ` is consistent with the
+    # `Δτ` it is paired with rather than with an undamped one.
+    # `convert`ed rather than promoted: the tuning and Δτ types are independent keyword
+    # arguments of the solver, and a `Float64` `cfl` on a `Float32` solver must not widen
+    # the state tuple (which would retype `state` inside the loop).
+    d = 2 * convert(T, tu.c_damp) * sqrt(λ_min)
+    cc = convert(T, solver.pseudo_timestep.cfl)^2
+    dtau = -cc * d + sqrt(cc^2 * d^2 + 4 * cc)
+    scale = dtau^2 * convert(T, solver.dtau_scaling)
+    gershgorin_dt!(solver, mech, c, rt, mask, scale)
+    return merge(state, (; gamma = d * dtau, scale, lambda_min = λ_min, armed = false))
+end
+
+###############################################################
 # Chmy-native Glen viscosity continuation
 ###############################################################
 #
@@ -603,12 +775,17 @@ output, hence its place in this order), membrane stress, basal stress
 ([`update_basalstress!`](@ref), a no-op if `solver.friction_update` is
 [`NoFrictionUpdate`](@ref) — from the SSA-limit basal velocity otherwise, same `TODO` as
 the collocated method: a real DIVA `F₂` integral is Phase 3 future work), then the PT
-velocity rate. Writes `solver.velocity_x_dt`/`velocity_y_dt`, damped by `solver.gamma`,
-and `solver.residual_x`/`residual_y`, the undamped rate (see [`dotvel!`](@ref)).
+velocity rate. Writes `solver.velocity_x_dt`/`velocity_y_dt`, damped by `gamma`, and
+`solver.residual_x`/`residual_y`, the undamped rate (see [`dotvel!`](@ref)).
+
+`gamma` defaults to `solver.gamma` and is a keyword only because
+[`AutotunedDynamicRelaxation`](@ref) recomputes the damping *during* the solve, so the
+value in force at a given iteration is not a property of the (immutable) solver.
 """
 function pseudo_rate!(mech::MechanicState, c::Constants, rt::Runtime,
                       momentum::Union{SSAMomentumBalance, DIVAMomentumBalance},
-                      solver::PseudoTransientSolver, mask::AbstractIceMask = NoMask())
+                      solver::PseudoTransientSolver, mask::AbstractIceMask = NoMask();
+                      gamma = solver.gamma)
     (; velocity, strainrate, material, topography, stress) = mech
 
     velocitygradients!(velocity, topography.thickness, rt, mask)
@@ -621,7 +798,7 @@ function pseudo_rate!(mech::MechanicState, c::Constants, rt::Runtime,
            strainrate.xx, strainrate.xy, strainrate.yy,
            stress.base_x, stress.base_y, stress.driving_x, stress.driving_y,
            topography.thickness, c.density_ice, rt, momentum, mask;
-           gamma = solver.gamma, resid_x = solver.residual_x, resid_y = solver.residual_y)
+           gamma, resid_x = solver.residual_x, resid_y = solver.residual_y)
     return nothing
 end
 
@@ -632,13 +809,16 @@ Chmy-native, C-grid staggered [`pseudo_transient!`](@ref): iterate `mech.velocit
 in pseudo-time until the SSA/DIVA momentum-balance residual vanishes — the same algorithm
 as the collocated method (see its docstring), with every array-level op routed through
 `asarray` and a `Neumann(0)` halo refresh on the velocity each iteration (see the module
-note above). Returns a named tuple `(; iterations, error, converged, residual)`: the first
-three as the collocated method does (`error`/`converged` are decided by
-`solver.convergence`); `residual` is the max-norm raw rate `‖r(u)/(ρH)‖`
-(`solver.residual_x`/`residual_y`, see [`dotvel!`](@ref)) at the final iterate — always
-reported, whether or not it also gates the loop.
+note above). Returns a named tuple
+`(; iterations, error, converged, residual, damping, lambda_min)`: the first three as the
+collocated method does (`error`/`converged` are decided by `solver.convergence`);
+`residual` is the max-norm raw rate `‖r(u)/(ρH)‖` (`solver.residual_x`/`residual_y`, see
+[`dotvel!`](@ref)) at the final iterate — always reported, whether or not it also gates the
+loop; `damping` is the `γ` in force at the end of the solve and `lambda_min` the last
+spectral estimate behind it, both `NaN`/`solver.gamma` unless `solver.tuning` is
+[`AutotunedDynamicRelaxation`](@ref).
 
-Two solver-held strategies steer the iteration, both defaulting to the behaviour this
+Three solver-held strategies steer the iteration, all defaulting to the behaviour this
 method had before they existed, so an unadorned `PseudoTransientSolver(grid)` runs the
 original scheme unchanged:
 
@@ -656,6 +836,11 @@ original scheme unchanged:
    field is not. [`ScaledResidual`](@ref) is the driving-stress-normalized momentum
    residual, and is what a domain mixing drag regimes (grounded ice + ice shelves) needs:
    the increment criterion cannot distinguish a converged shelf from a stalled one.
+ - `solver.tuning` ([`AbstractPTTuning`](@ref)) — where `Δτ` and the damping come from.
+   [`FixedTuning`](@ref) (default) uses the hand-set `solver.theta_v`/`solver.gamma`;
+   [`AutotunedDynamicRelaxation`](@ref) derives both from a Gershgorin `λ_max` and a
+   Rayleigh-quotient `λ_min`, re-derived every `cadence` iterations, and ignores those two
+   fields.
 
 !!! warning "`material.viscosity_depthaveraged`, `topography.thickness` and `friction.beta_eff` need their halo filled by the caller"
     Unlike the velocity, these are fixed inputs for the whole solve, so this function does
@@ -694,7 +879,7 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
         "yet ported (roadmaps/chmy.md, Phase 3)."))
 
     (; velocity) = mech
-    (; theta_v, abstol, maxiter, printout_every, ncheck) = solver
+    (; abstol, maxiter, printout_every, ncheck, tuning) = solver
 
     ux, uy = velocity.x, velocity.y
     ux_old, uy_old = solver.velocity_x_old, solver.velocity_y_old
@@ -704,7 +889,10 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
 
     # Fields held fixed over the PT iteration.
     drivingstress!(mech, c, rt, mask)
-    pseudo_dt!(solver, mech, c, rt, mask)
+    # Fills `dtau_x`/`dtau_y` and hands back the iteration parameters (see the autotuning
+    # section above); under the default `FixedTuning` this is `pseudo_dt!` plus the
+    # solver's own frozen `gamma`/`theta_v`.
+    state = _tuning_init!(tuning, solver, mech, c, rt, mask)
     # After `drivingstress!` (it reads the driving stress) and before the loop (it borrows
     # `residual_x`/`residual_y` as scratch, which `dotvel!` overwrites on iteration 1).
     scale = _convergence_scale(solver.convergence, mech, c, solver, rt, mask)
@@ -714,21 +902,32 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
     iter = 0
     while err > abstol && iter < maxiter
         iter += 1
+
+        pseudo_rate!(mech, c, rt, momentum, solver, mask; gamma = state.gamma)
+        # Between the rate and the copy on purpose: this is the only point where the
+        # residual at the current iterate and the *previous* increment coexist, which is
+        # what lets the autotuner close its Rayleigh quotient without a second residual
+        # buffer (see the autotuning section above). A no-op under `FixedTuning`.
+        state = _tune!(tuning, state, solver, mech, c, rt, mask, ux, uy)
+
         copyto!(asarray(ux_old), asarray(ux))
         copyto!(asarray(uy_old), asarray(uy))
 
-        pseudo_rate!(mech, c, rt, momentum, solver, mask)
-        pseudo_vel!(asarray(ux), asarray(ux_old), asarray(dvx), asarray(dtau_x), theta_v)
-        pseudo_vel!(asarray(uy), asarray(uy_old), asarray(dvy), asarray(dtau_y), theta_v)
+        pseudo_vel!(asarray(ux), asarray(ux_old), asarray(dvx), asarray(dtau_x),
+                    state.theta_v)
+        pseudo_vel!(asarray(uy), asarray(uy_old), asarray(dvy), asarray(dtau_y),
+                    state.theta_v)
 
         bc!(rt.arch, rt.grid2d, ux => Neumann())
         bc!(rt.arch, rt.grid2d, uy => Neumann())
+
+        state = _arm_tuning(tuning, state, solver, ux, uy, iter)
 
         if iter % ncheck == 0 || iter == maxiter
             err = _pt_error(solver.convergence, solver, ux, uy, scale)
         end
         if iter % printout_every == 0
-            println("PT iteration $iter: err = $err")
+            println("PT iteration $iter: err = $err, gamma = $(state.gamma)")
         end
     end
 
@@ -736,5 +935,6 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
     # final iterate, independent of `gamma` — see `dotvel!`'s `resid_x`/`resid_y` note.
     residual = max(maximum(abs, asarray(resid_x)), maximum(abs, asarray(resid_y)))
 
-    return (; iterations = iter, error = err, converged = err <= abstol, residual)
+    return (; iterations = iter, error = err, converged = err <= abstol, residual,
+              damping = state.gamma, lambda_min = state.lambda_min)
 end

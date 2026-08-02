@@ -239,9 +239,17 @@ end
 
     # `LevelSetAdvection` is declared but unimplemented: that must be a MethodError, not a
     # silent fallthrough to one of the working schemes.
+    #
+    # `CompositeException` is accepted because the exception *type* here depends on the
+    # thread count, not on the code: KernelAbstractions' CPU backend fans the kernel out
+    # over worker tasks when `nthreads() > 1` and joins them with `@sync`, so the same
+    # `MethodError` arrives wrapped in the `CompositeException` that `@sync` raises.
+    # Matching only `MethodError` made this testset fail under `JULIA_NUM_THREADS > 1` —
+    # and, because a failing testset aborts the run, take every later test file with it.
     @testset "LevelSetAdvection is not implemented" begin
         grid, rt, topo, mech = setup()
-        @test_throws MethodError advect!(topo, mech, LevelSetAdvection(), rt)
+        @test_throws Union{MethodError, CompositeException} advect!(
+            topo, mech, LevelSetAdvection(), rt)
     end
 
     # A column grid is the case where `grid2d !== grid`: the fluxes and the thickness live

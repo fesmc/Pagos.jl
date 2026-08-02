@@ -6,7 +6,8 @@ This example exercises the Chmy-native, C-grid staggered pseudo-transient (PT) m
 solver ([`pseudo_transient!`](@ref), Sandip et al. 2024) on real Antarctic Ice Sheet (AIS)
 geometry, rather than an analytic or idealized test case. It is a code-state check, not a
 validated simulation: the goal is to see what the current solver produces on a realistic
-761×761, 8 km domain, ahead of the PT auto-tuning work in `roadmaps/PT-autotune.md`.
+761×761, 8 km domain, and it doubles as the real-geometry measurement of the Duretz et al.
+(2026) autotuner (`roadmaps/PT-autotune.md`, Phase 2) — see the solver settings below.
 
 Fields are read from a Yelmo restart file: `x`/`y` coordinates, bed/surface topography and
 ice thickness, the depth-averaged viscosity `visc_bar` and the effective basal friction
@@ -174,24 +175,30 @@ reproduce the original Sandip scheme, which does not survive contact with this g
     the grounded ice has to work for is one the shelves satisfy at ~0 velocity, so the
     increment criterion returns `converged = true` with Ross and Ronne empty. `abstol` is
     dimensionless here: the fraction of the driving-stress forcing left unbalanced.
- 3. **`gamma = 0.2`** (damping, Sandip Eq. 12–14). Undamped, the shelves take ~10⁴
-    iterations; at `gamma = 0.2` they are essentially converged in ~1500.
+ 3. **[`AutotunedDynamicRelaxation`](@ref)** instead of a hand-set `gamma`. This is the one
+    place where the paper claim is directly measurable on real geometry. An earlier version
+    of this example carried `theta_v = 1.0, gamma = 0.2`, a value found by scanning, and
+    converged in 1500 iterations (~140 s). Deriving the damping instead — Gershgorin
+    `λ_max`, Rayleigh-quotient `λ_min`, re-estimated every 20 iterations — converges the
+    *same* problem to the *same* tolerance in **240 iterations (~24 s), a 6.3× speedup**,
+    and the derived `γ ≈ 0.032` shows the hand scan had been ~6× too large. Nothing about
+    the scan was careless; the point is that the right value is a property of this mesh and
+    this viscosity field, and reading it off the operator beats guessing it.
 
-`theta_v = 1` because the Gershgorin `cfl` now carries the safety factor that `theta_v` was
-implicitly providing. The fourth ingredient is the iceberg mask built above — without it
-this same solver runs out of iterations with the residual pinned by six detached patches.
+The fourth ingredient is the iceberg mask built above — without it this same solver runs out
+of iterations with the residual pinned by six detached patches. Note that `theta_v` and
+`gamma` are no longer passed at all: the autotuner owns both.
 =#
 
 solver = PseudoTransientSolver(grid;
     abstol = 1e-3,          # dimensionless (ScaledResidual)
     maxiter = 2000,
     ncheck = 20,
-    printout_every = 250,
-    theta_v = 1.0,
-    gamma = 0.2,
-    pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.9),
+    printout_every = 50,
+    pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.99),
     convergence = ScaledResidual(),
     friction_update = ActiveFrictionUpdate(),
+    tuning = AutotunedDynamicRelaxation(),
 )
 momentum = SSAMomentumBalance()
 
@@ -225,7 +232,9 @@ for (col, (data, title)) in enumerate(((speed_plot, "Pagos PT (SSA, prescribed �
 end
 Label(fig[2, 1:3],
     "iterations = $(result.iterations), converged = $(result.converged), " *
-    "scaled residual = $(round(result.error, sigdigits = 3))",
+    "scaled residual = $(round(result.error, sigdigits = 3)), " *
+    "autotuned γ = $(round(result.damping, sigdigits = 3)) " *
+    "(λ_min = $(round(result.lambda_min, sigdigits = 3)))",
     fontsize = 12)
 
 save(joinpath(@__DIR__, "ais-pt-velocity.png"), fig)

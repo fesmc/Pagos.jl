@@ -154,6 +154,7 @@ export AbstractViscosityContinuation, NoViscosityContinuation, GlenViscosityCont
 export AbstractFrictionUpdate, ActiveFrictionUpdate, NoFrictionUpdate
 export AbstractPseudoTimeStep, ViscosityPseudoTimeStep, GershgorinPseudoTimeStep
 export AbstractPTConvergence, VelocityIncrement, ScaledResidual
+export AbstractPTTuning, FixedTuning, AutotunedDynamicRelaxation
 export pseudo_transient!, pseudo_rate!, pseudo_dt, pseudo_dt!, pseudo_vel!, dotvel!
 export update_viscosity!, update_basalstress!
 
