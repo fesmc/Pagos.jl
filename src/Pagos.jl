@@ -105,6 +105,7 @@ export calving_rate, calving_rate!
 
 include("topography/masks.jl")
 export AbstractIceMask, NoMask, IceMask, node_active, node_fully_active, icemasks!
+export momentum_mask!
 
 include("topography/advection.jl")
 export AbstractAdvection, NoAdvection, CenteredAdvection, UpwindAdvection
@@ -150,8 +151,11 @@ export basal_velocity_from_surface_velocity!, depthavg_velocity!
 include("mechanics/pseudotransient.jl")
 export PseudoTransientSolver
 export AbstractViscosityContinuation, NoViscosityContinuation, GlenViscosityContinuation
+export AbstractFrictionUpdate, ActiveFrictionUpdate, NoFrictionUpdate
+export AbstractPseudoTimeStep, ViscosityPseudoTimeStep, GershgorinPseudoTimeStep
+export AbstractPTConvergence, VelocityIncrement, ScaledResidual
 export pseudo_transient!, pseudo_rate!, pseudo_dt, pseudo_dt!, pseudo_vel!, dotvel!
-export update_viscosity!
+export update_viscosity!, update_basalstress!
 
 include("mechanics/inertial.jl")
 export inertial_velocity!
