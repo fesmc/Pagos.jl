@@ -1,15 +1,14 @@
 # ---------------------------------------------------------------------------
-# Benchmark: map! vs @tullio vs KernelAbstractions
+# Benchmark: map! vs KernelAbstractions
 # Task: regularized Coulomb basal friction β over a 512×512 grid.
 #
 #   β = c_bed · (‖v‖ / (‖v‖ + v₀))^q / ‖v‖,   ‖v‖ = √(vx²+vy²) + v_reg
 #
 # Run:
-#   julia -t 1  benchmark/numerics/map_ka_tulio.jl   # serial CPU
-#   julia -t 4  benchmark/numerics/map_ka_tulio.jl   # 4-thread CPU
+#   julia -t 1  benchmark/numerics/map_ka.jl   # serial CPU
+#   julia -t 4  benchmark/numerics/map_ka.jl   # 4-thread CPU
 #
 # map!    → single-threaded on CPU; dispatches to a CuArray kernel on GPU
-# @tullio → LoopVectorization SIMD + Threads on CPU; KA kernel on GPU
 # KA      → Threads.nthreads() on CPU; fused kernel on GPU
 #
 # GPU timings use CUDA.@elapsed (GPU-side events), which correctly captures
@@ -22,8 +21,6 @@ using Chairmarks
 using CUDA
 using Printf
 using KernelAbstractions
-using LoopVectorization   # enables SIMD + threading in @tullio
-using Tullio
 
 const HAS_CUDA = try
     using CUDA
@@ -53,10 +50,6 @@ end
 # ── launchers ───────────────────────────────────────────────────────────────
 function run_map!(β, c, vx, vy)
     map!((ci, vxi, vyi) -> coulomb_beta(ci, vxi, vyi, V0, VREG, Q), β, c, vx, vy)
-end
-
-function run_tullio!(β, c, vx, vy)
-    @tullio β[i, j] = coulomb_beta(c[i, j], vx[i, j], vy[i, j], V0, VREG, Q)
 end
 
 function run_ka!(β, c, vx, vy, backend)
@@ -105,15 +98,13 @@ let
 
     print_header("Coulomb β — CPU ($ncpu thread$(ncpu == 1 ? "" : "s"), $(N)×$(N) $T)")
 
-    run_map!(β, c, vx, vy); run_tullio!(β, c, vx, vy); run_ka!(β, c, vx, vy, backend)
+    run_map!(β, c, vx, vy); run_ka!(β, c, vx, vy, backend)
 
-    t_map    = (@b run_map!($β, $c, $vx, $vy)).time
-    t_tullio = (@b run_tullio!($β, $c, $vx, $vy)).time
-    t_ka     = (@b run_ka!($β, $c, $vx, $vy, $backend)).time
+    t_map = (@b run_map!($β, $c, $vx, $vy)).time
+    t_ka  = (@b run_ka!($β, $c, $vx, $vy, $backend)).time
 
-    print_row("map!",    t_map,    t_map)
-    print_row("@tullio", t_tullio, t_map)
-    print_row("KA",      t_ka,     t_map)
+    print_row("map!", t_map, t_map)
+    print_row("KA",   t_ka,  t_map)
     println("=" ^ W); println()
 end
 
@@ -132,22 +123,8 @@ if HAS_CUDA
         t_map = gpu_min_time(() -> run_map!(β, c, vx, vy))
         t_ka  = gpu_min_time(() -> run_ka!(β, c, vx, vy, backend))
 
-        tullio_ok = try
-            run_tullio!(β, c, vx, vy)
-            CUDA.synchronize()
-            true
-        catch
-            false
-        end
-        t_tullio = tullio_ok ? gpu_min_time(() -> run_tullio!(β, c, vx, vy)) : NaN
-
-        print_row("map!",    t_map, t_map)
-        if tullio_ok
-            print_row("@tullio", t_tullio, t_map)
-        else
-            @printf("  %-18s %12s %10s\n", "@tullio", "N/A", "(GPU incompatible)")
-        end
-        print_row("KA",      t_ka,  t_map)
+        print_row("map!", t_map, t_map)
+        print_row("KA",   t_ka,  t_map)
         println("=" ^ W); println()
     end
 else

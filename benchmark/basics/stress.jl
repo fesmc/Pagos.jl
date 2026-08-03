@@ -39,7 +39,6 @@ function run_case(name, grid)
     mat  = MaterialState(grid)
     fill_inputs!(mech, mat)
 
-    # correctness: Tullio and KA must agree with the broadcast reference
     backend = KernelAbstractions.get_backend(mat.eta_ice)
     t = bench(deviatoric_stress!, mech, mat; backend)
     n = length(mech.stress_xx)
