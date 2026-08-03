@@ -249,3 +249,303 @@ viscosity_integrals!(F1, F2, mech::MechanicState, rt::Runtime,
                      mask::AbstractIceMask = NoMask()) =
     viscosity_integrals!(F1, F2, mech.material.viscosity, mech.topography.thickness,
                          rt, mask)
+
+###############################################################
+# Column → depth-average reduction
+###############################################################
+#
+# `f̄ = (1/H) ∫_b^s f dz`. On the sigma axis `dz = H dζ`, so the thickness cancels and the
+# depth average is a pure `ζ` quadrature: `f̄ = ∫_0^1 f dζ ≈ Σ_k f[i,j,k] Δζ_k`, with the
+# weights summing to 1 by construction. That is why this takes no `H` — an average, unlike
+# the `F_m` *integrals* above, is thickness-independent.
+
+@kernel inbounds = true function _depthaverage!(out, f, nz, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    T = eltype(out)
+    acc = zero(T)
+    if node_active(mask, NODE_AA, i, j)
+        for k in 1:nz
+            acc += f[i, j, k] * Δz(grid, Center(), i, j, k)
+        end
+    end
+    out[I...] = acc
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Depth-average the column field `f` (at `aa` on `rt.grid`) into `out` (at `aa` on
+`rt.grid2d`): `f̄ = (1/H)∫_b^s f dz = ∫_0^1 f dζ`, the layer-thickness-weighted mean over
+the sigma axis.
+
+Takes no thickness argument: `dz = H dζ` makes the `H` cancel in an *average* (contrast
+[`viscosity_integrals!`](@ref), where the integral keeps a factor of `H`). The weights
+`Δζ_k` come from the grid's own sigma axis and sum to exactly 1, so a vertically uniform
+field reproduces its own value to roundoff on any layering.
+
+DIVA's use is `µ̄`, the depth-averaged viscosity the membrane stress needs (Robinson et al.
+2022, Eq. 14) — but the reduction is generic.
+"""
+function depthaverage!(out, f, rt::Runtime, mask::AbstractIceMask = NoMask())
+    nz = size(rt.grid, Center())[3]
+    rt.launch2d(rt.arch, rt.grid2d, _depthaverage! => (out, f, nz, mask, rt.grid))
+    return nothing
+end
+
+###############################################################
+# DIVA effective basal friction
+###############################################################
+#
+# Robinson et al. (2022) Eq. 19: `β_eff = β / (1 + βF₂)`, the coefficient that lets the
+# basal stress be written against the *depth-averaged* velocity, `τ_b = β_eff ū`, given
+# `ū = u_b(1 + βF₂)` (Eq. 18).
+#
+# Implemented in the algebraically identical reciprocal form
+#
+#   β_eff = 1 / (1/β + F₂),
+#
+# which is a deliberate deviation from how the paper writes it (`roadmaps/chmy.md`, Phase 3,
+# decision 11). It covers both of the paper's cases with no branch:
+#
+#   - frozen bed, `β → ∞`: Eq. 19 is indeterminate (∞/∞) and the paper gives Eq. 20,
+#     `β_eff = 1/F₂`, as a separate case. Here `1/β → 0` and the expression *is* `1/F₂`.
+#   - free slip, `β = 0`: `1/β → Inf` and `β_eff → 0`, correctly giving no basal drag.
+#
+# Both limits are reached through ordinary IEEE arithmetic rather than a comparison against
+# some "large β" threshold, so there is no cutoff to tune and no discontinuity at it.
+
+@kernel inbounds = true function _beta_eff_diva!(β_eff, β, F2, mask, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    T = eltype(β_eff)
+    if node_active(mask, NODE_AA, i, j)
+        # `inv(0) == Inf` and `inv(Inf) == 0` are exactly the two limits wanted here.
+        β_eff[I...] = inv(inv(β[I...]) + F2[I...])
+    else
+        β_eff[I...] = zero(T)
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+DIVA's effective basal friction coefficient (Robinson et al. 2022, Eq. 19):
+
+```math
+\\beta_{\\mathrm{eff}} = \\frac{\\beta}{1 + \\beta F_2}
+    \\;=\\; \\frac{1}{1/\\beta + F_2}
+```
+
+written into `beta_eff` from the friction coefficient `beta` and the viscosity integral
+`F2` (see [`viscosity_integrals!`](@ref)). It is what makes the basal stress expressible
+against the depth-averaged velocity, `τ_b = β_eff·ū`, which is the whole reason DIVA can be
+solved as a depth-integrated balance.
+
+The reciprocal form is used deliberately: it reproduces the paper's frozen-bed limit
+Eq. (20), `β_eff = 1/F₂` as `β → ∞`, and the free-slip case `β_eff = 0` at `β = 0`, both
+through ordinary IEEE arithmetic rather than a branch on a tunable "large β" threshold.
+
+!!! note "SSA is the `F₂ = 0` limit"
+    With `F₂ = 0` this returns `β` unchanged, i.e. `τ_b = βū` — the SSA friction law. So a
+    zeroed `F₂` degrades to SSA rather than to nonsense, which is the sane failure mode if
+    the integrals were never computed.
+"""
+function beta_eff_diva!(beta_eff, beta, F2, rt::Runtime, mask::AbstractIceMask = NoMask())
+    rt.launch2d(rt.arch, rt.grid2d, _beta_eff_diva! => (beta_eff, beta, F2, mask))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level [`beta_eff_diva!`](@ref): writes `mech.friction.beta_eff` from
+`mech.friction.beta` and `mech.material.viscosity_integral_2`.
+"""
+beta_eff_diva!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMask()) =
+    beta_eff_diva!(mech.friction.beta_eff, mech.friction.beta,
+                   mech.material.viscosity_integral_2, rt, mask)
+
+###############################################################
+# Chmy-native, C-grid staggered 3D velocity reconstruction
+###############################################################
+#
+# Robinson et al. (2022), §2.3, last paragraph: "The velocity is found in two steps. First,
+# Eq. (14) is solved iteratively for the mean velocity... Then Eq. (16) is integrated
+# vertically to find the 3D velocity." This is that second, post-solve step
+# (`roadmaps/chmy.md`, Phase 3, decision 14) — `pseudo_transient!` never calls it.
+#
+# Eq. 16 (with H included, unlike `effective_strainrate_diva!`'s Eq. 21 where it cancels):
+#
+#   u(z) = u_b + (βu_b/H) ∫_b^z (s-z')/µ(z') dz'
+#
+# On the sigma axis this is, writing F₁(ζ) for the *partial* (running) form of the Eq. 15
+# integral already computed in full by `viscosity_integrals!`:
+#
+#   u(ζ) = u_b·(1 + β·F₁(ζ)),   F₁(ζ) = (H/µ)∫_0^ζ (1-σ) dσ = (H/µ)·(ζ - ζ²/2)
+#
+# — the same relation as Eq. 17 (`u_s = u_b(1+βF₁)`), just stopped at an interior ζ instead
+# of the surface. `u_b` itself is Eq. 18 inverted, `u_b = ū/(1 + βF₂) = ū·β_eff/β`.
+#
+# **Evaluated at the layer's own z-`Center`, not its upper interface** (decision 13,
+# contrast the collocated `velocities3D!` below, whose running sum crosses a whole layer
+# before writing and so lands on z-`Vertex`). `g(σ) = σ - σ²/2` is the exact antiderivative
+# of `(1-σ)`, so — under the same piecewise-constant-per-layer `µ` every `F_m` integral in
+# this file already assumes — the per-layer partial `g(ζ_aa[k]) - g(ζ_ac[k])` and full
+# `g(ζ_ac[k+1]) - g(ζ_ac[k])` contributions are **exact, not a quadrature approximation**,
+# on any layering. (`g(q) - g(p)` for the *full* layer is algebraically identical to the
+# midpoint-rule term `(1-ζ_aa[k])·Δζ_k` `viscosity_integrals!` computes for `F₁` — both are
+# exact for a linear integrand — so the running sum's final value agrees with the stored
+# `viscosity_integral_1` to within floating-point evaluation order, not by construction of
+# a different formula.) A naive "half of the full layer's contribution" would *not* be
+# exact here: `g` is quadratic, so the true first-half integral is not half of the whole.
+#
+# `β` (bare friction), not `β_eff`, is what Eq. 16/18 are written in terms of — `β_eff` is
+# the *momentum balance's* substitution (Eq. 19), unrelated to this reconstruction.
+#
+# One thread per column, matching `viscosity_integrals!`: the vertical dependency is
+# inherently serial (the running sum), so there is nothing to parallelize within a column.
+
+@kernel inbounds = true function _velocities3D_diva!(vx, vy, ubar_x, ubar_y, β, F2, μ, H,
+                                                      nz, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    T = eltype(vx)
+    Z = zero(T)
+    Hij = H[i, j, 1]
+
+    if node_active(mask, NODE_AA, i, j) && Hij > Z
+        βij = β[i, j, 1]
+        ubx = ubar_x[i, j, 1] / (one(T) + βij * F2[i, j, 1])   # Eq. 18 inverted
+        uby = ubar_y[i, j, 1] / (one(T) + βij * F2[i, j, 1])
+        g(σ) = σ - σ^2 / 2
+        running = Z                       # F₁ accumulated up to the *previous* interface
+        prev = zvertex(grid, 1)
+        for k in 1:nz
+            mid  = zcenter(grid, k)
+            next = zvertex(grid, k + 1)
+            invμ = inv(μ[i, j, k])
+            partial = (g(mid) - g(prev)) * Hij * invμ
+            full    = (g(next) - g(prev)) * Hij * invμ
+            vx[i, j, k] = ubx * (one(T) + βij * (running + partial))
+            vy[i, j, k] = uby * (one(T) + βij * (running + partial))
+            running += full
+            prev = next
+        end
+    else
+        for k in 1:nz
+            vx[i, j, k] = Z
+            vy[i, j, k] = Z
+        end
+    end
+end
+
+# Surface velocity, Eq. 17, `u_s = u_b(1+βF₁)`: a plain 2D kernel reusing the *already
+# computed* full-column `F₁`/`F₂` (`material.viscosity_integral_1`/`_2`) rather than
+# reading off the top of `_velocities3D_diva!`'s profile — which sits at the last layer's
+# midpoint, not at ζ = 1 (decision 13). No column loop needed.
+@kernel inbounds = true function _surfacevelocity_diva!(vsx, vsy, ubar_x, ubar_y, β, F1, F2,
+                                                         mask, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    T = eltype(vsx)
+    if node_active(mask, NODE_AA, i, j)
+        βij = β[I...]
+        ubx = ubar_x[I...] / (one(T) + βij * F2[I...])
+        uby = ubar_y[I...] / (one(T) + βij * F2[I...])
+        vsx[I...] = ubx * (one(T) + βij * F1[I...])
+        vsy[I...] = uby * (one(T) + βij * F1[I...])
+    else
+        vsx[I...] = zero(T)
+        vsy[I...] = zero(T)
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native, C-grid staggered 3D velocity reconstruction under [`DIVAMomentumBalance`](@ref)
+(Robinson et al. 2022, Eq. 16): writes `velocity.x`/`y` (at z-`Center`, one value per layer)
+from the depth-averaged solve `velocity.depthaverage_x`/`y`, the friction coefficient
+`friction.beta` and the viscosity integrals `material.viscosity_integral_1`/`_2` — all of
+which [`diva_update!`](@ref) is responsible for having populated. Also writes
+`velocity.surface_x`/`y` (Eq. 17).
+
+A **diagnostic**, not part of the momentum solve: call this *after* [`pseudo_transient!`](@ref)
+converges, on whatever state it left. `pseudo_transient!` never calls it itself
+(`roadmaps/chmy.md`, Phase 3, decision 14).
+
+Distinguished from the collocated [`velocities3D!`](@ref) by taking a [`Runtime`](@ref) and
+a [`DIVAMomentumBalance`](@ref) — and, more substantively, by evaluating each layer at its
+own z-`Center` (matching `velocity.x`'s own node class) rather than at the layer's upper
+z-`Vertex` interface, which is what the collocated method's running-sum-then-write order
+produces. The two are not comparable point for point on a shared grid; see the source note
+above.
+
+!!! note "Requires `nz > 1`"
+    Trivially true whenever [`DIVAMomentumBalance`](@ref) itself is usable at all — see
+    [`pseudo_transient!`](@ref)'s `nz == 1` guard.
+"""
+function velocities3D!(mech::MechanicState, rt::Runtime, ::DIVAMomentumBalance,
+                       mask::AbstractIceMask = NoMask())
+    (; velocity, friction, material, topography) = mech
+    nz = size(rt.grid, Center())[3]
+    # `rt.launch2d`, not `rt.launch`: the vertical dependency is a serial running sum, so
+    # this wants one thread per *column* (as `viscosity_integrals!` already established),
+    # not one thread per `(i,j,k)` triple — the latter would have every thread in a column
+    # redundantly re-run the same full-column loop.
+    rt.launch2d(rt.arch, rt.grid2d,
+              _velocities3D_diva! =>
+                  (velocity.x, velocity.y, velocity.depthaverage_x, velocity.depthaverage_y,
+                   friction.beta, material.viscosity_integral_2, material.viscosity, topography.thickness,
+                   nz, mask, rt.grid))
+    rt.launch2d(rt.arch, rt.grid2d,
+                _surfacevelocity_diva! =>
+                    (velocity.surface_x, velocity.surface_y, velocity.depthaverage_x,
+                     velocity.depthaverage_y, friction.beta, material.viscosity_integral_1,
+                     material.viscosity_integral_2, mask))
+    return nothing
+end
+
+# SSA is plug flow: u(z) = ū at every layer, no shear at all, so the "reconstruction" is a
+# broadcast, not a quadrature. Included so that a caller reading `velocity.x`/`y`/
+# `surface_x`/`y` after a solve never has to know which momentum balance produced them
+# (`roadmaps/chmy.md`, Phase 3, decision 15).
+@kernel inbounds = true function _velocities3D_ssa!(vx, vy, ubar_x, ubar_y, nz, mask, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    T = eltype(vx)
+    ux = node_active(mask, NODE_AA, i, j) ? ubar_x[i, j, 1] : zero(T)
+    uy = node_active(mask, NODE_AA, i, j) ? ubar_y[i, j, 1] : zero(T)
+    for k in 1:nz
+        vx[i, j, k] = ux
+        vy[i, j, k] = uy
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native 3D velocity "reconstruction" under [`SSAMomentumBalance`](@ref): plug flow, so
+`velocity.x`/`y` and `velocity.surface_x`/`y` are simply set to the depth-averaged solve at
+every layer/at the surface — no shear, no viscosity integrals read. Exists so that
+`velocity.x`/`y`/`surface_x`/`y` are always populated after a solve, regardless of which
+[`MomentumBalance2D`](@ref) balance produced it (`roadmaps/chmy.md`, Phase 3, decision 15).
+"""
+function velocities3D!(mech::MechanicState, rt::Runtime, ::SSAMomentumBalance,
+                       mask::AbstractIceMask = NoMask())
+    (; velocity) = mech
+    nz = size(rt.grid, Center())[3]
+    rt.launch2d(rt.arch, rt.grid2d,
+              _velocities3D_ssa! =>
+                  (velocity.x, velocity.y, velocity.depthaverage_x, velocity.depthaverage_y,
+                   nz, mask))
+    copyto!(asarray(velocity.surface_x), asarray(velocity.depthaverage_x))
+    copyto!(asarray(velocity.surface_y), asarray(velocity.depthaverage_y))
+    return nothing
+end

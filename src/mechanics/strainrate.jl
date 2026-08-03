@@ -607,3 +607,115 @@ function effective_strainrate_ssa!(strainrate::StrainRateState, velocity::Veloci
                   (strainrate.effective_depthaveraged, velocity, mask, rt.grid2d))
     return nothing
 end
+
+###############################################################
+# Chmy-native DIVA effective strain rate (per layer)
+###############################################################
+#
+# Robinson et al. (2022), Eq. 13:
+#
+#   ε̇_e² = ū_x² + v̄_y² + ū_x v̄_y + ¼(ū_y + v̄_x)² + ¼u_z² + ¼v_z²
+#
+# i.e. the SSA invariant (Eq. 12, `effective_strainrate_ssa!` above) plus the vertical-shear
+# terms. The horizontal half is depth-independent — it is built from the *depth-averaged*
+# gradients, which is what makes DIVA a depth-integrated balance — so only `u_z`/`v_z` vary
+# with `z`, and they are what make this an `AA3` field rather than an `AA2` one.
+#
+# **`u_z` comes from Eq. 21, not from `∂z` of a velocity field.** Eq. 21 is
+#
+#   u_z(z) = τ_b,x (s − z) / (η(z) H),
+#
+# and with `(s − z) = (1 − ζ)H` on the sigma axis the thickness cancels outright:
+#
+#   u_z(z) = τ_b,x (1 − ζ) / µ(z),
+#
+# so no `H` is needed here at all (and no division by it, hence no ice-free special case
+# beyond the mask). Analytically this equals `∂z` of Eq. 16, but the diagnosed form is the
+# only one available inside the PT loop, where no 3D velocity exists yet — the paper is
+# explicit that `τ_b` and `η` are taken "from the previous iteration". Consequently DIVA
+# never reads `velocity.x_dz`.
+#
+# `τ_b` lives on the velocity faces (`acx`/`acy`) and `ε̇_e` at `aa`, so each component is
+# `lerp`ed onto `aa` — a 2D interpolation reused down the whole column, rather than a 3D
+# one per layer. The horizontal invariant is likewise recomputed per layer instead of being
+# cached in a 2D scratch field: it is a handful of flops against a field allocation, and it
+# keeps the kernel a pure function of state.
+
+@kernel inbounds = true function _effective_strainrate_diva!(eff, velocity, μ, τbx, τby,
+                                                              mask, grid, grid2d, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, k = I
+    T = eltype(eff)
+    Z = zero(T)
+
+    if node_active(mask, NODE_AA, i, j)
+        # Horizontal part (Eq. 12): depth-independent, from the depth-averaged gradients.
+        dxx = velocity.depthaverage_x_dx[i, j, 1]
+        dyy = velocity.depthaverage_y_dy[i, j, 1]
+        dxy = lerp(velocity.depthaverage_x_dy, NODE_AA, grid2d, i, j, 1)
+        dyx = lerp(velocity.depthaverage_y_dx, NODE_AA, grid2d, i, j, 1)
+        horizontal = dxx^2 + dyy^2 + dxx * dyy + ((dxy + dyx) / 2)^2
+
+        # Vertical shear (Eq. 21), with H already cancelled — see the note above.
+        w  = one(T) - zcenter(grid, k)               # (s - z)/H at the layer midpoint
+        μk = μ[i, j, k]
+        uz = μk > Z ? lerp(τbx, NODE_AA, grid2d, i, j, 1) * w / μk : Z
+        vz = μk > Z ? lerp(τby, NODE_AA, grid2d, i, j, 1) * w / μk : Z
+
+        eff[I...] = sqrt(horizontal + (uz^2 + vz^2) / 4)
+    else
+        eff[I...] = Z
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+DIVA's per-layer effective strain rate (Robinson et al. 2022, Eq. 13), written to
+`strainrate.effective` (`AA3`) on the column grid:
+
+```math
+\\dot\\varepsilon_e^2 = \\bar u_x^2 + \\bar v_y^2 + \\bar u_x \\bar v_y
+    + \\tfrac14(\\bar u_y + \\bar v_x)^2 + \\tfrac14 u_z^2 + \\tfrac14 v_z^2
+```
+
+The horizontal terms are the SSA invariant of the *depth-averaged* velocity, identical in
+every layer; the depth dependence enters only through the vertical shear, which is
+**diagnosed from the basal stress** via Eq. (21) rather than differentiated from a velocity
+profile:
+
+```math
+u_z(z) = \\frac{\\tau_{b,x}\\,(s-z)}{\\eta(z)\\,H} = \\frac{\\tau_{b,x}\\,(1-\\zeta)}{\\mu(z)}
+```
+
+(the thickness cancels on the sigma axis). This is the only form available inside the
+pseudo-transient loop, where no 3D velocity exists yet — `τ_b` and `µ` are the previous
+iterate's, as the paper prescribes.
+
+Contrast [`effective_strainrate_ssa!`](@ref), which computes Eq. (12) — the same expression
+with the shear terms dropped — into `strainrate.effective_depthaveraged` (`AA2`).
+
+Requires the depth-averaged velocity gradients ([`depthaverage_velocitygradients!`](@ref))
+and the basal stress ([`basalstress!`](@ref)) to be current, and `material.viscosity` to
+hold the previous iterate's `µ(z)`.
+"""
+function effective_strainrate_diva!(strainrate::StrainRateState, velocity::VelocityState,
+                                    material::MechanicMaterialState, stress::StressState,
+                                    rt::Runtime, mask::AbstractIceMask = NoMask())
+    rt.launch(rt.arch, rt.grid,
+              _effective_strainrate_diva! =>
+                  (strainrate.effective, velocity, material.viscosity,
+                   stress.base_x, stress.base_y, mask, rt.grid, rt.grid2d))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level [`effective_strainrate_diva!`](@ref).
+"""
+effective_strainrate_diva!(mech::MechanicState, rt::Runtime,
+                           mask::AbstractIceMask = NoMask()) =
+    effective_strainrate_diva!(mech.strainrate, mech.velocity, mech.material, mech.stress,
+                               rt, mask)

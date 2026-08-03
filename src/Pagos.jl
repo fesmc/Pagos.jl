@@ -146,19 +146,21 @@ export basal_shear_stress, basal_shear_stress!
 
 include("mechanics/velocities.jl")
 export aggregate_viscosity_integral!, aggregated_viscosity_integral!
-export viscosity_integrals!
+export viscosity_integrals!, depthaverage!, beta_eff_diva!
 export velocities3D!, surface_velocity!, depthaveraged_velocity!
 export basal_velocity_from_surface_velocity!, depthavg_velocity!
 
 include("mechanics/pseudotransient.jl")
 export PseudoTransientSolver
 export AbstractViscosityContinuation, NoViscosityContinuation, GlenViscosityContinuation
+export DIVAViscosityContinuation
+export AbstractDIVUpdate, NoDIVUpdate, PeriodicDIVUpdate
 export AbstractFrictionUpdate, ActiveFrictionUpdate, NoFrictionUpdate
 export AbstractPseudoTimeStep, ViscosityPseudoTimeStep, GershgorinPseudoTimeStep
 export AbstractPTConvergence, VelocityIncrement, ScaledResidual
 export AbstractPTTuning, FixedTuning, AutotunedDynamicRelaxation
 export pseudo_transient!, pseudo_rate!, pseudo_dt!, pseudo_vel!, dotvel!
-export update_viscosity!, update_basalstress!
+export update_viscosity!, update_basalstress!, diva_update!
 
 include("mechanics/inertial.jl")
 export inertial_velocity!
@@ -174,7 +176,7 @@ include("mechanics/strainrate.jl")
 export strainrate!, scaledstrainrate!, velocitygradients!
 export depthaverage_velocitygradients!, membranestress!
 export raw_strainrate!, raw_strainrate_effective!
-export effective_strainrate_ssa!
+export effective_strainrate_ssa!, effective_strainrate_diva!
 
 ###########################################################
 # Material

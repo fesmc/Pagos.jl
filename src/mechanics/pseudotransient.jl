@@ -515,6 +515,105 @@ end
     end
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+[`DIVAViscosityContinuation`](@ref): the same Glen law as the depth-averaged method above,
+evaluated **per layer** on the column grid. Writes `material.viscosity` (`µ(z)`) from
+DIVA's effective strain rate ([`effective_strainrate_diva!`](@ref), Eq. 13) and the column
+rate factor `material.rate_factor`, then derives `material.viscosity_depthaveraged` from it
+by [`depthaverage!`](@ref).
+
+`µ̄` is *derived*, never computed independently: the membrane stress and the vertical shear
+must describe the same ice, so `µ̄` has to be the average of exactly the `µ(z)` the shear was
+built from.
+
+Reuses `_glen_viscosity_continuation!` unchanged — the kernel indexes every field at its own
+`I`, so the identical code serves the `aa`/`grid2d` and `aa`/`grid` launches.
+"""
+function update_viscosity!(mech::MechanicState, vc::DIVAViscosityContinuation, rt::Runtime,
+                           mask::AbstractIceMask = NoMask())
+    (; material, strainrate) = mech
+    effective_strainrate_diva!(mech, rt, mask)
+    rt.launch(rt.arch, rt.grid,
+              _glen_viscosity_continuation! =>
+                  (material.viscosity, material.rate_factor, strainrate.effective,
+                   vc.n_glen, vc.strainrate_reg, vc.theta_mu, mask))
+    depthaverage!(material.viscosity_depthaveraged, material.viscosity, rt, mask)
+    return nothing
+end
+
+###############################################################
+# DIVA depth-integrated-viscosity chain
+###############################################################
+#
+# The full chain, in dependency order:
+#
+#   µ(z)  ←  ε̇_e (Eq. 13, u_z from Eq. 21 using the *previous* τ_b and µ)
+#   µ̄     ←  depthaverage(µ(z))                                   [both in update_viscosity!]
+#   F₁,F₂ ←  ∫(1/µ)((s-z)/H)^m dz   (Eq. 15)
+#   β_eff ←  1/(1/β + F₂)           (Eqs. 19–20)
+#
+# `τ_b` is deliberately *not* recomputed here: it is read as whatever the last
+# `update_basalstress!` left, which is exactly the paper's "obtained from the previous
+# iteration". On a cold start it is zero, so `u_z = 0` and the first `ε̇_e` is the SSA
+# invariant — a sane starting point rather than a singular one.
+
+"""
+$(TYPEDSIGNATURES)
+
+Evaluate DIVA's depth-integrated-viscosity chain once, in dependency order: `µ(z)` and `µ̄`
+via [`update_viscosity!`](@ref), then `F₁`/`F₂` via [`viscosity_integrals!`](@ref), then
+`β_eff` via [`beta_eff_diva!`](@ref).
+
+This is the function a caller must invoke before [`pseudo_transient!`](@ref) under the
+default [`NoDIVUpdate`](@ref) — the solver will not do it for you (`roadmaps/chmy.md`,
+Phase 3, decision 7). Under [`PeriodicDIVUpdate`](@ref) the loop also calls it every
+`n_update` iterations.
+
+!!! warning "Skipping this leaves `β_eff = 0`, i.e. frictionless sliding"
+    `friction.beta_eff` is zero at allocation, and a zero friction coefficient is a
+    perfectly well-formed (if physically absurd) input that raises no error — the solve will
+    simply run away. There is deliberately no runtime guard; this docstring is the contract,
+    exactly as with the halo-filling requirement on [`pseudo_transient!`](@ref).
+
+Requires `mech.material.viscosity` to hold a usable previous iterate (the chain's `ε̇_e`
+divides by it) and the depth-averaged velocity gradients to be current.
+"""
+function diva_update!(mech::MechanicState, solver::PseudoTransientSolver, rt::Runtime,
+                      mask::AbstractIceMask = NoMask())
+    (; material) = mech
+    update_viscosity!(mech, solver.viscosity_continuation, rt, mask)
+    viscosity_integrals!(material.viscosity_integral_1, material.viscosity_integral_2,
+                         mech, rt, mask)
+    beta_eff_diva!(mech, rt, mask)
+    return nothing
+end
+
+# "How often", per decision 6 — kept strictly separate from "how" (the continuation type).
+# SSA has no DIV chain, so its viscosity continuation keeps its every-iteration cadence
+# inside `pseudo_rate!` untouched; only the DIVA path consults `solver.div_update`.
+_div_refresh_due(::NoDIVUpdate, iter) = false
+_div_refresh_due(d::PeriodicDIVUpdate, iter) = iter % d.n_update == 0
+
+# Who drives the viscosity from inside `pseudo_rate!`, i.e. every PT iteration.
+#
+# SSA: its continuation (`GlenViscosityContinuation`) writes `viscosity_depthaveraged`
+# directly from Eq. 12, and doing so every iteration *is* the continuation — that is what
+# lets the nonlinear solve relax rather than jump. Unchanged.
+#
+# DIVA: nothing here. Its continuation writes `viscosity` (`µ(z)`) and only `diva_update!`
+# may drive it, at the cadence `solver.div_update` names. Calling it here as well would
+# refresh `µ(z)` every iteration regardless of that strategy — the exact contradiction the
+# "how" / "how often" split exists to prevent. The two continuations write *different*
+# fields (`AA2` vs `AA3`), which is why SSA's cadence needs no gate at all.
+_iterate_viscosity!(mech::MechanicState, ::SSAMomentumBalance,
+                    solver::PseudoTransientSolver, rt::Runtime, mask::AbstractIceMask) =
+    update_viscosity!(mech, solver.viscosity_continuation, rt, mask)
+
+_iterate_viscosity!(::MechanicState, ::DIVAMomentumBalance, ::PseudoTransientSolver,
+                    ::Runtime, ::AbstractIceMask) = nothing
+
 ###############################################################
 # Basal friction update
 ###############################################################
@@ -599,7 +698,7 @@ function pseudo_rate!(mech::MechanicState, c::Constants, rt::Runtime,
     (; velocity, material, topography, stress) = mech
 
     depthaverage_velocitygradients!(velocity, rt, mask)
-    update_viscosity!(mech, solver.viscosity_continuation, rt, mask)
+    _iterate_viscosity!(mech, momentum, solver, rt, mask)
     membranestress!(stress, velocity, material, topography, momentum, rt, mask)
 
     update_basalstress!(mech, solver.friction_update, rt, mask)
@@ -693,6 +792,18 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
     iter = 0
     while err > abstol && iter < maxiter
         iter += 1
+
+        # DIVA's depth-integrated-viscosity chain, at the cadence `solver.div_update` names
+        # (never, under the default `NoDIVUpdate`). Before `pseudo_rate!`, so the iteration
+        # sees the refreshed `β_eff`/`µ̄` rather than applying them one iteration late.
+        #
+        # `pseudo_dt!` follows it because `β_eff` feeds the Gershgorin bound behind
+        # `dtau_x`/`dtau_y`: a `β_eff` that grew under a stale bound makes that bound
+        # optimistic, and the explicit iteration then diverges (decision 8).
+        if momentum isa DIVAMomentumBalance && _div_refresh_due(solver.div_update, iter)
+            diva_update!(mech, solver, rt, mask)
+            pseudo_dt!(solver, mech, c, rt, mask)
+        end
 
         pseudo_rate!(mech, c, rt, momentum, solver, mask; gamma = state.gamma)
         state = _tune!(tuning, state, solver, mech, c, rt, mask, ux, uy)

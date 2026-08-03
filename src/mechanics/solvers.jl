@@ -128,6 +128,132 @@ end
 """
 $(TYPEDSIGNATURES)
 
+DIVA's Glen-law viscosity continuation: the same flow law as
+[`GlenViscosityContinuation`](@ref), applied **per layer** on the column grid.
+
+The difference is which effective strain rate feeds it. `GlenViscosityContinuation` uses
+Eq. (12), the depth-averaged invariant, and writes the single field
+`material.viscosity_depthaveraged`. This one uses Eq. (13) — the same invariant *plus* the
+vertical-shear terms `¼(u_z² + v_z²)`, with `u_z` diagnosed from the basal stress via
+Eq. (21) — and so produces a genuinely depth-varying `µ(z)` in `material.viscosity`. The
+depth-averaged field is then derived from it by [`depthaverage!`](@ref), rather than
+computed independently: `µ̄` must be the average of the `µ(z)` the shear was built from, or
+the membrane and shear terms describe different ice.
+
+Reads `material.rate_factor` (the column rate factor `A(z)`), not
+`rate_factor_depthaveraged`.
+
+Fields are as [`GlenViscosityContinuation`](@ref)'s: `n_glen`, `theta_mu`,
+`strainrate_reg`.
+
+!!! note "This is the only writer of `µ` under DIVA"
+    Making it an [`AbstractViscosityContinuation`](@ref) rather than a separate mechanism
+    keeps one dispatch point for "who owns the viscosity" (`roadmaps/chmy.md`, Phase 3,
+    decision 12). Pairing `DIVAMomentumBalance` with `GlenViscosityContinuation` instead
+    would leave `µ(z)` untouched and the shear terms stale — which is why
+    [`diva_update!`](@ref) drives this directly rather than relying on the solver's
+    continuation slot alone.
+
+!!! note "`NoViscosityContinuation` leaves `µ(z)`/`µ̄` mutually unchecked, by design"
+    Under [`NoViscosityContinuation`](@ref), `material.viscosity` and
+    `material.viscosity_depthaveraged` are both prescribed inputs — like
+    `rate_factor`/`rate_factor_depthaveraged` already are — and nothing here verifies that
+    `µ̄` is actually the depth average of `µ(z)`. That consistency is the responsibility of
+    whatever populates `MechanicState`'s material fields once topography, dynamics,
+    thermodynamics and material are wired together as one model; it is not this solver's
+    job to guess at it or guard against it. Exactly the same stance as decision 7's
+    `β_eff = 0` contract: the caller owns the input, the docstring states the contract, no
+    runtime check.
+"""
+struct DIVAViscosityContinuation{T<:AbstractFloat} <: AbstractViscosityContinuation
+    n_glen::T
+    theta_mu::T
+    strainrate_reg::T
+end
+
+function DIVAViscosityContinuation(T::Type{<:AbstractFloat} = Float64;
+    n_glen = 3, theta_mu = 0.1, strainrate_reg,
+)
+    return DIVAViscosityContinuation{T}(T(n_glen), T(theta_mu), T(strainrate_reg))
+end
+
+###############################################################
+# DIVA depth-integrated-viscosity update
+###############################################################
+
+"""
+$(TYPEDSIGNATURES)
+
+How often the DIVA chain `µ(z) → F₁/F₂ → β_eff → µ̄` is re-evaluated *during* a
+pseudo-transient solve.
+
+The chain is a fixed point — `µ` depends on `u_z`, which depends on `τ_b`, which depends on
+`β_eff`, which depends on `F₂`, which depends on `µ` — and Robinson et al. (2022) prescribe
+only that the quantities come "from the previous iteration", not how often that iteration
+should be. Hence a strategy rather than a hard-coded cadence.
+
+**DIV** is *depth-integrated viscosity*, the paper's own decomposition of the DIVA acronym
+and exactly what the chain recomputes. Deliberately not named `…ViscosityUpdate`, which
+would sit one word away from the unrelated [`NoViscosityContinuation`](@ref) on the same
+solver.
+
+Subtypes: [`NoDIVUpdate`](@ref) (default), [`PeriodicDIVUpdate`](@ref).
+"""
+abstract type AbstractDIVUpdate end
+
+"""
+$(TYPEDSIGNATURES)
+
+Never refresh the DIVA chain during the solve: `β_eff`, `µ(z)`, `µ̄` and `F₁`/`F₂` are held
+at whatever the caller put there, and the nonlinearity is carried by the outer timestep.
+The default.
+
+!!! warning "The caller owns the chain, and a zero `β_eff` is frictionless sliding"
+    Under `NoDIVUpdate` the solver never evaluates the chain — not even once before the
+    loop. A caller that skips [`diva_update!`](@ref) gets `friction.beta_eff` at its
+    allocation default of zero, i.e. **no basal drag at all**, with no error raised. This is
+    a deliberate contract (`roadmaps/chmy.md`, Phase 3, decision 7): the solver does what it
+    says and no redundant work, exactly like the halo-filling contract documented on
+    [`pseudo_transient!`](@ref).
+
+!!! note "What `converged` means here"
+    With no in-loop refresh, a converged solve is a converged *frozen-`β_eff`* problem, not
+    a converged DIVA fixed point. The DIVA nonlinearity is resolved across outer timesteps,
+    not within one `pseudo_transient!` call.
+"""
+struct NoDIVUpdate <: AbstractDIVUpdate end
+
+"""
+$(TYPEDSIGNATURES)
+
+Re-evaluate the DIVA chain every `n_update` pseudo-transient iterations (`n_update = 1`
+refreshes every iteration, the most faithful reading of the fixed point and the most
+expensive; larger values amortize the cost).
+
+# Fields
+ - `n_update`: refresh period in PT iterations, `≥ 1`.
+
+!!! note "A refresh also re-derives `Δτ`"
+    `β_eff` is an input to the Gershgorin bound behind `solver.dtau_x`/`dtau_y`, computed
+    once before the loop. A `β_eff` that grows under a stale bound makes that bound
+    optimistic and the iteration can diverge, so every refresh re-runs
+    [`pseudo_dt!`](@ref) (`roadmaps/chmy.md`, Phase 3, decision 8). This preserves the
+    invariant `pseudo_dt!` already states for the mask and `friction_update`: the bound must
+    describe the operator actually being iterated.
+"""
+struct PeriodicDIVUpdate <: AbstractDIVUpdate
+    n_update::Int
+    function PeriodicDIVUpdate(n_update::Integer = 1)
+        n_update ≥ 1 || throw(ArgumentError(
+            "PeriodicDIVUpdate requires n_update ≥ 1, got $n_update. Use NoDIVUpdate() to " *
+            "disable in-loop refreshes entirely."))
+        return new(Int(n_update))
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
 An abstract type to multiple-dispatch how [`PseudoTransientSolver`](@ref) chooses its
 pseudo-time step `Δτ`, following the same "dispatch, not `if`/`else`" convention as
 [`AbstractViscosityContinuation`](@ref). [`GershgorinPseudoTimeStep`](@ref) (the default)
@@ -500,7 +626,7 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
     part of a `Field`'s type), so a single `M` shared by all four work arrays would reject
     that combination outright — hence the `MX`/`MY` split below.
 """
-struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeStep, CV<:AbstractPTConvergence, VC<:AbstractViscosityContinuation, FU<:AbstractFrictionUpdate, TU<:AbstractPTTuning} <: AbstractMomentumSolver
+struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeStep, CV<:AbstractPTConvergence, VC<:AbstractViscosityContinuation, FU<:AbstractFrictionUpdate, TU<:AbstractPTTuning, DU<:AbstractDIVUpdate} <: AbstractMomentumSolver
     abstol::T
     maxiter::Int
     ncheck::Int
@@ -519,6 +645,7 @@ struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeSte
     viscosity_continuation::VC
     friction_update::FU
     tuning::TU
+    div_update::DU
 end
 Adapt.@adapt_structure PseudoTransientSolver
 
@@ -545,6 +672,7 @@ function PseudoTransientSolver(grid::StaggeredGrid;
     viscosity_continuation::AbstractViscosityContinuation = NoViscosityContinuation(),
     friction_update::AbstractFrictionUpdate = ActiveFrictionUpdate(),
     tuning::AbstractPTTuning = FixedTuning(),
+    div_update::AbstractDIVUpdate = NoDIVUpdate(),
 )
     _check_tuning(tuning, pseudo_timestep)
     # No `nz == 1` requirement: every work array below is built on `grid.grid2d`, and the
@@ -560,6 +688,7 @@ function PseudoTransientSolver(grid::StaggeredGrid;
         T(abstol), Int(maxiter), Int(ncheck), Int(printout_every), T(dtau_scaling),
         acx(), acy(), acx(), acy(), acx(), acy(), acx(), acy(),
         pseudo_timestep, convergence, viscosity_continuation, friction_update, tuning,
+        div_update,
     )
 end
 
