@@ -1,10 +1,6 @@
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
-CUDSS = "45b445bb-4962-46a0-9369-b4df9d0f772e"
-CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
-Chairmarks = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
-LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
-NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
-Tullio = "bc48ee85-29a4-5162-ae0b-a64e1601d4bc"
+Pagos = "c861e262-d8e9-4375-8e5f-146fb08f794b"
+PkgBenchmark = "32113eaa-f34f-5b0d-bd6c-c81e245fc73d"
