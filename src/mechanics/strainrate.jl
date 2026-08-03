@@ -22,7 +22,7 @@ function strainrate!(strainrate, velocity, material, topo, momentum::SIAMomentum
     strainrate.yz[I] = material.viscosity_depthaveraged[I] * topo.thickness[I] * velocity.depthaverage_y_dz[I]
 end
 
-function strainrate!(strainrate, velocity, material, topo, momentum::MB, I) where MB<:Union{SSAMomentumBalance, DIVAMomentumBalance}
+function strainrate!(strainrate, velocity, material, topo, momentum::MomentumBalance2D, I)
     # For SSA/DIVA: depth-averaged viscosity, thickness, strainrate.xx/xy/yy, velocity.*_d* are all 2D
     strainrate.xx[I] = 2 * material.viscosity_depthaveraged[I] * topo.thickness[I] * (2 * velocity.x_dx[I] + velocity.y_dy[I])
     strainrate.xy[I] = material.viscosity_depthaveraged[I] * topo.thickness[I] * (velocity.x_dy[I] + velocity.y_dx[I])
@@ -68,6 +68,12 @@ function strainrate_effective!(strainrate, velocity, momentum::SSAMomentumBalanc
     )
 end
 
+# Deliberately *not* [`MomentumBalance2D`](@ref)/[`MomentumBalance3D`](@ref): this union
+# cuts across both. The criterion here is "does ε̇_e include the vertical-shear terms
+# ¼(u_z² + v_z²)", which DIVA (a 2D-unknown balance, Robinson et al. 2022 Eq. 13) and
+# Blatter-Pattyn (a 3D-unknown one) share while SSA does not. Spelling it out keeps that
+# distinct grouping visible rather than hiding it behind a name that would suggest
+# dimensionality.
 function strainrate_effective!(strainrate, velocity, momentum::MB, I) where MB<:Union{DIVAMomentumBalance, BlatterPattynMomentumBalance}
     strainrate.effective[I] = sqrt(
         velocity.x_dx[I]^2 + velocity.y_dy[I]^2 +
@@ -78,16 +84,6 @@ function strainrate_effective!(strainrate, velocity, momentum::MB, I) where MB<:
     )
 end
 
-
-"""
-    FullColumnMomentumBalance
-
-Union of the momentum balances that resolve the vertical velocity `w`, so its gradient
-`∂w/∂z` (`velocity.z_dz`) is available and `ε̇_zz` is taken from it directly rather than
-reconstructed from incompressibility. Currently the [`BlatterPattynMomentumBalance`](@ref)
-and [`StokesMomentumBalance`](@ref).
-"""
-const FullColumnMomentumBalance = Union{BlatterPattynMomentumBalance, StokesMomentumBalance}
 
 """
 $(TYPEDSIGNATURES)
@@ -114,7 +110,7 @@ end
 # `I` is annotated `::Integer` (it is the flat `@index(Global, Linear)` of the kernel above,
 # so this is behaviour-neutral) purely to keep this 4-argument per-element method from being
 # ambiguous with the 4-argument staggered `raw_strainrate!(sr, vel, momentum, rt::Runtime)`
-# further down. Left untyped, `(Any, Any, FullColumnMomentumBalance, Any)` and
+# further down. Left untyped, `(Any, Any, MomentumBalance3D, Any)` and
 # `(StrainRateState, VelocityState, AbstractMomentumBalance, Runtime)` match the same call
 # with neither more specific, and `Runtime` has an empty type intersection with `Integer`,
 # so annotating removes the ambiguity without narrowing anything real.
@@ -130,7 +126,7 @@ function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance
 end
 
 # Full-column: ε̇_zz read directly from the resolved vertical velocity gradient.
-function raw_strainrate!(strainrate, velocity, momentum::FullColumnMomentumBalance,
+function raw_strainrate!(strainrate, velocity, momentum::MomentumBalance3D,
                          I::Integer)
     strainrate.xx[I] = velocity.x_dx[I]
     strainrate.yy[I] = velocity.y_dy[I]
@@ -278,6 +274,57 @@ function velocitygradients!(velocity::VelocityState, H, rt::Runtime,
     return nothing
 end
 
+# The depth-averaged counterpart of `_velocity_gradients!`, for the four horizontal
+# gradients of `ū`/`v̄` that the SSA/DIVA membrane stress is built from. Same node algebra
+# as the column kernel — `∂x` of an `acx` field lands on `aa`, `∂y` of it on `ab` — but
+# every field involved is depth-integrated, so this runs on `grid2d` and there is no
+# thickness argument: the sigma scaling `∂/∂z = (1/H)∂/∂ζ` that `H` exists for in the
+# column kernel has no counterpart here.
+@kernel inbounds = true function _depthaverage_velocity_gradients!(velocity, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    u, v = velocity.depthaverage_x, velocity.depthaverage_y
+    Z = zero(eltype(velocity.depthaverage_x_dx))
+
+    act_aa = node_active(mask, NODE_AA, i, j)
+    act_ab = node_active(mask, NODE_AB, i, j)
+
+    velocity.depthaverage_x_dx[I...] = act_aa ? ∂x(u, grid, I...) : Z   # acx → aa
+    velocity.depthaverage_y_dy[I...] = act_aa ? ∂y(v, grid, I...) : Z   # acy → aa
+    velocity.depthaverage_x_dy[I...] = act_ab ? ∂y(u, grid, I...) : Z   # acx → ab
+    velocity.depthaverage_y_dx[I...] = act_ab ? ∂x(v, grid, I...) : Z   # acy → ab
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Fill the four horizontal gradients of the depth-averaged velocity —
+`velocity.depthaverage_x_dx`/`y_dy` (at `aa`) and `depthaverage_x_dy`/`y_dx` (at `ab`) —
+from `velocity.depthaverage_x`/`depthaverage_y`. These are the gradients the SSA/DIVA
+membrane stress is assembled from (Robinson et al. 2022, Eq. 14).
+
+Launched on `rt.grid2d`: every field involved is depth-integrated. This is the companion of
+the column [`velocitygradients!`](@ref), which keeps the genuinely 3D gradients
+(`z_dx`, `z_dy`, `z_dz` and the sigma-scaled `x_dz`/`y_dz`) — the two are separate kernels
+because they sweep different grids, not because the work differs.
+
+Takes no thickness argument, unlike the column method: `H` is there only for the
+sigma-coordinate vertical scaling `∂/∂z = (1/H) ∂/∂ζ`, and nothing here differentiates in
+z.
+
+!!! note "Which velocity the momentum solver iterates"
+    `pseudo_transient!` solves for `velocity.depthaverage_x`/`y`, not `velocity.x`/`y` —
+    `ū` is genuinely 2D for SSA and DIVA alike, and leaving `velocity.x`/`y` free lets DIVA
+    use them for the reconstructed 3D profile (`roadmaps/chmy.md`, Phase 3, decision 1).
+"""
+function depthaverage_velocitygradients!(velocity::VelocityState, rt::Runtime,
+                                         mask::AbstractIceMask = NoMask())
+    rt.launch2d(rt.arch, rt.grid2d,
+                _depthaverage_velocity_gradients! => (velocity, mask, rt.grid2d))
+    return nothing
+end
+
 # `yx`/`zx`/`zy` are the symmetric duplicates of `xy`/`xz`/`yz` and live at the same node
 # classes. The collocated kernels leave them untouched; filling them costs three stores and
 # removes a "why is `strainrate.yx` zero" trap for anything that reads the full tensor.
@@ -297,7 +344,7 @@ end
     return nothing
 end
 
-@inline function _raw_strainrate_at!(sr, vel, ::FullColumnMomentumBalance, mask,
+@inline function _raw_strainrate_at!(sr, vel, ::MomentumBalance3D, mask,
                                      I::Vararg{Integer, 3})
     if node_active(mask, NODE_AA, I[1], I[2])
         sr.xx[I...] = vel.x_dx[I...]
@@ -357,7 +404,7 @@ velocity gradients, each at its own node class — normal components at `aa`, `�
 that already live on the same node, so no interpolation enters.
 
 `ε̇_zz` follows incompressibility (`-(ε̇_xx + ε̇_yy)`) unless `momentum` resolves the
-vertical velocity ([`FullColumnMomentumBalance`](@ref)), in which case `∂w/∂z` is used
+vertical velocity ([`MomentumBalance3D`](@ref)), in which case `∂w/∂z` is used
 directly — the same dispatch as the collocated method.
 
 Does **not** compute the effective strain rate: that needs its own launch, because at `aa`
@@ -434,8 +481,8 @@ end
 
     if node_active(mask, NODE_AA, i, j)
         ηH  = 2 * η[I...] * H[I...]
-        dux = vel.x_dx[I...]
-        dvy = vel.y_dy[I...]
+        dux = vel.depthaverage_x_dx[I...]
+        dvy = vel.depthaverage_y_dy[I...]
         sxx[I...] = ηH * (2 * dux + dvy)
         syy[I...] = ηH * (dux + 2 * dvy)
     else
@@ -445,40 +492,46 @@ end
 
     sxy[I...] = node_fully_active(mask, NODE_AB, i, j) ?
         2 * hlerp(η, NODE_AB, grid, I...) * lerp(H, NODE_AB, grid, I...) *
-        (vel.x_dy[I...] + vel.y_dx[I...]) / 2 : Z
+        (vel.depthaverage_x_dy[I...] + vel.depthaverage_y_dx[I...]) / 2 : Z
 end
 
 """
 $(TYPEDSIGNATURES)
 
-Chmy-native, C-grid staggered [`strainrate!`](@ref) for the SSA/DIVA momentum balance:
-writes the vertically-integrated membrane-stress components `strainrate.xx`/`yy` (at `aa`)
-and `strainrate.xy` (at `ab`) from the depth-averaged viscosity `material.viscosity_depthaveraged`,
-the thickness `topo.thickness` and the velocity gradients already written by
-[`velocitygradients!`](@ref) — which must run first.
+Chmy-native, C-grid staggered **membrane stress** for the SSA/DIVA momentum balance: writes
+the depth-integrated components `stress.membrane_xx`/`membrane_yy` (at `aa`) and
+`stress.membrane_xy` (at `ab`) from the depth-averaged viscosity
+`material.viscosity_depthaveraged`, the thickness `topo.thickness` and the depth-averaged
+velocity gradients already written by [`depthaverage_velocitygradients!`](@ref) — which must
+run first.
 
-Despite the shared name, kept for parity with the collocated dispatch this extends, the
-result is not the strain rate: it is `2ηH·(2ε̇_xx + ε̇_yy)` and friends, the quantity the
-SSA/DIVA momentum balance's stress divergence actually needs (see the collocated method's
-docstring above). `η` is interpolated onto `ab` harmonically (matching
-[`deviatoric_stress!`](@ref) — stress, not strain rate, is continuous across a viscosity
-contrast); `H` arithmetically (matching [`drivingstress!`](@ref)).
+The quantity is `2μ̄H·(2ε̇_xx + ε̇_yy)` and friends (Robinson et al. 2022, Eq. 14): the term
+the momentum balance's stress divergence differentiates. `η` is interpolated onto `ab`
+harmonically (matching [`deviatoric_stress!`](@ref) — stress, not strain rate, is continuous
+across a viscosity contrast); `H` arithmetically (matching [`drivingstress!`](@ref)).
 
-Distinguished from the collocated method by taking a [`Runtime`](@ref). Depth-integrated
-throughout, so it runs on `rt.grid2d`.
+Depth-integrated throughout, so it runs on `rt.grid2d`.
+
+!!! note "Renamed from `strainrate!`, and moved out of `StrainRateState`"
+    This used to be a `strainrate!` method writing `strainrate.xx`/`xy`/`yy`, which was
+    wrong twice: the quantity is a stress, not a strain rate (the collocated docstring
+    admits as much), and those fields are `AA3`/`AB3` column fields, which only worked
+    while `nz == 1` collapsed them onto the 2D shape this genuinely has. Both are fixed
+    here (`roadmaps/chmy.md`, Phase 3, decision 2); `strainrate.xx`/`xy`/`yy` now mean only
+    the true strain rate.
 
 !!! warning "A zero viscosity gives `NaN`, not zero — same trap as `deviatoric_stress!`"
     `hlerp` averages reciprocals, so an unmasked ice-free corner produces `NaN` in
-    `strainrate.xy` rather than `0`; pass an [`IceMask`](@ref) once the material state has
-    ice-free cells.
+    `stress.membrane_xy` rather than `0`; pass an [`IceMask`](@ref) once the material state
+    has ice-free cells.
 """
-function strainrate!(strainrate::StrainRateState, velocity::VelocityState,
-                     material::MechanicMaterialState, topo::MechanicTopographyState,
-                     momentum::Union{SSAMomentumBalance, DIVAMomentumBalance}, rt::Runtime,
-                     mask::AbstractIceMask = NoMask())
+function membranestress!(stress::StressState, velocity::VelocityState,
+                         material::MechanicMaterialState, topo::MechanicTopographyState,
+                         momentum::MomentumBalance2D,
+                         rt::Runtime, mask::AbstractIceMask = NoMask())
     rt.launch2d(rt.arch, rt.grid2d,
               _membrane_stress_staggered! =>
-                  (strainrate.xx, strainrate.xy, strainrate.yy,
+                  (stress.membrane_xx, stress.membrane_xy, stress.membrane_yy,
                    material.viscosity_depthaveraged, topo.thickness, velocity,
                    mask, rt.grid2d))
     return nothing
@@ -487,31 +540,35 @@ end
 """
 $(TYPEDSIGNATURES)
 
-State-level Chmy-native [`strainrate!`](@ref) for the SSA/DIVA momentum balance: writes
-`mech.strainrate.xx`/`xy`/`yy` from `mech.material`, `mech.topography` and `mech.velocity`
-(which must already carry velocity gradients, see [`velocitygradients!`](@ref)).
+State-level [`membranestress!`](@ref) for the SSA/DIVA momentum balance: writes
+`mech.stress.membrane_xx`/`membrane_xy`/`membrane_yy` from `mech.material`,
+`mech.topography` and `mech.velocity` (which must already carry the depth-averaged velocity
+gradients, see [`depthaverage_velocitygradients!`](@ref)).
 """
-strainrate!(mech::MechanicState, momentum::Union{SSAMomentumBalance, DIVAMomentumBalance},
-           rt::Runtime, mask::AbstractIceMask = NoMask()) =
-    strainrate!(mech.strainrate, mech.velocity, mech.material, mech.topography,
-               momentum, rt, mask)
+membranestress!(mech::MechanicState,
+                momentum::MomentumBalance2D,
+                rt::Runtime, mask::AbstractIceMask = NoMask()) =
+    membranestress!(mech.stress, mech.velocity, mech.material, mech.topography,
+                    momentum, rt, mask)
 
 ###############################################################
 # Chmy-native, C-grid staggered SSA/DIVA effective strain rate
 ###############################################################
 #
-# The true (not membrane-stress) second invariant ε̇_e, needed by
-# `GlenViscosityContinuation` (`src/mechanics/solvers.jl`, wired in
-# `src/mechanics/pseudotransient.jl`) to derive a viscosity from the current velocity
-# iterate. Writes `strainrate.effective` only — never `.xx`/`.xy`/`.yy`, which the SSA/DIVA
-# `strainrate!` above uses for the (differently named, see its docstring) membrane stress.
-# Sharing `.effective` with `raw_strainrate_effective!` is intentional (same physical
-# quantity, same home); reusing that function outright is not an option here since it
-# reads `strainrate.xy` at `ab` as *already written*, computed by `raw_strainrate!` (which
-# in turn wants to write `strainrate.xx`/`yy`), the exact fields the membrane-stress
-# `strainrate!` also owns — the same clash this function exists to sidestep. Formula
-# matches the collocated `strainrate_effective!(..., ::SSAMomentumBalance, ...)`, with no
-# vertical-shear terms (DIVA is the SSA limit on this path, see the module note above).
+# The true (not membrane-stress) second invariant ε̇_e of the *depth-averaged* velocity —
+# Robinson et al. (2022), Eq. 12 — needed by `GlenViscosityContinuation`
+# (`src/mechanics/solvers.jl`, wired in `src/mechanics/pseudotransient.jl`) to derive
+# `viscosity_depthaveraged` from the current velocity iterate.
+#
+# Writes `strainrate.effective_depthaveraged` (`AA2`), *not* `strainrate.effective`
+# (`AA3`). Those are two different quantities, not one at two resolutions: `.effective` is
+# DIVA's Eq. 13, which carries the vertical-shear terms `¼(u_z² + v_z²)` and so genuinely
+# varies layer by layer. This function computes Eq. 12, the same expression with those
+# terms dropped — a single number per column. One field served both only while `nz == 1`
+# collapsed `AA2` and `AA3` (`roadmaps/chmy.md`, Phase 3, decision 20).
+#
+# Not reusable from `raw_strainrate_effective!`: that one reads `strainrate.xy` at `ab` as
+# *already written* by `raw_strainrate!`, and works on column fields throughout.
 
 @kernel inbounds = true function _effective_strainrate_ssa_staggered!(eff, velocity, mask,
                                                                        grid, O)
@@ -519,10 +576,10 @@ strainrate!(mech::MechanicState, momentum::Union{SSAMomentumBalance, DIVAMomentu
     I = I + O
     i, j, _ = I
     if node_active(mask, NODE_AA, i, j)
-        dxx = velocity.x_dx[I...]
-        dyy = velocity.y_dy[I...]
-        dxy = lerp(velocity.x_dy, NODE_AA, grid, I...)
-        dyx = lerp(velocity.y_dx, NODE_AA, grid, I...)
+        dxx = velocity.depthaverage_x_dx[I...]
+        dyy = velocity.depthaverage_y_dy[I...]
+        dxy = lerp(velocity.depthaverage_x_dy, NODE_AA, grid, I...)
+        dyx = lerp(velocity.depthaverage_y_dx, NODE_AA, grid, I...)
         eff[I...] = sqrt(dxx^2 + dyy^2 + dxx * dyy + ((dxy + dyx) / 2)^2)
     else
         eff[I...] = zero(eltype(eff))
@@ -532,19 +589,21 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Chmy-native SSA/DIVA effective strain rate at `aa`:
-`ε̇_e = √(ε̇xx² + ε̇yy² + ε̇xx·ε̇yy + ε̇xy²)`, with `ε̇xx = ∂u/∂x`, `ε̇yy = ∂v/∂y` already at
-`aa` and `ε̇xy = (∂u/∂y + ∂v/∂x)/2` interpolated there from `ab` by `lerp`. Writes
-`strainrate.effective` only (see the module note above for why not `.xx`/`.xy`/`.yy` too).
+Chmy-native SSA effective strain rate at `aa` (Robinson et al. 2022, Eq. 12):
+`ε̇_e = √(ε̇xx² + ε̇yy² + ε̇xx·ε̇yy + ε̇xy²)`, with `ε̇xx = ∂ū/∂x`, `ε̇yy = ∂v̄/∂y` already at
+`aa` and `ε̇xy = (∂ū/∂y + ∂v̄/∂x)/2` interpolated there from `ab` by `lerp`.
 
-Requires `velocity`'s gradient fields to already be current — call
-[`velocitygradients!`](@ref) first, exactly as the membrane-stress [`strainrate!`](@ref)
-does.
+Writes `strainrate.effective_depthaveraged` (`AA2`) — a single value per column. DIVA's
+depth-*varying* effective strain rate (Eq. 13, with the vertical-shear terms) is a
+different quantity living in `strainrate.effective` (`AA3`); see the module note above.
+
+Requires the depth-averaged velocity gradients to already be current — call
+[`depthaverage_velocitygradients!`](@ref) first, exactly as [`membranestress!`](@ref) does.
 """
 function effective_strainrate_ssa!(strainrate::StrainRateState, velocity::VelocityState,
                                    rt::Runtime, mask::AbstractIceMask = NoMask())
     rt.launch2d(rt.arch, rt.grid2d,
-              _effective_strainrate_ssa_staggered! => (strainrate.effective, velocity,
-                                                       mask, rt.grid2d))
+              _effective_strainrate_ssa_staggered! =>
+                  (strainrate.effective_depthaveraged, velocity, mask, rt.grid2d))
     return nothing
 end

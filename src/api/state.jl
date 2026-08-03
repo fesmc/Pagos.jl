@@ -226,6 +226,22 @@ struct MechanicMaterialState{AA2, AA3}
     viscosity_depthaveraged::AA2
     viscosity::AA3
     rate_factor_depthaveraged::AA2
+
+    # The column rate factor `A(z)`, feeding Glen's law for the 3D viscosity `µ(z)` that
+    # DIVA needs. A prescribed input, exactly like `rate_factor_depthaveraged` — nothing
+    # here derives it from temperature, since `ThermodynamicState` is still an unconnected
+    # sibling (`roadmaps/chmy.md`, Phase 3, decision 9). Filling it by broadcasting the
+    # depth-averaged value down the column is the isothermal case, and is what the tests do.
+    rate_factor::AA3
+
+    # DIVA's generalized viscosity integrals `F_m = ∫_b^s (1/µ)((s-z)/H)^m dz` (Robinson
+    # et al. 2022, Eq. 15), written by `viscosity_integrals!`. They live here, next to the
+    # viscosity they integrate, rather than in `FrictionState` next to the `beta_eff` they
+    # feed: grouped by what they are, not by who reads them — the same argument that keeps
+    # `viscosity` itself apart from the friction that scales it. Zero on any state that
+    # never runs DIVA (`roadmaps/chmy.md`, Phase 3, decision 3).
+    viscosity_integral_1::AA2
+    viscosity_integral_2::AA2
 end
 Adapt.@adapt_structure MechanicMaterialState
 
@@ -253,12 +269,27 @@ struct FluxState{ACX2, ACY2, AA2}
 end
 Adapt.@adapt_structure FluxState
 
-struct StressState{ACX2, ACY2, AA2, AA3, AB3, ACXZ3, ACYZ3}
+struct StressState{ACX2, ACY2, AA2, AB2, AA3, AB3, ACXZ3, ACYZ3}
     driving_x::ACX2
     driving_y::ACY2
     base_x::ACX2
     base_y::ACY2
     base_vertical::AA2
+
+    # The depth-integrated membrane stress the SSA/DIVA momentum balance differentiates:
+    # `membrane_xx = 2µ̄H(2ūx + v̄y)`, `membrane_xy = µ̄H(ūy + v̄x)`,
+    # `membrane_yy = 2µ̄H(ūx + 2v̄y)` (Robinson et al. 2022, Eq. 14). Depth-integrated, so
+    # 2D — `aa` for the normal components, `ab` for the shear one, exactly where the
+    # gradients that build them already live.
+    #
+    # These used to be written into `strainrate.xx`/`xy`/`yy`, which are `AA3`/`AB3`: legal
+    # only while `nz == 1` collapsed the two shapes, and misnamed besides (the old
+    # `strainrate!` docstring says so itself — the quantity is a stress, not a strain
+    # rate). Moving it here fixes both at once, and returns `strainrate.xx`/`xy`/`yy` to
+    # meaning only the true strain rate (`roadmaps/chmy.md`, Phase 3, decision 2).
+    membrane_xx::AA2
+    membrane_xy::AB2
+    membrane_yy::AA2
 
     xx::AA3
     xy::AB3
@@ -276,7 +307,7 @@ struct StressState{ACX2, ACY2, AA2, AA3, AB3, ACXZ3, ACYZ3}
 end
 Adapt.@adapt_structure StressState
 
-struct StrainRateState{AA3, AB3, ACXZ3, ACYZ3}
+struct StrainRateState{AA2, AA3, AB3, ACXZ3, ACYZ3}
     xx::AA3
     xy::AB3
     xz::ACXZ3
@@ -286,7 +317,20 @@ struct StrainRateState{AA3, AB3, ACXZ3, ACYZ3}
     zx::ACXZ3
     zy::ACYZ3
     zz::AA3
+
+    # The two effective strain rates are *different quantities*, not one quantity at two
+    # resolutions, which is why they get separate fields rather than one shared `AA3`.
+    #
+    # `effective` is DIVA's (Robinson et al. 2022, Eq. 13): it carries the vertical-shear
+    # terms `¼(u_z² + v_z²)`, so it genuinely differs layer by layer, and it feeds the 3D
+    # `material.viscosity`. `effective_depthaveraged` is the SSA one (Eq. 12) — the same
+    # expression with the shear terms dropped — a single number per column, feeding
+    # `material.viscosity_depthaveraged`.
+    #
+    # One `AA3` field served both only while `nz == 1` collapsed `AA2` and `AA3` onto the
+    # same shape (`roadmaps/chmy.md`, Phase 3, decision 20).
     effective::AA3
+    effective_depthaveraged::AA2
 end
 Adapt.@adapt_structure StrainRateState
 
@@ -347,8 +391,8 @@ struct MechanicState{ACX2, ACY2, AA2, AB2, ACX3, ACY3, AA3, AB3, AAZ3, ACXZ3, AC
 
     topography::MechanicTopographyState{AA2}
     material::MechanicMaterialState{AA2, AA3}
-    strainrate::StrainRateState{AA3, AB3, ACXZ3, ACYZ3}
-    stress::StressState{ACX2, ACY2, AA2, AA3, AB3, ACXZ3, ACYZ3}
+    strainrate::StrainRateState{AA2, AA3, AB3, ACXZ3, ACYZ3}
+    stress::StressState{ACX2, ACY2, AA2, AB2, AA3, AB3, ACXZ3, ACYZ3}
     velocity::VelocityState{ACX2, ACY2, AA2, AB2, ACX3, ACY3, AA3, AB3, AAZ3, ACXZ3, ACYZ3}
 end
 Adapt.@adapt_structure MechanicState
@@ -363,9 +407,10 @@ function MechanicState(grid::RegularGrid)
         FrictionState(m2(), m2(), m2()),                    # beta, beta_eff, c_bed
         FluxState(m2(), m2(), m2()),                       # flux x, y, grline
         MechanicTopographyState(m2(), m2()),               # surface, thickness
-        MechanicMaterialState(m2(), m3(), m2()),  # viscosity_depthaveraged, viscosity, rate_factor_depthaveraged
-        StrainRateState(ntuple(_ -> m3(), 10)...),         # 10 column tensor fields
-        StressState(ntuple(_ -> m2(), 5)..., ntuple(_ -> m3(), 13)...),  # 3 depth-averaged + 13 column
+        # viscosity_depthaveraged, viscosity, rate_factor_depthaveraged, rate_factor, F₁, F₂
+        MechanicMaterialState(m2(), m3(), m2(), m3(), m2(), m2()),
+        StrainRateState(ntuple(_ -> m3(), 10)..., m2()),   # 10 column + effective_depthaveraged
+        StressState(ntuple(_ -> m2(), 8)..., ntuple(_ -> m3(), 13)...),  # 8 depth-integrated + 13 column
         VelocityState(ntuple(_ -> m2(), 14)..., ntuple(_ -> m3(), 13)...),  # 14 depth-averaged + 13 column
     )
 end
@@ -397,13 +442,16 @@ function MechanicState(grid::StaggeredGrid; halo = 1)
         FrictionState(aa2(), aa2(), aa2()),
         FluxState(acx2(), acy2(), aa2()),                  # flux x, y, grline
         MechanicTopographyState(aa2(), aa2()),
-        MechanicMaterialState(aa2(), aa3(), aa2()),  # viscosity_depthaveraged, viscosity, rate_factor_depthaveraged
+        # viscosity_depthaveraged, viscosity, rate_factor_depthaveraged, rate_factor, F₁, F₂
+        MechanicMaterialState(aa2(), aa3(), aa2(), aa3(), aa2(), aa2()),
         StrainRateState(
             aa3(), ab3(), acxz3(), ab3(), aa3(),         # xx, xy, xz, yx, yy
-            acyz3(), acxz3(), acyz3(), aa3(), aa3(),     # yz, zx, zy, zz, effective
+            acyz3(), acxz3(), acyz3(), aa3(),            # yz, zx, zy, zz
+            aa3(), aa2(),                                # effective, effective_depthaveraged
         ),
         StressState(
             acx2(), acy2(), acx2(), acy2(), aa2(),       # driving_x/y, base_x/y, base_vertical
+            aa2(), ab2(), aa2(),                         # membrane_xx, membrane_xy, membrane_yy
             aa3(), ab3(), acxz3(), ab3(), aa3(),         # xx, xy, xz, yx, yy
             acyz3(), acxz3(), acyz3(), aa3(),            # yz, zx, zy, zz
             aa3(), aa3(), aa3(), aa3(),                  # effective, lateral, eigenvalue_1/2

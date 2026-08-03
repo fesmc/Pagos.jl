@@ -223,7 +223,7 @@ damped. [`pseudo_transient!`](@ref) reduces these into the `residual` it returns
 """
 function dotvel!(dvx, dvy, sxx, sxy, syy, base_x, base_y, driving_x, driving_y,
                  H, density_ice, rt::Runtime,
-                 momentum::Union{SSAMomentumBalance, DIVAMomentumBalance},
+                 momentum::MomentumBalance2D,
                  mask::AbstractIceMask = NoMask(); gamma = 1, resid_x, resid_y)
     ρ = convert(eltype(dvx), density_ice)
     γ = convert(eltype(dvx), gamma)
@@ -307,7 +307,8 @@ end
 # unconditionally on the first iteration, so nothing that is read afterwards is lost, and
 # the alternative — two more `acx`/`acy` fields on every solver ever constructed — would be
 # paid for by every solve to serve one convergence criterion.
-_convergence_scale(::VelocityIncrement, mech, c, solver, rt, mask) = one(eltype(asarray(mech.velocity.x)))
+_convergence_scale(::VelocityIncrement, mech, c, solver, rt, mask) =
+    one(eltype(asarray(mech.velocity.depthaverage_x)))
 
 function _convergence_scale(::ScaledResidual, mech::MechanicState, c::Constants,
                             solver::PseudoTransientSolver, rt::Runtime,
@@ -496,7 +497,8 @@ function update_viscosity!(mech::MechanicState, vc::GlenViscosityContinuation, r
     rt.launch2d(rt.arch, rt.grid2d,
               _glen_viscosity_continuation! =>
                   (material.viscosity_depthaveraged, material.rate_factor_depthaveraged,
-                   strainrate.effective, vc.n_glen, vc.strainrate_reg, vc.theta_mu, mask))
+                   strainrate.effective_depthaveraged, vc.n_glen, vc.strainrate_reg,
+                   vc.theta_mu, mask))
     return nothing
 end
 
@@ -532,8 +534,13 @@ $(TYPEDSIGNATURES)
 function update_basalstress!(mech::MechanicState, ::ActiveFrictionUpdate, rt::Runtime,
                              mask::AbstractIceMask = NoMask())
     (; velocity, stress, friction) = mech
-    copyto!(asarray(velocity.base_x), asarray(velocity.x))
-    copyto!(asarray(velocity.base_y), asarray(velocity.y))
+    # The SSA limit `u_b = ū`, which is what both balances use today. DIVA's correction
+    # `u_b = ū/(1 + βF₂)` (Robinson et al. 2022, Eq. 18) is Stage 2 — see
+    # `roadmaps/chmy.md`, Phase 3. Reads `depthaverage_x`/`y`, the field the solver
+    # actually iterates (decision 1); it used to read `velocity.x`/`y`, which held the same
+    # numbers only because `nz == 1` collapsed `ACX3` onto `ACX2`.
+    copyto!(asarray(velocity.base_x), asarray(velocity.depthaverage_x))
+    copyto!(asarray(velocity.base_y), asarray(velocity.depthaverage_y))
     basalstress!(stress.base_x, stress.base_y, friction.beta_eff,
                 velocity.base_x, velocity.base_y, rt, mask)
     return nothing
@@ -566,20 +573,39 @@ velocity rate. Writes `solver.velocity_x_dt`/`velocity_y_dt`, damped by `gamma`,
 *during* the solve, so the value in force at a given iteration is not a property of the
 solver; it defaults to `1` (undamped), matching [`dotvel!`](@ref).
 """
+# Per-balance grid requirements. SSA is depth-independent by construction: it never reads a
+# column field, so any `nz` is fine and a column grid simply costs nothing. DIVA is the
+# opposite — it is *defined* by its vertical structure, and on `nz == 1` the single
+# quadrature point sits at `σ = ½`, which makes `F₂ = H/(4µ)` against the true `H/(3µ)`
+# (see `viscosity_integrals!`). That is 25% low while looking entirely plausible, so it is
+# an error rather than a warning (`roadmaps/chmy.md`, Phase 3, decision 4).
+_check_momentum_grid(::SSAMomentumBalance, ::Runtime) = nothing
+
+function _check_momentum_grid(::DIVAMomentumBalance, rt::Runtime)
+    rt.grid === rt.grid2d && throw(ArgumentError(
+        "DIVAMomentumBalance requires a column StaggeredGrid (nz > 1). On a " *
+        "depth-averaged grid (nz == 1, rt.grid === rt.grid2d) the viscosity integral F₂ " *
+        "is 25% low — a plausible-looking wrong answer, not an approximation. Build the " *
+        "grid with a `layering` argument, e.g. " *
+        "`StaggeredGrid(T, lx, ly, dx, dy, CorrectedVerticalLayering(T, " *
+        "QuadraticSigmaTransform(T, nz)))`, or use SSAMomentumBalance()."))
+    return nothing
+end
+
 function pseudo_rate!(mech::MechanicState, c::Constants, rt::Runtime,
-                      momentum::Union{SSAMomentumBalance, DIVAMomentumBalance},
+                      momentum::MomentumBalance2D,
                       solver::PseudoTransientSolver, mask::AbstractIceMask = NoMask();
                       gamma = 1)
-    (; velocity, strainrate, material, topography, stress) = mech
+    (; velocity, material, topography, stress) = mech
 
-    velocitygradients!(velocity, topography.thickness, rt, mask)
+    depthaverage_velocitygradients!(velocity, rt, mask)
     update_viscosity!(mech, solver.viscosity_continuation, rt, mask)
-    strainrate!(strainrate, velocity, material, topography, momentum, rt, mask)
+    membranestress!(stress, velocity, material, topography, momentum, rt, mask)
 
     update_basalstress!(mech, solver.friction_update, rt, mask)
 
     dotvel!(solver.velocity_x_dt, solver.velocity_y_dt,
-           strainrate.xx, strainrate.xy, strainrate.yy,
+           stress.membrane_xx, stress.membrane_xy, stress.membrane_yy,
            stress.base_x, stress.base_y, stress.driving_x, stress.driving_y,
            topography.thickness, c.density_ice, rt, momentum, mask;
            gamma, resid_x = solver.residual_x, resid_y = solver.residual_y)
@@ -642,17 +668,14 @@ scratch every iteration, which is what buys sub-quadratic iteration scaling.
 """
 function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTransientSolver,
                            rt::Runtime,
-                           momentum::Union{SSAMomentumBalance, DIVAMomentumBalance} = DIVAMomentumBalance(),
+                           momentum::MomentumBalance2D = SSAMomentumBalance(),
                            mask::AbstractIceMask = NoMask())
-    rt.grid === rt.grid2d || throw(ArgumentError(
-        "pseudo_transient! only supports a depth-averaged StaggeredGrid " *
-        "(nz == 1, i.e. rt.grid === rt.grid2d); DIVA's vertical shear integral is not " *
-        "yet ported (roadmaps/chmy.md, Phase 3)."))
+    _check_momentum_grid(momentum, rt)
 
     (; velocity) = mech
     (; abstol, maxiter, printout_every, ncheck, tuning) = solver
 
-    ux, uy = velocity.x, velocity.y
+    ux, uy = velocity.depthaverage_x, velocity.depthaverage_y
     ux_old, uy_old = solver.velocity_x_old, solver.velocity_y_old
     dvx, dvy = solver.velocity_x_dt, solver.velocity_y_dt
     dtau_x, dtau_y = solver.dtau_x, solver.dtau_y

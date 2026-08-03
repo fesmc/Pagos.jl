@@ -547,12 +547,10 @@ function PseudoTransientSolver(grid::StaggeredGrid;
     tuning::AbstractPTTuning = FixedTuning(),
 )
     _check_tuning(tuning, pseudo_timestep)
-    grid.grid2d === grid.grid || throw(ArgumentError(
-        "PseudoTransientSolver(::StaggeredGrid) requires a depth-averaged grid " *
-        "(grid.grid2d === grid.grid, i.e. nz == 1); DIVA's vertical shear integral is " *
-        "not yet ported (roadmaps/chmy.md, Phase 3). Build the grid without a " *
-        "`layering` argument, e.g. `StaggeredGrid(T, lx, ly, dx, dy)`."))
-
+    # No `nz == 1` requirement: every work array below is built on `grid.grid2d`, and the
+    # unknown the solver iterates (`velocity.depthaverage_x`/`y`) is depth-integrated for
+    # SSA and DIVA alike. Whether a given momentum balance tolerates the grid is checked by
+    # `_check_momentum_grid` at the `pseudo_transient!` call that knows which balance it is.
     (; arch) = grid
     g = grid.grid2d
     T = eltype(g)

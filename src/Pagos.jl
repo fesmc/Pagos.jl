@@ -121,6 +121,7 @@ export AbstractMomentumBalance
 export SIAMomentumBalance, SSAMomentumBalance, SIASSAMomentumBalance
 export DIVAMomentumBalance, BlatterPattynMomentumBalance, StokesMomentumBalance
 export InertialDIVAMomentumBalance, InertialSIASSAMomentumBalance
+export MomentumBalance2D, MomentumBalance3D
 
 include("mechanics/solvers.jl")
 export AbstractMomentumSolver, LinearMomentumSolver2D
@@ -171,7 +172,8 @@ export deviatoric_stress!, surface_gradient!
 
 include("mechanics/strainrate.jl")
 export strainrate!, scaledstrainrate!, velocitygradients!
-export raw_strainrate!, raw_strainrate_effective!, FullColumnMomentumBalance
+export depthaverage_velocitygradients!, membranestress!
+export raw_strainrate!, raw_strainrate_effective!
 export effective_strainrate_ssa!
 
 ###########################################################

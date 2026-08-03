@@ -152,8 +152,8 @@ n_detached = count(asarray(topo.mask.is_ice) .& .!asarray(topo.mask.is_momentum_
 
 # Velocity starts at zero (the `MechanicState` allocation default; set explicitly here for
 # clarity since this is the whole point of the exercise).
-setdata!(mech.velocity.x, 0.0)
-setdata!(mech.velocity.y, 0.0)
+setdata!(mech.velocity.depthaverage_x, 0.0)
+setdata!(mech.velocity.depthaverage_y, 0.0)
 
 #=
 ## Run the solve
@@ -211,10 +211,10 @@ result = pseudo_transient!(mech, cst, solver, rt, momentum, mask)
 ## Visualize the converged velocity field, against Yelmo's own
 =#
 
-ux_c = @views (interior(mech.velocity.x)[1:(end - 1), :, 1] .+
-               interior(mech.velocity.x)[2:end, :, 1]) ./ 2 .* spy
-uy_c = @views (interior(mech.velocity.y)[:, 1:(end - 1), 1] .+
-               interior(mech.velocity.y)[:, 2:end, 1]) ./ 2 .* spy
+ux_c = @views (interior(mech.velocity.depthaverage_x)[1:(end - 1), :, 1] .+
+               interior(mech.velocity.depthaverage_x)[2:end, :, 1]) ./ 2 .* spy
+uy_c = @views (interior(mech.velocity.depthaverage_y)[:, 1:(end - 1), 1] .+
+               interior(mech.velocity.depthaverage_y)[:, 2:end, 1]) ./ 2 .* spy
 speed = sqrt.(ux_c .^ 2 .+ uy_c .^ 2)
 
 on_ice(a) = ifelse.(H_ice .> 0, a, NaN)

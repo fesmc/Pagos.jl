@@ -81,3 +81,46 @@ Full Stokes momentum balance, resolving all stress components without the shallo
 higher-order approximations of the other [`AbstractMomentumBalance`](@ref) subtypes.
 """
 struct StokesMomentumBalance <: AbstractMomentumBalance end
+
+###############################################################
+# Dimensionality groupings
+###############################################################
+#
+# The criterion is **the dimensionality of the unknown the momentum solve iterates**, not
+# whether the balance has any vertical structure at all. That is what makes the split
+# useful for dispatch: it is exactly the question "does this solve live on `grid2d` or on
+# `grid`?", which decides node classes, launcher and state fields throughout.
+#
+# It puts DIVA in the *2D* group, which is the right answer even though DIVA is a
+# higher-order balance with a genuine vertical profile: the depth-integrated balance
+# (Robinson et al. 2022, Eq. 14) is solved for the depth-averaged `ū`, `v̄`, and `u(z)` is
+# reconstructed afterwards from Eq. 16 as a post-solve diagnostic.
+#
+# The stub balances (`SIA`, `SIASSA`, the `Inertial*` variants, `NoMomentumBalance`) are
+# deliberately in neither group until they are ported — an unported balance should hit a
+# `MethodError`, not silently inherit a dispatch that was never written for it.
+
+"""
+    MomentumBalance2D
+
+The momentum balances whose solve iterates a **depth-integrated** unknown, on `grid2d`:
+[`SSAMomentumBalance`](@ref) and [`DIVAMomentumBalance`](@ref).
+
+DIVA belongs here despite resolving vertical shear: its depth-integrated balance is solved
+for `ū`/`v̄`, and the 3D profile `u(z)` is reconstructed afterwards rather than iterated.
+Both therefore share the same C-grid layout (`acx`/`acy` velocity faces on `grid2d`) and the
+same membrane-stress assembly, which is why they share so many method bodies.
+"""
+const MomentumBalance2D = Union{SSAMomentumBalance, DIVAMomentumBalance}
+
+"""
+    MomentumBalance3D
+
+The momentum balances whose solve iterates a genuine **3D** velocity field, on the column
+grid: [`BlatterPattynMomentumBalance`](@ref) and [`StokesMomentumBalance`](@ref).
+
+These are also exactly the balances that resolve the vertical velocity `w`, so `∂w/∂z`
+(`velocity.z_dz`) is available and `ε̇_zz` is taken from it directly rather than
+reconstructed from incompressibility — the property [`raw_strainrate!`](@ref) dispatches on.
+"""
+const MomentumBalance3D = Union{BlatterPattynMomentumBalance, StokesMomentumBalance}

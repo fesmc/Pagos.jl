@@ -80,7 +80,7 @@ end
 
         @test all(interior(strainrate.xx) .≈ a)
         @test all(interior(strainrate.yy) .≈ d)
-        # BlatterPattyn is a FullColumnMomentumBalance ⟹ ε̇_zz from ∂w/∂z, not from
+        # BlatterPattyn is a MomentumBalance3D ⟹ ε̇_zz from ∂w/∂z, not from
         # incompressibility. Here w was chosen so that ∂w/∂z = e·x + f·y.
         @test interior(strainrate.zz) ≈
               analytic_like3d(strainrate.zz, rt.grid, (x, y, ζ) -> e * x + f * y)
@@ -346,5 +346,44 @@ end
         @test all(interior(mech.strainrate.xx) .≈ 2.0f0)
         @test all(interior(mech.strainrate.xy) .≈ (3.0f0 - 1.0f0) / 2)
         @test all(isfinite, interior(mech.stress.effective))
+    end
+
+    # `depthaverage_velocitygradients!` is the depth-integrated companion of the column
+    # `velocitygradients!`, introduced when the momentum solver moved its unknown from
+    # `velocity.x`/`y` (`ACX3`) to `velocity.depthaverage_x`/`y` (`ACX2`)
+    # (`roadmaps/chmy.md`, Phase 3, decision 1). That move is only a *relocation* if the
+    # two kernels agree exactly on a grid where both are defined — which is what this
+    # pins, bit-for-bit rather than approximately, since identical stencils on identical
+    # data have no reason to differ in the last ulp.
+    @testset "depthaverage_velocitygradients! ≡ velocitygradients! on nz == 1" begin
+        grid = StaggeredGrid(Float64, 8.0, 8.0, 1.0, 1.0)
+        rt   = Runtime(grid)
+        mech = MechanicState(grid)
+
+        # Bilinear, with a genuine cross term: a field linear in x alone would make
+        # ∂/∂y vanish and let a transposed or mis-staggered index pass unnoticed.
+        fx(x, y) = 0.03x + 0.017y + 0.002x * y
+        fy(x, y) = -0.011x + 0.023y - 0.004x * y
+        fill_analytic!(mech.velocity.x, rt.grid, fx)
+        fill_analytic!(mech.velocity.y, rt.grid, fy)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, fx)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, fy)
+        fill_analytic!(mech.topography.thickness, rt.grid2d, (x, y) -> 1000.0)
+
+        velocitygradients!(mech.velocity, mech.topography.thickness, rt)
+        depthaverage_velocitygradients!(mech.velocity, rt)
+
+        v = mech.velocity
+        @test interior(v.depthaverage_x_dx) == interior(v.x_dx)
+        @test interior(v.depthaverage_x_dy) == interior(v.x_dy)
+        @test interior(v.depthaverage_y_dx) == interior(v.y_dx)
+        @test interior(v.depthaverage_y_dy) == interior(v.y_dy)
+
+        # ...and that they are the right values, not merely equal to each other.
+        @test all(≈(0.03 + 0.002 * 0.0, atol = 0.002 * 4), interior(v.depthaverage_x_dx))
+        @test location(v.depthaverage_x_dx) === (Center(), Center(), Center())  # aa
+        @test location(v.depthaverage_x_dy) === (Vertex(), Vertex(), Center())  # ab
+        @test size(interior(v.depthaverage_x_dx)) == (grid.nx, grid.ny, 1)
+        @test size(interior(v.depthaverage_x_dy)) == (grid.nx + 1, grid.ny + 1, 1)
     end
 end

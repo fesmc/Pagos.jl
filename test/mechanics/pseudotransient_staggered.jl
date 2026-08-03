@@ -66,10 +66,36 @@ end
         @test PseudoTransientSolver(grid;
             tuning = AutotunedDynamicRelaxation()).tuning isa AutotunedDynamicRelaxation
 
-        # Requires a depth-averaged grid: DIVA's vertical shear integral is future work.
+        # The solver itself imposes no `nz` requirement: every work array is built on
+        # `grid.grid2d` and the unknown it iterates is depth-integrated for both balances,
+        # so a column grid is perfectly constructible. Which *momentum balance* tolerates a
+        # given grid is checked at `pseudo_transient!` instead (see the guard test below).
         layering  = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 4))
         col_grid  = StaggeredGrid(Float64, 8.0, 8.0, 1.0, 1.0, layering)
-        @test_throws ArgumentError PseudoTransientSolver(col_grid)
+        col_solver = PseudoTransientSolver(col_grid)
+        @test size(interior(col_solver.velocity_x_old)) == (col_grid.nx + 1, col_grid.ny, 1)
+        @test size(interior(col_solver.dtau_x)) == (col_grid.nx + 1, col_grid.ny, 1)
+    end
+
+    # Per-balance grid guards (decision 4): SSA is depth-independent and runs anywhere;
+    # DIVA is *defined* by its vertical structure and its F₂ integral is 25% low on a
+    # single layer, so `nz == 1` is an error rather than a silently-degraded answer.
+    @testset "momentum balance grid guards" begin
+        flat = StaggeredGrid(Float64, 8.0, 8.0, 1.0, 1.0)
+        layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 4))
+        col  = StaggeredGrid(Float64, 8.0, 8.0, 1.0, 1.0, layering)
+
+        mech_flat, rt_flat = MechanicState(flat), Runtime(flat)
+        solver = PseudoTransientSolver(flat; maxiter = 1)
+        @test_throws ArgumentError pseudo_transient!(mech_flat, cst, solver, rt_flat,
+                                                     DIVAMomentumBalance())
+        # SSA on the same flat grid is fine, and is what the default resolves to.
+        @test pseudo_transient!(mech_flat, cst, solver, rt_flat,
+                                SSAMomentumBalance()) isa NamedTuple
+
+        # DIVA is accepted on a column grid (this only checks the guard, not the physics —
+        # the DIVA path itself is Stage 2).
+        @test Runtime(col).grid !== Runtime(col).grid2d
     end
 
     # A linear viscosity gradient makes `lerp` exact, so `pseudo_dt!`'s local field must
@@ -116,13 +142,13 @@ end
         mech = MechanicState(grid)
         a, b, c, d = 2e-3, -1e-3, 5e-4, 3e-3
 
-        fill_analytic!(mech.velocity.x, rt.grid, (x, y) -> a * x + b * y)
-        fill_analytic!(mech.velocity.y, rt.grid, (x, y) -> c * x + d * y)
-        velocitygradients!(mech.velocity, mech.topography.thickness, rt)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> a * x + b * y)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> c * x + d * y)
+        depthaverage_velocitygradients!(mech.velocity, rt)
         effective_strainrate_ssa!(mech.strainrate, mech.velocity, rt)
 
         expected = sqrt(a^2 + d^2 + a * d + ((b + c) / 2)^2)
-        @test all(≈(expected), interior(mech.strainrate.effective))
+        @test all(≈(expected), interior(mech.strainrate.effective_depthaveraged))
     end
 
     # Direct check of the Glen-law + log-space relaxation formula (Sandip et al. 2024,
@@ -136,10 +162,10 @@ end
         A0, n, ε̇0, μ_old0 = 1e-16, 3.0, 1e-12, 3e14
         a, b, c, d = 2e-3, -1e-3, 5e-4, 3e-3   # same linear velocity as the test above
 
-        fill_analytic!(mech.velocity.x, rt.grid, (x, y) -> a * x + b * y)
-        fill_analytic!(mech.velocity.y, rt.grid, (x, y) -> c * x + d * y)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> a * x + b * y)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> c * x + d * y)
         fill_analytic!(mech.material.rate_factor_depthaveraged, rt.grid2d, (x, y) -> A0)
-        velocitygradients!(mech.velocity, mech.topography.thickness, rt)
+        depthaverage_velocitygradients!(mech.velocity, rt)
 
         eff0  = sqrt(a^2 + d^2 + a * d + ((b + c) / 2)^2)
         μ_raw = inv(2 * A0^(1 / n)) * sqrt(eff0^2 + ε̇0^2)^((1 - n) / n)
@@ -188,20 +214,20 @@ end
         # between centres i-1, i; i=1 reaches centre 0). See `roadmaps/chmy.md`, §3.
         fill_analytic!(mech.material.viscosity_depthaveraged, rt.grid2d, (x, y) -> η0)
         fill_analytic!(mech.topography.thickness, rt.grid2d, (x, y) -> H0)
-        fill_analytic!(mech.velocity.x, rt.grid, (x, y) -> a * x + b * y)
-        fill_analytic!(mech.velocity.y, rt.grid, (x, y) -> c * x + d * y)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> a * x + b * y)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> c * x + d * y)
 
-        velocitygradients!(mech.velocity, mech.topography.thickness, rt)
-        strainrate!(mech.strainrate, mech.velocity, mech.material, mech.topography,
+        depthaverage_velocitygradients!(mech.velocity, rt)
+        membranestress!(mech.stress, mech.velocity, mech.material, mech.topography,
                    DIVAMomentumBalance(), rt)
 
-        @test all(interior(mech.strainrate.xx) .≈ 2η0 * H0 * (2a + d))
-        @test all(interior(mech.strainrate.yy) .≈ 2η0 * H0 * (a + 2d))
-        @test all(interior(mech.strainrate.xy) .≈ η0 * H0 * (b + c))
+        @test all(interior(mech.stress.membrane_xx) .≈ 2η0 * H0 * (2a + d))
+        @test all(interior(mech.stress.membrane_yy) .≈ 2η0 * H0 * (a + 2d))
+        @test all(interior(mech.stress.membrane_xy) .≈ η0 * H0 * (b + c))
 
         # Locations match the layout table: N_xx/N_yy at `aa`, N_xy at `ab`.
-        @test location(mech.strainrate.xx) === (Center(), Center(), Center())
-        @test location(mech.strainrate.xy) === (Vertex(), Vertex(), Center())
+        @test location(mech.stress.membrane_xx) === (Center(), Center(), Center())
+        @test location(mech.stress.membrane_xy) === (Vertex(), Vertex(), Center())
     end
 
     # A genuine viscosity contrast: hlerp must give the harmonic, not the arithmetic, mean.
@@ -214,13 +240,13 @@ end
         η_lo, η_hi, H0, b = 1e4, 1e6, 500.0, 1e-2
 
         fill_analytic!(mech.topography.thickness, rt.grid2d, (x, y) -> H0)
-        fill_analytic!(mech.velocity.x, rt.grid, (x, y) -> b * y)   # ε̇xy = b/2 uniform
-        fill_analytic!(mech.velocity.y, rt.grid, (x, y) -> 0.0)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> b * y)   # ε̇xy = b/2 uniform
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 0.0)
         fill_analytic!(mech.material.viscosity_depthaveraged, rt.grid2d,
                        (x, y) -> x < 0 ? η_lo : η_hi)
 
-        velocitygradients!(mech.velocity, mech.topography.thickness, rt)
-        strainrate!(mech.strainrate, mech.velocity, mech.material, mech.topography,
+        depthaverage_velocitygradients!(mech.velocity, rt)
+        membranestress!(mech.stress, mech.velocity, mech.material, mech.topography,
                    DIVAMomentumBalance(), rt)
 
         # Find an ab vertex whose two x-centres genuinely straddle the step.
@@ -231,9 +257,9 @@ end
 
         η_harm = 2 / (1 / η_lo + 1 / η_hi)
         expected_xy = η_harm * H0 * b
-        @test interior(mech.strainrate.xy)[i_ab, 4, 1] ≈ expected_xy
+        @test interior(mech.stress.membrane_xy)[i_ab, 4, 1] ≈ expected_xy
         # The arithmetic mean would have given a different (larger) answer.
-        @test !(interior(mech.strainrate.xy)[i_ab, 4, 1] ≈ (η_lo + η_hi) / 2 * H0 * b)
+        @test !(interior(mech.stress.membrane_xy)[i_ab, 4, 1] ≈ (η_lo + η_hi) / 2 * H0 * b)
     end
 
     # Containment: an unmasked ice-free (η = 0) cell produces NaN via hlerp; masking with
@@ -245,15 +271,15 @@ end
         topo = TopographicState(grid)
 
         setdata!(mech.topography.thickness, 500.0)
-        fill_analytic!(mech.velocity.x, rt.grid, (x, y) -> 0.01y)
-        fill_analytic!(mech.velocity.y, rt.grid, (x, y) -> 0.0)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> 0.01y)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 0.0)
         fill_analytic!(mech.material.viscosity_depthaveraged, rt.grid2d,
                        (x, y) -> x < 0 ? 0.0 : 1e5)
-        velocitygradients!(mech.velocity, mech.topography.thickness, rt)
+        depthaverage_velocitygradients!(mech.velocity, rt)
 
-        strainrate!(mech.strainrate, mech.velocity, mech.material, mech.topography,
+        membranestress!(mech.stress, mech.velocity, mech.material, mech.topography,
                    DIVAMomentumBalance(), rt)
-        @test any(isnan, interior(mech.strainrate.xy))
+        @test any(isnan, interior(mech.stress.membrane_xy))
 
         setdata!(topo.mask.is_ice, true)
         for i in axes(interior(topo.mask.is_ice), 1)
@@ -262,9 +288,9 @@ end
         end
         mask = IceMask(topo.mask.is_ice)
 
-        strainrate!(mech.strainrate, mech.velocity, mech.material, mech.topography,
+        membranestress!(mech.stress, mech.velocity, mech.material, mech.topography,
                    DIVAMomentumBalance(), rt, mask)
-        @test !any(isnan, interior(mech.strainrate.xy))
+        @test !any(isnan, interior(mech.stress.membrane_xy))
     end
 
     # Uniform-slab residual with no membrane stress: mirrors the collocated
@@ -387,18 +413,18 @@ end
         res = pseudo_transient!(mech, cst, solver, rt)
 
         @test res.converged
-        @test all(≈(an.ub, rtol = 1e-5), interior(mech.velocity.x))
-        @test all(≈(0.0,   atol = 1e-8 * abs(an.ub)), interior(mech.velocity.y))
+        @test all(≈(an.ub, rtol = 1e-5), interior(mech.velocity.depthaverage_x))
+        @test all(≈(0.0,   atol = 1e-8 * abs(an.ub)), interior(mech.velocity.depthaverage_y))
         # residual is the raw momentum-balance rate, not the velocity increment `error` is
         # based on — different units, but both must be tiny at a converged solution.
         @test res.residual >= 0
         @test res.residual < 1e-6
 
         # SSA and DIVA share the same equations in this SSA-limit (no resolved shear).
-        setdata!(mech.velocity.x, 0.0); setdata!(mech.velocity.y, 0.0)
+        setdata!(mech.velocity.depthaverage_x, 0.0); setdata!(mech.velocity.depthaverage_y, 0.0)
         res_ssa = pseudo_transient!(mech, cst, solver, rt, SSAMomentumBalance())
         @test res_ssa.converged
-        @test all(≈(an.ub, rtol = 1e-5), interior(mech.velocity.x))
+        @test all(≈(an.ub, rtol = 1e-5), interior(mech.velocity.depthaverage_x))
     end
 
     @testset "ncheck = 5" begin
@@ -410,8 +436,8 @@ end
         res5 = pseudo_transient!(mech, cst, solver5, rt)
         @test res5.converged
         @test res5.iterations % 5 == 0
-        @test all(≈(an.ub, rtol = 1e-5), interior(mech.velocity.x))
-        @test all(≈(0.0,   atol = 1e-8 * abs(an.ub)), interior(mech.velocity.y))
+        @test all(≈(an.ub, rtol = 1e-5), interior(mech.velocity.depthaverage_x))
+        @test all(≈(0.0,   atol = 1e-8 * abs(an.ub)), interior(mech.velocity.depthaverage_y))
     end
 
     @testset "Float32 stays Float32" begin
@@ -423,8 +449,8 @@ end
 
         res = pseudo_transient!(mech, cst32, solver, rt)
         @test res.converged
-        @test eltype(mech.velocity.x) === Float32
-        @test all(≈(Float32(an.ub), rtol = 1f-3), interior(mech.velocity.x))
+        @test eltype(mech.velocity.depthaverage_x) === Float32
+        @test all(≈(Float32(an.ub), rtol = 1f-3), interior(mech.velocity.depthaverage_x))
     end
 
     # What a *fixed* gamma buys, and what it does not — the honest negative result that
@@ -458,7 +484,7 @@ end
             dx = Lx / nx
             grid, rt, mech = setup_slab(; nx, dx)
             fill_slab!(mech, rt, scale_case)
-            fill_analytic!(mech.velocity.x, rt.grid,
+            fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d,
                            (x, y) -> an.ub + 0.5 * an.ub * sinpi(3x / Lx))
             solver = PseudoTransientSolver(grid; maxiter = 20_000, abstol = 1e-8,
                                            tuning = FixedTuning(; gamma))
@@ -473,7 +499,7 @@ end
         for (r, m) in ((coarse_undamped, m1), (coarse_damped, m2),
                        (fine_undamped, m3), (fine_damped, m4))
             @test r.converged
-            @test all(≈(an.ub, rtol = 1e-5), interior(m.velocity.x))
+            @test all(≈(an.ub, rtol = 1e-5), interior(m.velocity.depthaverage_x))
         end
 
         # The inversion: the same gamma that is far worse than undamped on the coarse grid
@@ -540,7 +566,7 @@ end
         # *converged* strain rate — recomputed independently here, not read back from
         # whatever the solver last wrote mid-iteration.
         effective_strainrate_ssa!(mech_glen.strainrate, mech_glen.velocity, rt_glen)
-        eff = interior(mech_glen.strainrate.effective)
+        eff = interior(mech_glen.strainrate.effective_depthaveraged)
         μ_closed = @. inv(2 * A0^(1 / n)) * sqrt(eff^2 + ε̇0^2)^((1 - n) / n)
         @test interior(mech_glen.material.viscosity_depthaveraged) ≈ μ_closed rtol=1e-6
 
@@ -553,8 +579,8 @@ end
         res_fixed = pseudo_transient!(mech_fixed, cst, solver_fixed, rt_fixed)
         @test res_fixed.converged
 
-        reldiff = maximum(abs.(interior(mech_glen.velocity.x) .- interior(mech_fixed.velocity.x))) /
-                  maximum(abs.(interior(mech_fixed.velocity.x)))
+        reldiff = maximum(abs.(interior(mech_glen.velocity.depthaverage_x) .- interior(mech_fixed.velocity.depthaverage_x))) /
+                  maximum(abs.(interior(mech_fixed.velocity.depthaverage_x)))
         @test reldiff > 0.01
 
         # theta_mu only changes the transient path, not the fixed point (same argument as
@@ -567,7 +593,7 @@ end
                                                viscosity_continuation = vc_relaxed)
         res_relaxed = pseudo_transient!(mech_relaxed, cst, solver_relaxed, rt_relaxed)
         @test res_relaxed.converged
-        @test all(isapprox.(interior(mech_relaxed.velocity.x), interior(mech_glen.velocity.x);
+        @test all(isapprox.(interior(mech_relaxed.velocity.depthaverage_x), interior(mech_glen.velocity.depthaverage_x);
                             rtol = 1e-4))
     end
 
@@ -630,7 +656,7 @@ end
         res_v = pseudo_transient!(mech_v, cst, solver_v, rt_v)
 
         @test !res_v.converged
-        @test maximum(abs, interior(mech_v.velocity.x)) > 100 * abs(an.ub)   # blown up
+        @test maximum(abs, interior(mech_v.velocity.depthaverage_x)) > 100 * abs(an.ub)   # blown up
 
         grid_g, rt_g, mech_g = setup_slab()
         fill_slab!(mech_g, rt_g, stiff_case)
@@ -640,7 +666,7 @@ end
         res_g = pseudo_transient!(mech_g, cst, solver_g, rt_g)
 
         @test res_g.converged
-        @test all(≈(an.ub, rtol = 1e-5), interior(mech_g.velocity.x))
+        @test all(≈(an.ub, rtol = 1e-5), interior(mech_g.velocity.depthaverage_x))
     end
 
     @testset "ScaledResidual vs VelocityIncrement" begin
@@ -659,7 +685,7 @@ end
         # accuracy it implies is `abstol · τ_d / β = abstol · ub` — hence rtol ≈ abstol,
         # not the m/s reading a `VelocityIncrement` tolerance would have.
         @test res.converged
-        @test all(≈(an.ub, rtol = 1e-7), interior(mech.velocity.x))
+        @test all(≈(an.ub, rtol = 1e-7), interior(mech.velocity.depthaverage_x))
         @test res.error ≈ res.residual / (cst.gravity * const_case.α) rtol=1e-12
 
         # The failure mode itself, in miniature: `err = θ·Δτ·r` vanishes as Δτ → 0 whether
@@ -674,7 +700,7 @@ end
         res_i = pseudo_transient!(mech_i, cst, solver_i, rt_i)
 
         @test res_i.converged                                   # ... and yet:
-        @test maximum(abs, interior(mech_i.velocity.x)) < 1e-6 * abs(an.ub)
+        @test maximum(abs, interior(mech_i.velocity.depthaverage_x)) < 1e-6 * abs(an.ub)
 
         # Same throttled solver, residual criterion: no false positive.
         grid_r, rt_r, mech_r = setup_slab()
@@ -743,7 +769,7 @@ end
             grid = StaggeredGrid(Float64, Lx, 3 * dx, dx, dx)
             rt, mech = Runtime(grid), MechanicState(grid)
             fill_slab!(mech, rt, stiff)
-            fill_analytic!(mech.velocity.x, rt.grid,
+            fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d,
                            (x, y) -> an.ub + 0.5 * an.ub * sinpi(3x / Lx))
             kw = tuned ? (; tuning = AutotunedDynamicRelaxation()) :
                          (; tuning = FixedTuning(theta_v = 1.0))
@@ -768,8 +794,8 @@ end
             # stops ~1e-3 from the answer while the autotuned one, at the same `abstol`, is
             # ~1e-5 from it. Both satisfy the criterion they were given; only the autotuned
             # one is also accurate, which is a second, quieter benefit of a smaller `ρ`.
-            @test all(≈(an.ub, rtol = 2e-3), interior(mech_plain.velocity.x))
-            @test all(≈(an.ub, rtol = 2e-3), interior(mech_auto.velocity.x))
+            @test all(≈(an.ub, rtol = 2e-3), interior(mech_plain.velocity.depthaverage_x))
+            @test all(≈(an.ub, rtol = 2e-3), interior(mech_auto.velocity.depthaverage_x))
             @test res_auto.iterations < res_plain.iterations
 
             push!(ratios, res_plain.iterations / res_auto.iterations)
@@ -827,12 +853,12 @@ end
         @test res_auto.damping != 0.5                      # genuinely derived, not inherited
 
         # Same fixed point, to the tolerance the two solves were asked for.
-        @test interior(mech_auto.velocity.x) ≈ interior(mech_fixed.velocity.x) rtol=1e-4
+        @test interior(mech_auto.velocity.depthaverage_x) ≈ interior(mech_fixed.velocity.depthaverage_x) rtol=1e-4
 
         # And still self-consistent with Glen's law at the converged strain rate, i.e. the
         # nonlinear problem really was solved, not just the linear one at the initial η.
         effective_strainrate_ssa!(mech_auto.strainrate, mech_auto.velocity, rt_auto)
-        eff = interior(mech_auto.strainrate.effective)
+        eff = interior(mech_auto.strainrate.effective_depthaveraged)
         μ_closed = @. inv(2 * A0^(1 / n)) * sqrt(eff^2 + ε̇0^2)^((1 - n) / n)
         @test interior(mech_auto.material.viscosity_depthaveraged) ≈ μ_closed rtol=1e-6
     end
@@ -854,12 +880,12 @@ end
         @test res.iterations < 100                 # ... i.e. inside the warm-up
         @test res.damping == 1
         @test isnan(res.lambda_min)
-        @test all(≈(an.ub, rtol = 1e-5), interior(mech.velocity.x))
+        @test all(≈(an.ub, rtol = 1e-5), interior(mech.velocity.depthaverage_x))
 
         # FixedTuning (the default) reports the solver's own gamma and no estimate at all.
         solver_fixed = PseudoTransientSolver(grid; maxiter = 200, abstol = 1e-8,
             tuning = FixedTuning(gamma = 0.7))
-        setdata!(mech.velocity.x, 0.0); setdata!(mech.velocity.y, 0.0)
+        setdata!(mech.velocity.depthaverage_x, 0.0); setdata!(mech.velocity.depthaverage_y, 0.0)
         res_fixed = pseudo_transient!(mech, cst, solver_fixed, rt)
         @test res_fixed.damping == 0.7
         @test isnan(res_fixed.lambda_min)

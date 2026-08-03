@@ -41,6 +41,77 @@ A [`VectorField`](@ref) built from a `Center` grid already places its `.x`/`.y`
 components at `acx`/`acy` for you — this is the natural home for a velocity or a
 flux.
 
+## The third axis: layer midpoints vs layer interfaces
+
+The vertical axis stages exactly the same way, in the terrain-following
+``\sigma`` coordinate (``\sigma = 0`` at the bed, ``1`` at the surface):
+
+- **layer midpoints** ``\zeta_{aa}`` are z-`Center` — where a layer *quantity* lives
+  (viscosity, temperature, the horizontal velocity of a layer);
+- **layer interfaces** ``\zeta_{ac}`` are z-`Vertex` — where anything *differentiated
+  with respect to* ``z`` lives (the vertical shear ``\dot\varepsilon_{xz}``,
+  ``\dot\varepsilon_{yz}``, and the vertical velocity ``w``).
+
+A z-`Vertex` field therefore has `nz + 1` layers, not `nz`. In Pagos' node names the
+suffix `_ac` marks the interface variants: `aa_ac`, `acx_ac`, `acy_ac`.
+
+As in the horizontal, the choice is forced by the operators rather than free: `∂z` maps
+`Center → Vertex`, so `∂u/∂z` with `u` at `acx` (z-`Center`) lands on `acx_ac`, which is
+exactly where ``\dot\varepsilon_{xz} = (\partial u/\partial z + \partial w/\partial x)/2``
+needs it — and `∂w/∂x` with `w` at `aa_ac` lands on the same `acx_ac`, so the two terms
+add with no interpolation. The whole tensor closes this way, which is the check that the
+layout is right.
+
+!!! warning "On a non-uniform ``\sigma`` axis, use [`∂z_σ`](@ref), not Chmy's `∂z`"
+    Chmy scales the vertical difference by the spacing at the *field's* location rather
+    than the result's. On a `UniformAxis` the two coincide, so nothing in the horizontal
+    is affected; on the stretched ``\sigma`` axis they differ, and `∂z` is wrong by tens
+    of percent mid-column.
+
+## [The `2`/`3` suffix: which grid a field lives on](@id node_type_parameters)
+
+Pagos' state structs (`MechanicState`, `StressState`, ...) carry **one type parameter per
+distinct node class**, so that a mis-wired constructor is a `MethodError` at construction
+rather than a half-cell shift at runtime. Those parameter names are what you see in the
+struct definitions, and they combine the location above with *which of the two grids* the
+field is built on:
+
+- a [`StaggeredGrid`](@ref) carries `grid` (the full column, `nz` layers) **and**
+  `grid2d` (the same horizontal axes with a size-1 vertical axis);
+- the trailing **`3`** means the column grid, the trailing **`2`** means `grid2d`, i.e.
+  a depth-integrated quantity;
+- a `Z` before the digit marks a z-`Vertex` (interface) field.
+
+Concretely, for a grid with `nx = ny = 8`, `nz = 6` — every shape below is the actual
+`size(interior(f))`:
+
+| Parameter | Location `(LX, LY, LZ)` | Grid     | Shape       | Example field                 |
+|:--------- |:----------------------- |:-------- |:----------- |:----------------------------- |
+| `AA2`     | `(C, C, C)`             | `grid2d` | `(8, 8, 1)` | `topography.thickness`        |
+| `ACX2`    | `(V, C, C)`             | `grid2d` | `(9, 8, 1)` | `velocity.depthaverage_x` (ū) |
+| `ACY2`    | `(C, V, C)`             | `grid2d` | `(8, 9, 1)` | `velocity.depthaverage_y` (v̄) |
+| `AB2`     | `(V, V, C)`             | `grid2d` | `(9, 9, 1)` | `velocity.depthaverage_x_dy`  |
+| `AA3`     | `(C, C, C)`             | `grid`   | `(8, 8, 6)` | `material.viscosity` µ(z)     |
+| `ACX3`    | `(V, C, C)`             | `grid`   | `(9, 8, 6)` | `velocity.x` — u(z)           |
+| `ACY3`    | `(C, V, C)`             | `grid`   | `(8, 9, 6)` | `velocity.y` — v(z)           |
+| `AB3`     | `(V, V, C)`             | `grid`   | `(9, 9, 6)` | `strainrate.xy`               |
+| `AAZ3`    | `(C, C, V)`             | `grid`   | `(8, 8, 7)` | `velocity.z` — w              |
+| `ACXZ3`   | `(V, C, V)`             | `grid`   | `(9, 8, 7)` | `strainrate.xz`               |
+| `ACYZ3`   | `(C, V, V)`             | `grid`   | `(8, 9, 7)` | `strainrate.yz`               |
+
+Reading a parameter name is therefore mechanical: `ACXZ3` = x-`Vertex`, y-`Center`,
+z-`Vertex`, on the column grid — an x-face, layer-interface field.
+
+Two consequences worth internalising, because both have caused real bugs:
+
+1. **`AA2` and `AA3` are the same shape when `nz == 1`, and only then.** A depth-integrated
+   grid has `grid2d === grid`, so the two collapse and code can read a column field as
+   though it were 2D without complaint. That is why a solver written for `nz == 1` can
+   silently depend on the collapse — and why it breaks the moment a real column appears.
+2. **A z-`Vertex` field on a depth-integrated grid has *2* layers, not 1** — the bed and
+   the surface. So `strainrate.xz` is *not* shaped like `strainrate.xx` even when `nz == 1`,
+   and there is deliberately no `*Z2` parameter.
+
 ````@example staggered_grids
 using Pagos
 using KernelAbstractions: @kernel, @index, CPU
@@ -140,7 +211,12 @@ for details.
 ## Summary
 
 - `aa = (Center, Center)`, `acx = (Vertex, Center)`, `acy = (Center, Vertex)`,
-  `ab = (Vertex, Vertex)`.
+  `ab = (Vertex, Vertex)`; vertically, layer midpoints are z-`Center` and layer
+  interfaces z-`Vertex` (the `_ac` suffix), the latter with `nz + 1` layers.
+- **Reading a state-struct type parameter** (`AA2`, `ACXZ3`, ...): the letters give the
+  location, a `Z` marks z-`Vertex`, and the digit says which grid — `2` for the
+  depth-integrated `grid2d`, `3` for the full column. See
+  [the table above](@ref node_type_parameters).
 - **Stagger one field**: write a one-line kernel calling [`lerp`](@ref) and dispatch
   it with [`Launcher`](@ref).
 - **Differentiate**: `∂x`/`∂y` evaluated into a [`VectorField`](@ref) land
