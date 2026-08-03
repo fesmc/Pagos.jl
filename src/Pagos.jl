@@ -143,8 +143,9 @@ export AbstractBasalBeta, PrescribedBasalBeta
 export PseudoPlasticPowerBasalBeta, CoulombBasalBeta
 export basal_shear_stress, basal_shear_stress!
 
-include("mechanics/velocities3D.jl")
+include("mechanics/velocities.jl")
 export aggregate_viscosity_integral!, aggregated_viscosity_integral!
+export viscosity_integrals!
 export velocities3D!, surface_velocity!, depthaveraged_velocity!
 export basal_velocity_from_surface_velocity!, depthavg_velocity!
 
@@ -155,7 +156,7 @@ export AbstractFrictionUpdate, ActiveFrictionUpdate, NoFrictionUpdate
 export AbstractPseudoTimeStep, ViscosityPseudoTimeStep, GershgorinPseudoTimeStep
 export AbstractPTConvergence, VelocityIncrement, ScaledResidual
 export AbstractPTTuning, FixedTuning, AutotunedDynamicRelaxation
-export pseudo_transient!, pseudo_rate!, pseudo_dt, pseudo_dt!, pseudo_vel!, dotvel!
+export pseudo_transient!, pseudo_rate!, pseudo_dt!, pseudo_vel!, dotvel!
 export update_viscosity!, update_basalstress!
 
 include("mechanics/inertial.jl")

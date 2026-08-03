@@ -158,17 +158,18 @@ setdata!(mech.velocity.y, 0.0)
 #=
 ## Run the solve
 
-Three solver choices matter here, and all three are the *non*-default option — the defaults
-reproduce the original Sandip scheme, which does not survive contact with this geometry:
+Three solver choices matter here. The first is now the default *because* of this example;
+the other two still have to be asked for:
 
- 1. **[`GershgorinPseudoTimeStep`](@ref)** instead of [`ViscosityPseudoTimeStep`](@ref).
+ 1. **[`GershgorinPseudoTimeStep`](@ref)** rather than [`ViscosityPseudoTimeStep`](@ref).
     Sandip's `Δτ ∝ 1/η` bounds only the membrane part of the operator. It omits the basal
     drag `β/(ρH)`, which is the dominant eigenvalue under grounded Antarctic ice
     (`β_eff` reaches ~5·10¹³ Pa s m⁻¹ here) — with friction solved for rather than
     prescribed, that `Δτ` diverges within ~20 iterations. The Gershgorin bound is built
     from the coefficients the residual kernels actually use, drag included, and is
     mask-aware at the margin so an ice-free neighbour no longer throttles `Δτ` on the very
-    faces that carry the calving-front forcing.
+    faces that carry the calving-front forcing. Only `cfl` is set explicitly below (`0.99`
+    rather than the default `0.9`, since the autotuner wants a tight one).
  2. **[`ScaledResidual`](@ref)** instead of [`VelocityIncrement`](@ref). An ice shelf has no
     basal drag, so it relaxes diffusively and its per-iteration velocity increment is
     orders of magnitude below the grounded ice's *from the first iteration*. Any `abstol`
@@ -186,8 +187,9 @@ reproduce the original Sandip scheme, which does not survive contact with this g
     this viscosity field, and reading it off the operator beats guessing it.
 
 The fourth ingredient is the iceberg mask built above — without it this same solver runs out
-of iterations with the residual pinned by six detached patches. Note that `theta_v` and
-`gamma` are no longer passed at all: the autotuner owns both.
+of iterations with the residual pinned by six detached patches. Note that no `theta_v` or
+`gamma` appears anywhere: those live on [`FixedTuning`](@ref), the tuning this solve is not
+using.
 =#
 
 solver = PseudoTransientSolver(grid;

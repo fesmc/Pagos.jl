@@ -46,37 +46,30 @@ end
         @test size(interior(solver.dtau_x)) == size(interior(solver.velocity_x_old))
         @test size(interior(solver.dtau_y)) == size(interior(solver.velocity_y_old))
 
-        # Default gamma = 1 disables damping (plain, undamped PT iteration).
-        @test solver.gamma == 1
-        @test solver.tuning === FixedTuning()
+        # The iteration parameters live on the strategy that reads them, not on the
+        # solver: default tuning is undamped (gamma = 1), default Δτ is the Gershgorin
+        # bound, and `PseudoTransientSolver` carries neither gamma/theta_v nor muB/ndim.
+        @test solver.tuning == FixedTuning()
+        @test solver.tuning.gamma == 1
+        @test solver.pseudo_timestep isa GershgorinPseudoTimeStep
+        @test !hasproperty(solver, :gamma)
+        @test !hasproperty(solver, :theta_v)
+        @test !hasproperty(solver, :muB)
+        @test !hasproperty(solver, :ndim2)
 
         # AutotunedDynamicRelaxation's spectral estimates are normalized by the Gershgorin
         # row sum (λ_max ≤ 1 by construction), so pairing it with any other Δτ rule is a
         # correctness error, not a preference — rejected at construction.
         @test_throws ArgumentError PseudoTransientSolver(grid;
+            pseudo_timestep = ViscosityPseudoTimeStep(),
             tuning = AutotunedDynamicRelaxation())
         @test PseudoTransientSolver(grid;
-            pseudo_timestep = GershgorinPseudoTimeStep(),
             tuning = AutotunedDynamicRelaxation()).tuning isa AutotunedDynamicRelaxation
 
         # Requires a depth-averaged grid: DIVA's vertical shear integral is future work.
         layering  = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 4))
         col_grid  = StaggeredGrid(Float64, 8.0, 8.0, 1.0, 1.0, layering)
         @test_throws ArgumentError PseudoTransientSolver(col_grid)
-    end
-
-    @testset "pseudo_dt is representation-agnostic (Field vs Array)" begin
-        grid = StaggeredGrid(Float64, 8.0, 8.0, 1.0, 1.0)
-        mech = MechanicState(grid)
-        fill_analytic!(mech.material.viscosity_depthaveraged, grid.grid2d,
-                       (x, y) -> 1e5 + 3e3 * x)
-
-        dt_field = pseudo_dt(910.0, 1.0, 1.0, mech.material.viscosity_depthaveraged, 1e2, 4.1)
-        dt_array = pseudo_dt(910.0, 1.0, 1.0, interior(mech.material.viscosity_depthaveraged),
-                             1e2, 4.1)
-        @test dt_field ≈ dt_array
-        @test dt_field ≈ 910.0 * 1.0 * 1.0 / (4 * (1 + 1e2) * 4.1 * maximum(interior(
-            mech.material.viscosity_depthaveraged)))
     end
 
     # A linear viscosity gradient makes `lerp` exact, so `pseudo_dt!`'s local field must
@@ -103,14 +96,13 @@ end
         @test interior(solver.dtau_x) ≈ expected_x
         @test interior(solver.dtau_y) ≈ expected_y
 
-        # Uniform viscosity: the local field collapses to the same value everywhere, and
-        # to the collocated scalar `pseudo_dt` (no lerp needed, both cells agree).
+        # Uniform viscosity: no lerp needed (both cells agree), so the local field
+        # collapses to Sandip Eq. 7 evaluated at that one viscosity, everywhere.
         fill_analytic!(mech.material.viscosity_depthaveraged, rt.grid2d, (x, y) -> η0)
         pseudo_dt!(solver.dtau_x, solver.dtau_y, ρ, dx, dy,
                   mech.material.viscosity_depthaveraged, muB, ndim, dtau_scaling, rt)
-        dt_scalar = dtau_scaling * pseudo_dt(ρ, dx, dy, interior(mech.material.viscosity_depthaveraged), muB, ndim)
-        @test all(≈(dt_scalar), interior(solver.dtau_x))
-        @test all(≈(dt_scalar), interior(solver.dtau_y))
+        @test all(≈(scaling / η0), interior(solver.dtau_x))
+        @test all(≈(scaling / η0), interior(solver.dtau_y))
     end
 
     # Same linear-velocity setup as the "membrane stress ... exact under uniform η, H" test
@@ -435,88 +427,63 @@ end
         @test all(≈(Float32(an.ub), rtol = 1f-3), interior(mech.velocity.x))
     end
 
-    # Damping (Sandip et al. 2024, Eq. 12–14) gives a real, fixed-γ iteration-count
-    # reduction (verified here and, at several resolutions, in the next testset below) —
-    # but NOT by itself the sub-quadratic *scaling* the papers report; see that testset's
-    # note for why a fixed γ isn't sufficient for that (it needs Phase 2's resolution-
-    # dependent parameter selection). The uniform-slab solution itself has zero velocity
-    # gradient, so its membrane stress is identically zero and convergence there is
-    # friction-dominated regardless of gamma (see the "large β0" comment on `const_case`
-    # above) — not a useful case for exercising damping. This test instead starts from a
-    # spatially oscillating perturbation around that same analytic solution: relaxing the
-    # perturbation away requires the membrane-stress divergence to act repeatedly, which is
-    # exactly the pathway damping accelerates. Both solves converge to the *same* analytic
-    # solution regardless of gamma — damping only changes the transient path, never the
-    # fixed point — so this isolates the iteration-count effect. Parameters calibrated
-    # empirically: at (β0, nx) = (1e3, 20) this perturbation converges in 184 iterations
-    # undamped vs. 58 with gamma = 0.5 (a ~3x reduction); the assertion below only requires
-    # 2x, for headroom.
-    @testset "gamma < 1 reduces iterations to converge (perturbed initial condition)" begin
-        damp_case = (H0 = 1000.0, μ0 = 1e5, β0 = 1e3, α = 1e-3)
-        an = slab_analytical(; damp_case...)
-        nx, dx = 20, 5e3
-        lx = nx * dx
-
-        function perturbed_run(gamma)
-            grid, rt, mech = setup_slab(; nx, dx)
-            fill_slab!(mech, rt, damp_case)
-            fill_analytic!(mech.velocity.x, rt.grid,
-                           (x, y) -> an.ub + 0.5 * an.ub * sinpi(6x / lx))
-            solver = PseudoTransientSolver(grid; maxiter = 1000, abstol = 1e-8, gamma)
-            return pseudo_transient!(mech, cst, solver, rt), mech
-        end
-
-        res_undamped, mech_undamped = perturbed_run(1.0)
-        res_damped, mech_damped     = perturbed_run(0.5)
-
-        @test res_undamped.converged
-        @test res_damped.converged
-        @test res_damped.iterations < res_undamped.iterations ÷ 2
-
-        @test all(≈(an.ub, rtol = 1e-5), interior(mech_undamped.velocity.x))
-        @test all(≈(an.ub, rtol = 1e-5), interior(mech_damped.velocity.x))
-    end
-
-    # Verification, at several resolutions, of what a *fixed* gamma actually buys — and,
-    # honestly, what it does not. The papers' O(N²) → O(N^1.2)-ish scaling result comes from
-    # tuning the damping parameter *to the current mesh's spectral radius* (Duretz et al.
-    # 2026 Eq. 19: c = c_damp · 2√λ_min, which itself depends on resolution) — that
-    # resolution-dependent selection is Phase 2 (`roadmaps/PT-autotune.md`) and not
-    # implemented yet. With a single fixed `gamma` reused across resolutions, measurement
-    # here (fixed physical domain `Lx`, dx = Lx/nx refined, same relative perturbation
-    # wavelength at every nx) shows the undamped/damped iteration count *ratio* holding
-    # essentially constant (~2x at nx = 10, 20, 40 — 505/236, 1884/958, 6930/3595
-    # iterations) rather than growing with resolution: both schemes scale similarly with
-    # nx, gamma = 0.5 just scales with a smaller prefactor. That is still a genuine,
-    # resolution-robust win (not a fluke at one grid size) — just not the asymptotic
-    # exponent change, which needs Phase 2's resolution-adaptive parameter.
-    @testset "gamma < 1: resolution-robust constant-factor speedup (not yet O(N) scaling)" begin
+    # What a *fixed* gamma buys, and what it does not — the honest negative result that
+    # motivates Phase 2. Corrects an earlier version of this file, which measured a
+    # "resolution-robust ~2x speedup at gamma = 0.5" against `ViscosityPseudoTimeStep`,
+    # whose Δτ is ~101x too small (see the closed-form Gershgorin test below). Against a
+    # correct Δτ the textbook picture appears instead, and it is less flattering to a fixed
+    # gamma: the *optimal* gamma moves with resolution, so any single value is wrong almost
+    # everywhere. Measured on this case (iterations, undamped → best of a scan):
+    #
+    #   nx     10     20     40     80    160
+    #   γ=1.0  14     34    104    363   1323      (≈ O(nx²), the papers' starting point)
+    #   γ=0.2 194    185    171    176    179
+    #   best  γ=1.0  γ=1.0  γ=0.5  γ=0.3  γ=0.2    → 14, 34, 59, 108, 179 (≈ O(nx^0.75))
+    #
+    # so damping *costs* 14x at nx = 10 and *saves* 7x at nx = 160, at the same gamma. The
+    # assertion is that inversion, which no constant can avoid — only Phase 2's
+    # resolution-adaptive selection can, and the testset after next shows it doing so.
+    # Both solves converge to the same analytic solution regardless of gamma: damping
+    # changes the transient path, never the fixed point.
+    @testset "fixed gamma: the optimal value moves with resolution (so no constant works)" begin
         scale_case = (H0 = 1000.0, μ0 = 1e5, β0 = 1e2, α = 1e-3)
         an = slab_analytical(; scale_case...)
         Lx = 100e3
 
+        # The uniform-slab solution has zero velocity gradient, so its membrane stress
+        # vanishes and convergence is friction-dominated whatever gamma is — useless for
+        # exercising damping. Perturbing it forces the membrane divergence to act
+        # repeatedly, which is the pathway damping accelerates.
         function resolved_run(nx, gamma)
             dx = Lx / nx
             grid, rt, mech = setup_slab(; nx, dx)
             fill_slab!(mech, rt, scale_case)
             fill_analytic!(mech.velocity.x, rt.grid,
                            (x, y) -> an.ub + 0.5 * an.ub * sinpi(3x / Lx))
-            solver = PseudoTransientSolver(grid; maxiter = 20_000, abstol = 1e-8, gamma)
-            res = pseudo_transient!(mech, cst, solver, rt)
-            return res, mech
+            solver = PseudoTransientSolver(grid; maxiter = 20_000, abstol = 1e-8,
+                                           tuning = FixedTuning(; gamma))
+            return pseudo_transient!(mech, cst, solver, rt), mech
         end
 
-        for nx in (10, 20, 40)
-            res_undamped, mech_undamped = resolved_run(nx, 1.0)
-            res_damped, mech_damped     = resolved_run(nx, 0.5)
+        coarse_undamped, m1 = resolved_run(10, 1.0)
+        coarse_damped, m2   = resolved_run(10, 0.2)
+        fine_undamped, m3   = resolved_run(160, 1.0)
+        fine_damped, m4     = resolved_run(160, 0.2)
 
-            @test res_undamped.converged
-            @test res_damped.converged
-            @test res_damped.iterations < res_undamped.iterations / 1.5
-
-            @test all(≈(an.ub, rtol = 1e-5), interior(mech_undamped.velocity.x))
-            @test all(≈(an.ub, rtol = 1e-5), interior(mech_damped.velocity.x))
+        for (r, m) in ((coarse_undamped, m1), (coarse_damped, m2),
+                       (fine_undamped, m3), (fine_damped, m4))
+            @test r.converged
+            @test all(≈(an.ub, rtol = 1e-5), interior(m.velocity.x))
         end
+
+        # The inversion: the same gamma that is far worse than undamped on the coarse grid
+        # is far better on the fine one.
+        @test coarse_damped.iterations > 5 * coarse_undamped.iterations
+        @test fine_damped.iterations < fine_undamped.iterations / 5
+
+        # And the undamped baseline degrades steeply with resolution (14 → 1323 over a 16x
+        # refinement, ≈ O(nx²)) — the scaling Phase 2 exists to fix.
+        @test fine_undamped.iterations > 20 * coarse_undamped.iterations
     end
 
     # End-to-end verification of `GlenViscosityContinuation` (no closed-form nonlinear
@@ -564,7 +531,8 @@ end
         vc = GlenViscosityContinuation(; n_glen = n, theta_mu = 1.0, strainrate_reg = ε̇0)
         grid_glen, rt_glen, mech_glen = build_shear_problem()
         solver_glen = PseudoTransientSolver(grid_glen; maxiter = 5000, abstol = 1e-9,
-                                           gamma = 0.5, viscosity_continuation = vc)
+                                           tuning = FixedTuning(gamma = 0.5),
+                                           viscosity_continuation = vc)
         res_glen = pseudo_transient!(mech_glen, cst, solver_glen, rt_glen)
         @test res_glen.converged
 
@@ -581,7 +549,7 @@ end
         # these parameters, the assertion only requires 1%.
         grid_fixed, rt_fixed, mech_fixed = build_shear_problem()
         solver_fixed = PseudoTransientSolver(grid_fixed; maxiter = 5000, abstol = 1e-9,
-                                            gamma = 0.5)
+                                            tuning = FixedTuning(gamma = 0.5))
         res_fixed = pseudo_transient!(mech_fixed, cst, solver_fixed, rt_fixed)
         @test res_fixed.converged
 
@@ -595,7 +563,8 @@ end
         vc_relaxed = GlenViscosityContinuation(; n_glen = n, theta_mu = 0.3, strainrate_reg = ε̇0)
         grid_relaxed, rt_relaxed, mech_relaxed = build_shear_problem()
         solver_relaxed = PseudoTransientSolver(grid_relaxed; maxiter = 5000, abstol = 1e-9,
-                                               gamma = 0.5, viscosity_continuation = vc_relaxed)
+                                               tuning = FixedTuning(gamma = 0.5),
+                                               viscosity_continuation = vc_relaxed)
         res_relaxed = pseudo_transient!(mech_relaxed, cst, solver_relaxed, rt_relaxed)
         @test res_relaxed.converged
         @test all(isapprox.(interior(mech_relaxed.velocity.x), interior(mech_glen.velocity.x);
@@ -636,15 +605,14 @@ end
         pseudo_dt!(solver_nofric, mech, cst, rt)
         @test all(≈(2 * ρ * H0 / (32 * μ0 * H0 / dx^2)), interior(solver_nofric.dtau_x))
 
-        # And with no drag at all it reduces to Sandip's Eq. 7 at muB = 0, ndim2 = 4.1 —
+        # And with no drag at all it reduces to Sandip's Eq. 7 at muB = 0, ndim = 4.1 —
         # i.e. ρdx²/(16η) vs ρdx²/(16.4η), agreeing to within that constant. This is the
         # check that the *default* muB = 1e2 is ~101x too conservative, not that Eq. 7 is
         # wrong in the regime it was derived for.
-        sandip = pseudo_dt(ρ, dx, dx, mech.material.viscosity_depthaveraged, 0, 4.1)
-        gersh  = 2 * ρ * H0 / (32 * μ0 * H0 / dx^2)
-        @test gersh ≈ sandip * (16.4 / 16) rtol=1e-12
-        @test pseudo_dt(ρ, dx, dx, mech.material.viscosity_depthaveraged, 1e2, 4.1) <
-              gersh / 100
+        sandip(muB) = ρ * dx * dx / (4 * (1 + muB) * 4.1 * μ0)
+        gersh = 2 * ρ * H0 / (32 * μ0 * H0 / dx^2)
+        @test gersh ≈ sandip(0) * (16.4 / 16) rtol=1e-12
+        @test sandip(1e2) < gersh / 100
     end
 
     # The leg that made the AIS solve blow up rather than merely stall: Sandip's Δτ does
@@ -657,7 +625,8 @@ end
 
         grid_v, rt_v, mech_v = setup_slab()
         fill_slab!(mech_v, rt_v, stiff_case)
-        solver_v = PseudoTransientSolver(grid_v; maxiter = 200, abstol = 1e-8)
+        solver_v = PseudoTransientSolver(grid_v; maxiter = 200, abstol = 1e-8,
+            pseudo_timestep = ViscosityPseudoTimeStep())
         res_v = pseudo_transient!(mech_v, cst, solver_v, rt_v)
 
         @test !res_v.converged
@@ -666,7 +635,8 @@ end
         grid_g, rt_g, mech_g = setup_slab()
         fill_slab!(mech_g, rt_g, stiff_case)
         solver_g = PseudoTransientSolver(grid_g; maxiter = 200, abstol = 1e-8,
-            theta_v = 1.0, pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.9))
+            tuning = FixedTuning(theta_v = 1.0),
+            pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.9))
         res_g = pseudo_transient!(mech_g, cst, solver_g, rt_g)
 
         @test res_g.converged
@@ -724,21 +694,16 @@ end
     # when there is nothing to tune.
     # -------------------------------------------------------------------
 
-    # The one configuration where λ_min is known in closed form. On a *uniform* slab started
-    # from u = 0, the error is exactly the rigid-translation mode u = const: the discrete
-    # membrane operator annihilates it (all strain rates vanish, and the Neumann(0) halo
-    # keeps that true at the boundary), so it is an eigenvector of the mass-scaled operator
-    # Ã with eigenvalue β/(ρH). Preconditioning by the Gershgorin row sum
-    # Λ = (32ηH/dx² + β)/(ρH) (dx = dy, see the closed-form Δτ test above) gives
-    #
-    #     λ_min(Â) = β / (32ηH/dx² + β)
-    #
-    # and, because the iterate never leaves that one mode, the Rayleigh quotient must return
-    # it *exactly* — not asymptotically. Swept over three friction coefficients so the
-    # stiffness ratio λ_max/λ_min spans 1.01 to 129; `abstol = 0` pins the iteration count
-    # so the reported estimate is the last one taken while `Δu` is still above roundoff
-    # (once the solve is converged to machine precision, `Δu` is pure rounding and the
-    # quotient measures noise — which is what the `λ_min ≤ λ_max = 1` clamp exists for).
+    # The one configuration where λ_min is known in closed form. On a *uniform* slab from
+    # u = 0 the error is exactly the rigid-translation mode u = const, which the discrete
+    # membrane operator annihilates (Neumann(0) keeps that true at the boundary), so it is
+    # an eigenvector of Ã with eigenvalue β/(ρH). Against the Gershgorin row sum
+    # Λ = (32ηH/dx² + β)/(ρH) (dx = dy, see the closed-form Δτ test above) that is
+    # λ_min(Â) = β/(32ηH/dx² + β), and since the iterate never leaves that one mode the
+    # quotient must return it *exactly*, not asymptotically. Three friction coefficients
+    # span a stiffness ratio of 1.01 to 129. `abstol = 0` pins the iteration count so the
+    # estimate is read while Δu is still above roundoff — past convergence Δu is pure
+    # rounding, which is what the λ_min ≤ λ_max = 1 clamp exists for.
     @testset "AutotunedDynamicRelaxation: λ_min matches the closed form on a uniform slab" begin
         dx = 5e3
         for β0 in (1e4, 1e2, 1e0)
@@ -760,17 +725,14 @@ end
         end
     end
 
-    # The Phase 2 payoff, and the thing a *fixed* gamma provably cannot deliver (see the
-    # "resolution-robust constant-factor speedup" testset above, which measured a flat ~2x
-    # at every resolution). The case is deliberately stiff: β is small next to the membrane
-    # stiffness 32ηH/dx², so λ_min ∝ dx² and the condition number grows like nx² at a fixed
-    # physical domain — exactly the regime where the damping has to *follow* the mesh.
-    #
-    # Measured undamped/autotuned iteration ratios: 4.5x (nx = 20, 335/75), 7.5x (nx = 40,
-    # 935/125), 10.3x (nx = 80, 2275/220), with the derived λ_min falling as 1/nx²
-    # (1.06e-2, 3.15e-3, 6.87e-4) and γ halving with it (0.300, 0.170, 0.081). The
-    # assertion is on the *growth* of that ratio, which is the scaling claim; a
-    # resolution-independent speedup (what a fixed gamma gives) would keep it flat.
+    # The Phase 2 payoff, and what a *fixed* gamma provably cannot deliver (see the
+    # "resolution-robust constant-factor speedup" testset above: a flat ~2x at every
+    # resolution). Deliberately stiff — β small next to the membrane stiffness 32ηH/dx², so
+    # λ_min ∝ dx² and the condition number grows like nx² at a fixed physical domain, the
+    # regime where the damping has to *follow* the mesh. Measured undamped/autotuned
+    # ratios: 4.5x (335/75), 7.5x (935/125), 10.3x (2275/220) at nx = 20/40/80, with λ_min
+    # falling as 1/nx² (1.06e-2, 3.15e-3, 6.87e-4) and γ tracking it (0.300, 0.170, 0.081).
+    # The assertion is on the *growth* of that ratio: a fixed gamma keeps it flat.
     @testset "AutotunedDynamicRelaxation: speedup grows with resolution (not a constant factor)" begin
         stiff = (H0 = 1000.0, μ0 = 1e5, β0 = 1e0, α = 1e-3)
         an = slab_analytical(; stiff...)
@@ -783,7 +745,8 @@ end
             fill_slab!(mech, rt, stiff)
             fill_analytic!(mech.velocity.x, rt.grid,
                            (x, y) -> an.ub + 0.5 * an.ub * sinpi(3x / Lx))
-            kw = tuned ? (; tuning = AutotunedDynamicRelaxation()) : (; theta_v = 1.0)
+            kw = tuned ? (; tuning = AutotunedDynamicRelaxation()) :
+                         (; tuning = FixedTuning(theta_v = 1.0))
             solver = PseudoTransientSolver(grid; maxiter = 100_000, ncheck = 5,
                 abstol = 1e-6 * abs(an.ub),
                 pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.99), kw...)
@@ -822,12 +785,10 @@ end
     end
 
     # The nonlinear case, on the same shear problem the `GlenViscosityContinuation` testset
-    # above uses. Two things to establish: the derived damping beats the hand-set
-    # `gamma = 0.5` that testset had to pick by trial, and — the part that matters more — a
-    # viscosity that moves *during* the solve does not lead the autotuner astray, because
-    # every re-estimation also rebuilds the Gershgorin Δτ from the viscosity as it then
-    # stands (Duretz §7.3). Measured: 113 iterations autotuned vs 167 at gamma = 0.5, to the
-    # same self-consistent fixed point.
+    # above uses. The point that matters is not that the derived damping beats the hand-set
+    # gamma = 0.5 (113 iterations vs 167) but that a viscosity moving *during* the solve
+    # does not lead the autotuner astray, because every re-estimation also rebuilds the
+    # Gershgorin Δτ from the viscosity as it then stands (Duretz §7.3).
     @testset "AutotunedDynamicRelaxation: nonlinear (Glen) solve, same fixed point, fewer iterations" begin
         nx, dx = 40, 5e3
         Lx = nx * dx
@@ -856,7 +817,7 @@ end
             return pseudo_transient!(mc, cst, sv, r), mc, r
         end
 
-        res_fixed, mech_fixed, _ = glen_run((; gamma = 0.5, theta_v = 1.0))
+        res_fixed, mech_fixed, _ = glen_run((; tuning = FixedTuning(theta_v = 1.0, gamma = 0.5)))
         res_auto, mech_auto, rt_auto = glen_run((; tuning = AutotunedDynamicRelaxation()))
 
         @test res_fixed.converged
@@ -896,7 +857,8 @@ end
         @test all(≈(an.ub, rtol = 1e-5), interior(mech.velocity.x))
 
         # FixedTuning (the default) reports the solver's own gamma and no estimate at all.
-        solver_fixed = PseudoTransientSolver(grid; maxiter = 200, abstol = 1e-8, gamma = 0.7)
+        solver_fixed = PseudoTransientSolver(grid; maxiter = 200, abstol = 1e-8,
+            tuning = FixedTuning(gamma = 0.7))
         setdata!(mech.velocity.x, 0.0); setdata!(mech.velocity.y, 0.0)
         res_fixed = pseudo_transient!(mech, cst, solver_fixed, rt)
         @test res_fixed.damping == 0.7

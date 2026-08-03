@@ -228,31 +228,13 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Compute the basal-stress components `stress.base_x` and `stress.base_y` of `m` in place.
+Write the basal-stress components `base_x`, `base_y` from the friction law
+`` \\boldsymbol{\\tau}_b = \\beta\\,\\mathbf{v}_b ``. Depth-averaged and
+dynamics-independent, so no dispatch on the momentum balance is needed.
 
-The basal stress follows the friction law `` \\boldsymbol{\\tau}_b = \\beta\\,\\mathbf{v}_b ``,
-i.e. the effective basal friction coefficient `friction.beta_eff` times the basal velocity
-`velocity.base_x`, `velocity.base_y`. Like the driving stress it is a depth-averaged 2D
-field and dynamics-independent, so no dispatch on the momentum balance is needed.
-
-Staggering of `beta_eff` onto the velocity points is assumed to be handled externally, so
-the components are formed by a plain elementwise product.
-"""
-function basalstress!(m::Mechanics)
-    (; state) = m
-    (; stress, friction, velocity) = state
-    return basalstress!(
-        stress.base_x, stress.base_y,
-        friction.beta_eff, velocity.base_x, velocity.base_y,
-    )
-end
-
-"""
-$(TYPEDSIGNATURES)
-
-Array-level method of [`basalstress!`](@ref): writes the basal-stress components `base_x`,
-`base_y` as the elementwise product of the effective basal friction coefficient `β` and the
-basal velocity components `v_x`, `v_y`.
+Staggering of `β` onto the velocity points is assumed to be handled externally, so the
+components are a plain elementwise product. The staggered method below does the staggering
+itself.
 """
 function basalstress!(base_x, base_y, β, v_x, v_y)
     @. base_x = β * v_x
@@ -316,33 +298,11 @@ basalstress!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMask())
 """
 $(TYPEDSIGNATURES)
 
-Compute the driving-stress components `stress.driving_x` and `stress.driving_y` of `m`
-in place.
-
-The driving stress is `` \\tau_{d} = \\rho_{ice}\\,g\\,H\\,\\nabla s ``, where `` s `` is the
-ice surface elevation, `` H `` the thickness and `` \\rho_{ice}, g `` are taken from the
-physical `Constants`. It is **independent of the dynamics**: every momentum balance shares
-this expression, so the depth-averaged 2D `driving_*` fields are obtained the same way and
-no dispatch on the momentum balance is needed.
-"""
-function drivingstress!(m::Mechanics, c::Constants)
-    (; state, grid) = m
-    (; stress, topography) = state
-    (; dx, dy) = grid
-    return drivingstress!(
-        stress.driving_x, stress.driving_y,
-        topography.surface, topography.thickness,
-        c.density_ice, c.gravity, dx, dy,
-    )
-end
-
-"""
-$(TYPEDSIGNATURES)
-
-Array-level method of [`drivingstress!`](@ref): writes the driving-stress components
-`driving_x`, `driving_y` from the surface elevation `surface`, the thickness `thickness`,
-the ice density `ρ_ice`, the gravitational acceleration `g` and the grid spacings `dx`,
-`dy`. The surface gradient is taken with the central-difference stencils `∂x!`/`∂y!`.
+Write the driving-stress components `driving_x`, `driving_y` from the surface elevation
+`surface`, the thickness `thickness`, the ice density `ρ_ice` and gravity `g`:
+`` \\tau_{d} = \\rho_{ice}\\,g\\,H\\,\\nabla s ``, with the surface gradient taken by the
+central-difference stencils `∂x!`/`∂y!`. **Independent of the dynamics** — every momentum
+balance shares this expression — so no dispatch on the momentum balance is needed.
 """
 function drivingstress!(driving_x, driving_y, surface, thickness, ρ_ice, g, dx, dy)
     ∂x!(driving_x, surface, dx)
@@ -447,9 +407,9 @@ end
 """
 $(TYPEDSIGNATURES)
 
-State-level Chmy-native [`drivingstress!`](@ref): reads the geometry from
-`mech.topography` (the mechanics component's own surface/thickness copies, as the
-collocated `Mechanics` method does) and writes `mech.stress.driving_x`/`driving_y`.
+State-level [`drivingstress!`](@ref): reads the geometry from `mech.topography` (the
+mechanics component's own surface/thickness copies) and writes
+`mech.stress.driving_x`/`driving_y`.
 """
 drivingstress!(mech::MechanicState, c::Constants, rt::Runtime,
                mask::AbstractIceMask = NoMask()) =

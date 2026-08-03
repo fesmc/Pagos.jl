@@ -3,14 +3,6 @@ $(TYPEDSIGNATURES)
 
 Compute the strain rate tensor in place.
 """
-function strainrate!(m::Mechanics)
-    (; state, momentum) = m
-    (; strainrate, velocity, material, topography) = state
-    return strainrate!(
-        strainrate, velocity, material, topography, momentum,
-    )
-end
-
 function strainrate!(strainrate, velocity, material, topo, momentum::AbstractMomentumBalance)
     backend = get_backend(strainrate.xx)
     kernel! = _strainrate_kernel!(backend)
@@ -102,12 +94,6 @@ $(TYPEDSIGNATURES)
 
 Compute the **raw** (unscaled) strain-rate tensor
 """
-function raw_strainrate!(m::Mechanics)
-    (; state, momentum) = m
-    (; strainrate, velocity) = state
-    return raw_strainrate!(strainrate, velocity, momentum)
-end
-
 function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance)
     backend = get_backend(strainrate.xx)
     kernel! = _raw_strainrate_kernel!(backend)
@@ -176,13 +162,6 @@ The gradients are computed using the central difference scheme. The input veloci
 `v_x` and `v_y` are defined on a staggered grid with dimensions `nx` and `ny`.
 The grid spacing in x and y-direction is given by `dx` and `dy`.
 """
-function velocitygradients!(mechanics::Mechanics)
-    (; state, grid) = mechanics
-    (; velocity) = state
-    (; dx, dy) = grid
-    return velocitygradients!(velocity, dx, dy)
-end
-
 function velocitygradients!(velocity::VelocityState, dx, dy)
     (; x, y) = velocity
     return velocitygradients!(velocity.x_dx, velocity.x_dy, velocity.y_dx, velocity.y_dy, x, y, dx, dy)

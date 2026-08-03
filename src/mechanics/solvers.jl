@@ -130,31 +130,43 @@ $(TYPEDSIGNATURES)
 
 An abstract type to multiple-dispatch how [`PseudoTransientSolver`](@ref) chooses its
 pseudo-time step `Δτ`, following the same "dispatch, not `if`/`else`" convention as
-[`AbstractViscosityContinuation`](@ref). [`ViscosityPseudoTimeStep`](@ref) (the default) is
-Sandip et al. (2024) Eq. 7, `Δτ ∝ 1/η`; [`GershgorinPseudoTimeStep`](@ref) bounds the
-spectral radius of the *actual* SSA/DIVA residual operator instead.
+[`AbstractViscosityContinuation`](@ref). [`GershgorinPseudoTimeStep`](@ref) (the default)
+bounds the spectral radius of the SSA/DIVA residual operator; [`ViscosityPseudoTimeStep`](@ref)
+is Sandip et al. (2024) Eq. 7, `Δτ ∝ 1/η`.
 
-Only read by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref); the collocated
-solver always uses its own global scalar [`pseudo_dt`](@ref).
+Each subtype owns the constants its own formula needs, so no solver carries a parameter
+only one `Δτ` rule reads.
 """
 abstract type AbstractPseudoTimeStep end
 
 """
 $(TYPEDSIGNATURES)
 
-Sandip et al. (2024) Eq. 7: `Δτ = dtau_scaling · ρ dx dy / (4 (1 + muB) ndim2 · η_face)`,
+Sandip et al. (2024) Eq. 7: `Δτ = dtau_scaling · ρ dx dy / (4 (1 + muB) ndim · η_face)`,
 evaluated per grid point from the local depth-averaged viscosity ([`pseudo_dt!`](@ref)).
-The default, and the only behaviour prior to [`AbstractPseudoTimeStep`](@ref) existing.
+The only behaviour prior to [`AbstractPseudoTimeStep`](@ref) existing.
+
+# Fields:
+ - `muB`: bulk-to-shear viscosity ratio (default `1e2`, Sandip's value).
+ - `ndim`: numerical-dimensionality constant of the stencil (default `4.1`, the 2D value —
+   this solver is depth-integrated, so the 1D and 3D constants Sandip also lists have
+   nowhere to be used).
 
 !!! warning "Ignores basal drag and the ice mask"
     The formula bounds the membrane-stress (diffusive) part of the operator only. It knows
     nothing about the basal-drag term `β u`, which is the *dominant* diagonal contribution
     under grounded ice, and it interpolates the viscosity across the ice margin, so an
     ice-free cell's placeholder viscosity throttles `Δτ` on the margin faces. Both are why
-    a real-geometry solve needs [`GershgorinPseudoTimeStep`](@ref) — see its docstring and
-    `roadmaps/PT-autotune.md`.
+    a real-geometry solve needs [`GershgorinPseudoTimeStep`](@ref) — the default — and why
+    this is kept mainly as the published formula to measure against.
 """
-struct ViscosityPseudoTimeStep <: AbstractPseudoTimeStep end
+struct ViscosityPseudoTimeStep{T<:AbstractFloat} <: AbstractPseudoTimeStep
+    muB::T
+    ndim::T
+end
+
+ViscosityPseudoTimeStep(T::Type{<:AbstractFloat} = Float64; muB = 1e2, ndim = 4.1) =
+    ViscosityPseudoTimeStep{T}(T(muB), T(ndim))
 
 """
 $(TYPEDSIGNATURES)
@@ -218,7 +230,6 @@ An abstract type to multiple-dispatch what [`pseudo_transient!`](@ref) compares 
 max-norm velocity change per iteration; [`ScaledResidual`](@ref) is the momentum residual
 normalized by the driving-stress scale.
 
-Only read by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref).
 """
 abstract type AbstractPTConvergence end
 
@@ -273,113 +284,88 @@ $(TYPEDSIGNATURES)
 An abstract type to multiple-dispatch how [`PseudoTransientSolver`](@ref) obtains the two
 parameters of the pseudo-transient iteration — the pseudo-time step `Δτ` and the damping
 `γ` — following the same "dispatch, not `if`/`else`" convention as
-[`AbstractViscosityContinuation`](@ref). [`FixedTuning`](@ref) (the default) takes them from
-the hand-set solver fields `theta_v`/`gamma` and from `pseudo_timestep`;
-[`AutotunedDynamicRelaxation`](@ref) derives both from spectral estimates during the solve
-(Duretz et al. 2026).
+[`AbstractViscosityContinuation`](@ref). [`FixedTuning`](@ref) (the default) carries them
+as hand-set numbers; [`AutotunedDynamicRelaxation`](@ref) derives both from spectral
+estimates during the solve (Duretz et al. 2026).
 
-Only read by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref).
 """
 abstract type AbstractPTTuning end
 
 """
 $(TYPEDSIGNATURES)
 
-Hand-set iteration parameters: `Δτ` comes from `solver.pseudo_timestep` alone, the
-relaxation weight from `solver.theta_v` and the damping from `solver.gamma`, all held fixed
-for the whole solve. The default, and the only behaviour prior to
-[`AbstractPTTuning`](@ref) existing.
+Hand-set iteration parameters, held fixed for the whole solve: `Δτ` comes from
+`solver.pseudo_timestep` alone, scaled by `theta_v`, and the damping is `gamma`. The
+default, and the only behaviour prior to [`AbstractPTTuning`](@ref) existing.
+
+Also the baseline [`AutotunedDynamicRelaxation`](@ref) is measured against — `gamma = 1`
+is the undamped iteration the speedup numbers in `roadmaps/PT-autotune.md` are quoted
+relative to, which is why hand-setting survives at all.
+
+# Fields:
+ - `theta_v`: relaxation weight of the velocity update (default `0.6`).
+ - `gamma`: damping coefficient of the pseudo-transient rate (Sandip et al. 2024,
+   Eq. 12–14; Frankel 1950). The rate is accumulated as
+   `dv_new = (1 - gamma) * dv_old + r(u)`, so `gamma = 1` (the default) discards all
+   memory and recovers the plain, undamped, first-order iteration; `0 < gamma < 1` turns
+   it into a damped wave, which is what buys sub-quadratic iteration-count scaling.
+   Finding a good value is a manual scan — the thing
+   [`AutotunedDynamicRelaxation`](@ref) exists to replace.
 """
-struct FixedTuning <: AbstractPTTuning end
+struct FixedTuning{T<:AbstractFloat} <: AbstractPTTuning
+    theta_v::T
+    gamma::T
+end
+
+FixedTuning(T::Type{<:AbstractFloat} = Float64; theta_v = 0.6, gamma = 1) =
+    FixedTuning{T}(T(theta_v), T(gamma))
 
 """
 $(TYPEDSIGNATURES)
 
-Dynamic relaxation with automatically tuned parameters (Duretz et al. 2026;
-`roadmaps/PT-autotune.md` Phase 2). Both iteration parameters are derived from spectral
-estimates of the *preconditioned* momentum operator instead of being scanned by hand, and
-re-derived every `cadence` iterations so they follow a viscosity that evolves during the
-solve.
+Dynamic relaxation with automatically tuned `Δτ` and damping (Duretz et al. 2026;
+`roadmaps/PT-autotune.md` Phase 2, which carries the derivation and the measurements).
+Both are derived from spectral estimates of the *preconditioned* momentum operator rather
+than scanned by hand, and re-derived every `cadence` iterations so they follow a viscosity
+that evolves during the solve.
 
-## What is preconditioned, and why `λ_max` needs no estimate
+Writing the mass-scaled residual [`dotvel!`](@ref) forms as `r̃(u) = b̃ - Ã u` and `Λ` for
+the Gershgorin absolute row sum of `Ã` that [`GershgorinPseudoTimeStep`](@ref) already
+computes per face, the preconditioner is `M = diag(Λ)`. That makes `λ_max(M⁻¹Ã) ≤ 1` hold
+*exactly* (the preconditioned row sums are 1), so `λ_max` costs no reduction and only
+`λ_min` is measured — by a Rayleigh quotient over consecutive iterates the loop already
+holds, `λ_min ≈ |Δuᵀ Δr̃| / (Δuᵀ M Δu)` (Duretz Eq. 21). Hence the requirement, checked at
+construction, that `pseudo_timestep` be a [`GershgorinPseudoTimeStep`](@ref).
 
-Write the mass-scaled residual the solver already forms as `r̃(u) = b̃ - Ã u`
-([`dotvel!`](@ref)), and let `Λ` be the Gershgorin absolute row sum of `Ã`, which
-[`GershgorinPseudoTimeStep`](@ref) already computes per face. Preconditioning with
-`M = diag(Λ)` gives `Â = M⁻¹Ã` with
-
-```
-λ_max(Â) ≤ 1
-```
-
-*exactly*, by Gershgorin — the row sums of `Â` are 1 by construction. So the Jacobi
-preconditioner and the `λ_max` estimate are the same object, `λ_max` needs no reduction at
-all, and only `λ_min` is left to measure. This is why this tuning **requires**
-`pseudo_timestep = GershgorinPseudoTimeStep(...)` (checked at construction): with
-[`ViscosityPseudoTimeStep`](@ref) the normalization `λ_max ≤ 1` does not hold and every
-formula below is wrong by an unknown factor.
-
-## `λ_min` from a Rayleigh quotient (Duretz Eq. 21)
+Duretz Eq. 19/20 give `c = c_damp·2√λ_min` and `Δτ = c_CFL·2/√λ_max` separately, but the
+damping the loop applies is `γ = c·Δτ` and the damped iteration's exact stability condition
+is `Δτ²λ_max ≤ 2(2 - γ)` — a `Δτ` chosen as if `γ = 0` sits outside it. Solving the pair
+jointly at `λ_max = 1`, with `d = 2·c_damp·√λ_min`:
 
 ```
-λ_min ≈ |Δuᵀ Δr̃| / (Δuᵀ M Δu)
+Δτ = -c_CFL²·d + √(c_CFL⁴·d² + 4·c_CFL²),    γ = d·Δτ  (always < 2)
 ```
 
-with `Δu = u^k - u^{k-1}` and `Δr̃ = r̃(u^k) - r̃(u^{k-1})` taken from consecutive iterates
-the loop already holds — two `sum` reductions, the same cost class as the `ncheck`
-convergence check, paid once every `cadence` iterations. Δu is asymptotically dominated by
-the slowest-decaying mode, which is the `λ_min` eigenvector, so the quotient converges onto
-`λ_min` from above.
+`c_CFL` is `pseudo_timestep.cfl`, not a second knob; `cfl = 0.99` or tighter is intended
+here (Duretz use `≲ 0.999`).
 
-## The parameters
-
-Duretz Eq. 19/20 give `c = c_damp·2√λ_min` and `Δτ = c_CFL·2/√λ_max`; the damping the PT
-loop actually applies is `γ = c·Δτ` (Frankel 1950 — [`dotvel!`](@ref)'s accumulator and DR
-are the same scheme, see the note under `gamma` in [`PseudoTransientSolver`](@ref)). Those
-two are not independent: the exact stability condition of the damped iteration is
-`Δτ²λ_max ≤ 2(2 - γ)`, so a `Δτ` chosen as if `γ = 0` sits *outside* it. Solving the pair
-jointly, at `λ_max = 1` and writing `d = 2·c_damp·√λ_min`,
-
-```
-Δτ = -c_CFL²·d + √(c_CFL⁴·d² + 4·c_CFL²),    γ = d·Δτ
-```
-
-which satisfies `Δτ² = c_CFL²·2(2 - γ)` — the stability condition with the margin `c_CFL²`
-— and reduces to the familiar `Δτ = 2·c_CFL` in the undamped limit `d → 0`. `γ < 2` always
-follows, so `1 - γ` may legitimately be negative (over-damped, not unstable).
-
-`c_CFL` is `pseudo_timestep.cfl`, not a second knob: it is the same safety factor on the
-same Gershgorin bound, and `GershgorinPseudoTimeStep(cfl = 0.99)` or tighter is the
-intended setting here (Duretz use `c_CFL ≲ 0.999`).
-
-## Warm-up
-
-The first `cadence` iterations run *un*damped at `Δτ = 1/λ_max` (the damped-Jacobi step,
-`γ = 1`, `θ_v = 1`) rather than at the DR step, which would be unstable without the damping
-it is paired with. That choice is not arbitrary: the amplification factor `1 - λ̂` is
-monotone in `λ̂` and annihilates the `λ_max` mode outright, so the warm-up leaves `Δu`
-cleanly dominated by the `λ_min` mode the first Rayleigh quotient has to see.
+The first `cadence` iterations are a warm-up: undamped at `Δτ = 1/λ_max`, since the DR step
+is unstable without the damping it is paired with and there is no initial `λ_min` to derive
+that from. Its amplification `1 - λ̂` annihilates the `λ_max` mode, leaving `Δu` dominated by
+the `λ_min` mode the first quotient must see.
 
 # Fields:
- - `c_damp`: safety factor on `c = 2√λ_min`, Duretz recommend `[0.5, 1]` (default `0.8`).
-   A Rayleigh quotient is an *upper* bound on `λ_min`, so `c_damp = 1` errs toward
-   over-damping. Measured on the stiff uniform slab of
-   `test/mechanics/pseudotransient_staggered.jl` (`nx = 10…160`), `0.5` and `0.8` are
-   within ~10% of each other and both beat `1.0` and `0.3` at every resolution — the
-   paper's range is the right one, and the cost of being wrong inside it is small.
- - `cadence`: re-estimate every `cadence` iterations (default `20`). Each re-estimation
-   also refills `Δτ` from a fresh Gershgorin bound, which is what keeps the parameters
-   valid when [`GlenViscosityContinuation`](@ref) moves the viscosity during the solve
-   (Duretz §7.3). Duretz use ~100; the default here is tighter because the *first*
-   estimate ends the warm-up, and on the same slab a `cadence` of 100 costs 1.5–2× the
-   iterations of one of 10–20 at coarse resolution, where the whole solve is barely longer
-   than one warm-up. A re-estimation is two reductions and one kernel — the same cost class
-   as one `ncheck` convergence check, which defaults to *every* iteration.
+ - `c_damp`: safety factor on `c = 2√λ_min`, `[0.5, 1]` per Duretz (default `0.8`). A
+   Rayleigh quotient over-estimates `λ_min`, so `c_damp = 1` errs toward over-damping;
+   measured, `0.5` and `0.8` are within ~10% and both beat `1.0` and `0.3`.
+ - `cadence`: re-estimate every `cadence` iterations (default `20`), each re-estimation also
+   refilling `Δτ` from a fresh Gershgorin bound. Duretz use ~100; tighter here because the
+   first estimate is also what ends the warm-up. One re-estimation costs two reductions and
+   a kernel — the cost of one `ncheck` check, which defaults to every iteration.
 
-!!! note "`solver.theta_v` and `solver.gamma` are not read"
-    This tuning derives both. `theta_v` is folded into `Δτ` (it is fixed at `1`), and
-    `gamma` is the quantity being computed. [`pseudo_transient!`](@ref) returns the final
-    `damping` and `lambda_min` so the derived values can be compared against a hand scan.
+`theta_v` and `gamma` have no existence outside [`FixedTuning`](@ref), so there is nothing
+here to leave unread: this type simply does not carry them.
+[`pseudo_transient!`](@ref) returns the final `damping` and `lambda_min`.
 """
 struct AutotunedDynamicRelaxation{T<:AbstractFloat} <: AbstractPTTuning
     c_damp::T
@@ -389,10 +375,13 @@ end
 AutotunedDynamicRelaxation(T::Type{<:AbstractFloat} = Float64; c_damp = 0.8, cadence = 20) =
     AutotunedDynamicRelaxation{T}(T(c_damp), Int(cadence))
 
-# The `λ_max ≤ 1` normalization every `AutotunedDynamicRelaxation` formula rests on is a
-# property of the Gershgorin row sum, so the pairing is a correctness requirement, not a
-# preference — checked at construction rather than left to produce plausible-looking
-# garbage at solve time.
+"""
+$(TYPEDSIGNATURES)
+
+Reject a `tuning`/`pseudo_timestep` pair whose spectral normalization does not hold, at
+construction rather than as plausible-looking garbage at solve time. Only
+[`AutotunedDynamicRelaxation`](@ref) constrains its partner.
+"""
 _check_tuning(::AbstractPTTuning, ::AbstractPseudoTimeStep) = nothing
 
 _check_tuning(::AutotunedDynamicRelaxation, ::GershgorinPseudoTimeStep) = nothing
@@ -453,19 +442,20 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
 
 # Fields:
  - `ndim1`, `ndim2`, `ndim3`: numerical-dimensionality constants of the PT time step
-   (1D, 2D, 3D stencils). Read only by [`ViscosityPseudoTimeStep`](@ref).
+   (1D, 2D, 3D stencils). Read only by [`ViscosityPseudoTimeStep`](@ref), and only `ndim2`
+   of the three.
  - `muB`: bulk-to-shear viscosity ratio entering the PT time step. Read only by
    [`ViscosityPseudoTimeStep`](@ref) — see [`GershgorinPseudoTimeStep`](@ref) for why the
    default `1e2` is ~101× too conservative on a depth-integrated balance.
- - `theta_v`: relaxation weight of the velocity update.
+ - `theta_v`: relaxation weight of the velocity update. Read only under
+   [`FixedTuning`](@ref).
  - `gamma`: damping coefficient of the pseudo-transient rate (Sandip et al. 2024,
    Eq. 12–14; Frankel 1950). The rate is accumulated as
-   `dv_new = (1 - gamma) * dv_old + r(u)`, so `gamma = 1` discards all memory and
-   recovers the plain (undamped, first-order) PT iteration — the default, and the only
-   value exercised by the collocated solver. `0 < gamma < 1` turns the iteration into a
-   damped wave, which is what buys sub-quadratic iteration-count scaling. Read only under
-   `tuning = FixedTuning()`, where picking a good value needs the same manual scan as
-   `theta_v`; [`AutotunedDynamicRelaxation`](@ref) derives it instead.
+   `dv_new = (1 - gamma) * dv_old + r(u)`, so `gamma = 1` discards all memory and recovers
+   the plain (undamped, first-order) iteration; `0 < gamma < 1` turns it into a damped
+   wave, which is what buys sub-quadratic iteration-count scaling. Read only under
+   [`FixedTuning`](@ref), where a good value needs the same manual scan as `theta_v`;
+   [`AutotunedDynamicRelaxation`](@ref) derives it instead.
  - `abstol`: convergence tolerance on whatever `convergence` measures — a velocity change
    per iteration (m s⁻¹) for [`VelocityIncrement`](@ref), a dimensionless residual for
    [`ScaledResidual`](@ref).
@@ -480,56 +470,37 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
  - `velocity_x_old`, `velocity_y_old`: previous velocity iterate.
  - `velocity_x_dt`, `velocity_y_dt`: pseudo-transient velocity rate (the damping
    accumulator described under `gamma`).
- - `dtau_x`, `dtau_y`: pseudo-time step, held at the same node class as the velocity
-   component it advances. Only the Chmy-native, C-grid staggered
-   [`pseudo_transient!`](@ref) fills these per grid point (from the local viscosity, via
-   [`pseudo_dt!`](@ref)); the collocated solver keeps its single global scalar (from
-   [`pseudo_dt`](@ref)) and never reads these fields, which is why they may look unused
-   in that code path.
+ - `dtau_x`, `dtau_y`: pseudo-time step, per grid point, at the same node class as the
+   velocity component it advances (filled by [`pseudo_dt!`](@ref)).
  - `residual_x`, `residual_y`: the raw (undamped) pseudo-transient rate `r(u)/(ρH)`,
    written unconditionally by [`dotvel!`](@ref) regardless of `gamma` — a genuinely
    separate buffer from `velocity_x_dt`/`velocity_y_dt` because damping's whole point is
    for the accumulator to *not* equal the raw rate, so the raw rate needs its own home to
-   remain readable. The Chmy-native [`pseudo_transient!`](@ref) reduces these into the
-   `residual` diagnostic it returns; unused by the collocated solver, like `dtau_x`/`dtau_y`.
+   remain readable. [`pseudo_transient!`](@ref) reduces these into the `residual` it
+   returns.
  - `pseudo_timestep`: an [`AbstractPseudoTimeStep`](@ref), default
-   [`ViscosityPseudoTimeStep`](@ref). Selects how `dtau_x`/`dtau_y` are filled. Only read
-   by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref).
+   [`ViscosityPseudoTimeStep`](@ref). Selects how `dtau_x`/`dtau_y` are filled.
  - `convergence`: an [`AbstractPTConvergence`](@ref), default [`VelocityIncrement`](@ref).
-   Selects what `abstol` is compared against — **and therefore what `abstol` means**. Only
-   read by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref).
+   Selects what `abstol` is compared against — **and therefore what `abstol` means**.
  - `viscosity_continuation`: an [`AbstractViscosityContinuation`](@ref), default
-   [`NoViscosityContinuation`](@ref). Only read by the Chmy-native, C-grid staggered
-   [`pseudo_transient!`](@ref); the collocated solver never updates viscosity regardless
-   of this field's value.
+   [`NoViscosityContinuation`](@ref).
  - `tuning`: an [`AbstractPTTuning`](@ref), default [`FixedTuning`](@ref). Selects whether
    `Δτ` and the damping are the hand-set `theta_v`/`gamma`/`pseudo_timestep` values or are
    derived from spectral estimates during the solve
    ([`AutotunedDynamicRelaxation`](@ref), which requires
-   `pseudo_timestep::GershgorinPseudoTimeStep` and then ignores `theta_v`/`gamma`). Only
-   read by the Chmy-native, C-grid staggered [`pseudo_transient!`](@ref).
+   `pseudo_timestep::GershgorinPseudoTimeStep` and then ignores `theta_v`/`gamma`).
  - `friction_update`: an [`AbstractFrictionUpdate`](@ref), default
-   [`ActiveFrictionUpdate`](@ref). Only read by the Chmy-native, C-grid staggered
-   [`pseudo_transient!`](@ref); the collocated solver always recomputes basal stress
-   inline regardless of this field's value. Set to [`NoFrictionUpdate`](@ref) to bypass
-   the basal friction law and hold `stress.base_x`/`base_y` fixed at whatever was written
-   there before the solve (e.g. a prescribed basal stress field).
+   [`ActiveFrictionUpdate`](@ref). Set to [`NoFrictionUpdate`](@ref) to bypass the basal
+   friction law and hold `stress.base_x`/`base_y` fixed at whatever was written there
+   before the solve (e.g. a prescribed basal stress field).
 
 !!! note "Two type parameters for the work arrays, not one"
     On a [`StaggeredGrid`](@ref) the x- and y-velocity work arrays are Chmy `Field`s at
     different locations (`acx`/`acy`), which are different concrete types (location is
-    part of a `Field`'s type). A single `M` shared by all four fields — as a plain-array
-    `RegularGrid` state can get away with, since `Matrix{T}` carries no location — would
-    reject that combination outright, hence the `MX`/`MY` split below. They collapse to
-    the same type on a `RegularGrid`, so that path is unaffected.
+    part of a `Field`'s type), so a single `M` shared by all four work arrays would reject
+    that combination outright — hence the `MX`/`MY` split below.
 """
 struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeStep, CV<:AbstractPTConvergence, VC<:AbstractViscosityContinuation, FU<:AbstractFrictionUpdate, TU<:AbstractPTTuning} <: AbstractMomentumSolver
-    ndim1::T
-    ndim2::T
-    ndim3::T
-    muB::T
-    theta_v::T
-    gamma::T
     abstol::T
     maxiter::Int
     ncheck::Int
@@ -551,65 +522,25 @@ struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeSte
 end
 Adapt.@adapt_structure PseudoTransientSolver
 
-function PseudoTransientSolver(grid::RegularGrid;
-    ndim1 = 2.1,
-    ndim2 = 4.1,
-    ndim3 = 6.1,
-    muB = 1e2,
-    theta_v = 0.6,
-    gamma = 1,
-    abstol = 1e-8,
-    maxiter = 100,
-    ncheck = 1,
-    printout_every = typemax(Int),
-    dtau_scaling = 1,
-    pseudo_timestep::AbstractPseudoTimeStep = ViscosityPseudoTimeStep(),
-    convergence::AbstractPTConvergence = VelocityIncrement(),
-    viscosity_continuation::AbstractViscosityContinuation = NoViscosityContinuation(),
-    friction_update::AbstractFrictionUpdate = ActiveFrictionUpdate(),
-    tuning::AbstractPTTuning = FixedTuning(),
-)
-    _check_tuning(tuning, pseudo_timestep)
-    T = eltype(grid.x)
-    backend = get_backend(grid.x)
-    w() = KernelAbstractions.zeros(backend, T, grid.nx, grid.ny)
-    return PseudoTransientSolver(
-        T(ndim1), T(ndim2), T(ndim3), T(muB),
-        T(theta_v), T(gamma), T(abstol), Int(maxiter), Int(ncheck),
-        Int(printout_every), T(dtau_scaling), w(), w(), w(), w(), w(), w(), w(), w(),
-        pseudo_timestep, convergence, viscosity_continuation, friction_update, tuning,
-    )
-end
-
 """
 $(TYPEDSIGNATURES)
 
-Build a [`PseudoTransientSolver`](@ref) of Chmy `Field`s for the Chmy-native, C-grid
-staggered [`pseudo_transient!`](@ref). The velocity-iterate/rate work arrays
-(`velocity_x_old`, `velocity_y_old`, `velocity_x_dt`, `velocity_y_dt`) are placed at
-`acx`/`acy` on `grid.grid2d`, matching the velocity components they mirror
-(`mech.velocity.x`/`y`).
+Build a [`PseudoTransientSolver`](@ref) for [`pseudo_transient!`](@ref). All work arrays
+are Chmy `Field`s at `acx`/`acy` on `grid.grid2d`, matching the velocity components they
+mirror (`mech.velocity.x`/`y`).
 
 Requires a depth-averaged grid (`grid.grid2d === grid.grid`, i.e. `nz == 1`), checked at
 construction rather than left to fail at first solve: DIVA's vertical-shear integral is
-Phase 3 future work (`roadmaps/chmy.md`), so today's Chmy-native `pseudo_transient!` only
-supports the depth-averaged case, exactly as the collocated method does in practice
-(it reads `view(velocity.x, :, :, 1)`).
+Phase 3 future work (`roadmaps/chmy.md`).
 """
 function PseudoTransientSolver(grid::StaggeredGrid;
-    ndim1 = 2.1,
-    ndim2 = 4.1,
-    ndim3 = 6.1,
-    muB = 1e2,
-    theta_v = 0.6,
-    gamma = 1,
     abstol = 1e-8,
     maxiter = 100,
     ncheck = 1,
     printout_every = typemax(Int),
     dtau_scaling = 1,
     halo = 1,
-    pseudo_timestep::AbstractPseudoTimeStep = ViscosityPseudoTimeStep(),
+    pseudo_timestep::AbstractPseudoTimeStep = GershgorinPseudoTimeStep(),
     convergence::AbstractPTConvergence = VelocityIncrement(),
     viscosity_continuation::AbstractViscosityContinuation = NoViscosityContinuation(),
     friction_update::AbstractFrictionUpdate = ActiveFrictionUpdate(),
@@ -628,9 +559,7 @@ function PseudoTransientSolver(grid::StaggeredGrid;
     acx() = _field(arch, g, NODE_ACX, T, halo)
     acy() = _field(arch, g, NODE_ACY, T, halo)
     return PseudoTransientSolver(
-        T(ndim1), T(ndim2), T(ndim3), T(muB),
-        T(theta_v), T(gamma), T(abstol), Int(maxiter), Int(ncheck),
-        Int(printout_every), T(dtau_scaling),
+        T(abstol), Int(maxiter), Int(ncheck), Int(printout_every), T(dtau_scaling),
         acx(), acy(), acx(), acy(), acx(), acy(), acx(), acy(),
         pseudo_timestep, convergence, viscosity_continuation, friction_update, tuning,
     )

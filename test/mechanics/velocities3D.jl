@@ -1,4 +1,4 @@
-@testset "velocities3D" begin
+@testset "velocities" begin
 
     # Load topography
     T = Float64
