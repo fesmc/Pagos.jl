@@ -45,7 +45,7 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Rate factor for ice viscosity following the piecewise Arrhenius law of [paterson_physics_1994](@citet):
+Rate factor for ice viscosity following the piecewise Arrhenius law of [cuffey_physics_2010](@citet):
 
 ```math
 \\begin{aligned}
@@ -65,9 +65,9 @@ below which the lower activation energy ``Q_1`` applies.
  - `E_f::T=1.0`: enhancement factor.
  - `T_p1_p2::T=263.15`: breakpoint temperature ``T^*`` (``\\mathrm{K}``).
  - `A_0_p1`: pre-exponential factor ``A_{0,1}`` (``\\mathrm{Pa}^{-3}\\,\\mathrm{yr}^{-1}``),
-   defaulting to Paterson's published ``3.985 \\times 10^{-13}\\,\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``.
+   defaulting to Cuffey & Paterson's published ``3.985 \\times 10^{-13}\\,\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``.
  - `A_0_p2`: pre-exponential factor ``A_{0,2}`` (``\\mathrm{Pa}^{-3}\\,\\mathrm{yr}^{-1}``),
-   defaulting to Paterson's published ``1.916 \\times 10^{3}\\,\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``.
+   defaulting to Cuffey & Paterson's published ``1.916 \\times 10^{3}\\,\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``.
  - `Q_a_p1::T=60e3`: activation energy ``Q_1`` (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
  - `Q_a_p2::T=139e3`: activation energy ``Q_2`` (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
  - `R::T=8.314`: universal gas constant (``\\mathrm{J}\\,\\mathrm{K}^{-1}\\,\\mathrm{mol}^{-1}``).
@@ -82,11 +82,11 @@ fig = plot_rate_factor(T_relative_kelvin .- 273.15, A)
 """
 @kwdef struct ArrheniusRateFactor{T<:Real} <: AbstractRateFactor
     E_f::T = 1.0
-    T_p1_p2::T = 263.15                          # breakpoint temperature following Patterson (1994)
+    T_p1_p2::T = 263.15                          # breakpoint temperature, Cuffey & Paterson (2010)
     A_0_p1::T = 3.985e-13 * SECONDS_PER_YEAR     # Pa^-3 s^-1 published -> Pa^-3 yr^-1 internal
-    A_0_p2::T = 1.916e3   * SECONDS_PER_YEAR     # piecewise definition following Patterson (1994)
+    A_0_p2::T = 1.916e3   * SECONDS_PER_YEAR     # piecewise definition, Cuffey & Paterson (2010)
     Q_a_p1::T = 60e3                             # "J mol^-1" activation energy
-    Q_a_p2::T = 139e3                            #  piecewise definition following Patterson (1994)
+    Q_a_p2::T = 139e3                            #  piecewise definition, Cuffey & Paterson (2010)
     R::T = 8.314                                 # "J K^-1 mol^-1" universal gas constant
 end
 
@@ -131,7 +131,11 @@ pressure melting point ``T_r``. Avoids the discontinuity of the piecewise
 # Fields
  - `E_f::T=1.0`: enhancement factor.
  - `A_0`: pre-exponential factor (``\\mathrm{Pa}^{-3}\\,\\mathrm{yr}^{-1}``), defaulting to
-   Hooke's published ``9.302 \\times 10^{-7}\\,\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``.
+   ``4.42165 \\times 10^{-9}\\,\\mathrm{Pa}^{-3}\\,\\mathrm{s}^{-1}``. Hooke states the law
+   through ``B_0 = 1.928\\,\\mathrm{Pa}\\,\\mathrm{yr}^{1/3}`` rather than through ``A``
+   directly; ``A_0 = B_0^{-n}`` with ``n = 3`` gives ``0.1395\\,\\mathrm{Pa}^{-3}\\,
+   \\mathrm{yr}^{-1}``, which is the internal value here. Matches PISM's
+   `flow_law.Hooke.A`.
  - `Q_a::T=78.8e3`: activation energy (``\\mathrm{J}\\,\\mathrm{mol}^{-1}``).
  - `C::T=0.16612`: proximity-to-melting coefficient (``\\mathrm{K}^{k}``).
  - `T_r::T=273.39`: reference melting temperature (``\\mathrm{K}``).
@@ -140,7 +144,7 @@ pressure melting point ``T_r``. Avoids the discontinuity of the piecewise
 """
 @kwdef struct HookeRateFactor{T<:Real} <: AbstractRateFactor
     E_f::T = 1.0
-    A_0::T = 9.302e-7 * SECONDS_PER_YEAR   # Pa^-3 s^-1 published -> Pa^-3 yr^-1 internal
+    A_0::T = 4.42165e-9 * SECONDS_PER_YEAR   # = B_0^-3 for B_0 = 1.928 Pa yr^(1/3)
     Q_a::T = 78.8e3
     C::T = 0.16612
     T_r::T = 273.39
@@ -155,7 +159,8 @@ Rate factor for temperate ice following [lliboutry_various_1985](@citet):
 
 ```math
 \\begin{aligned}
-A(T', \\omega) = A_{\\mathrm{cold}}(T') \\, (1 + \\gamma \\, \\omega)
+A(T', \\omega) = A_{\\mathrm{cold}}(T') \\,
+    \\bigl(1 + \\gamma \\, \\min(\\omega, \\omega_{\\max})\\bigr)
 \\end{aligned}
 ```
 
@@ -166,9 +171,18 @@ liquid-water content. At ``\\omega = 0`` the law is identical to
 curve upward proportionally. Assumes spatially uniform water content; for
 spatially varying fields, call the scalar method pointwise.
 
+!!! note "Why the enhancement saturates"
+    ``\\omega`` is capped at `water_fraction_max` before it is applied, following PISM's
+    `flow_law.gpbld.water_frac_observed_limit`. The linear enhancement was calibrated
+    against observations that only ever reach a percent or so of liquid water, and it is
+    not meant to be extrapolated: uncapped, ``\\omega = 0.1`` would soften the ice by
+    ``19\\times`` rather than the ``2.8\\times`` the cap allows. Raise the cap only if you
+    have data supporting it.
+
 # Fields
  - `ω::T=0.0`: volumetric water content fraction (dimensionless, ``0 \\leq \\omega \\leq 1``).
  - `γ::T=181.25`: water-content enhancement coefficient following [lliboutry_various_1985](@citet).
+ - `water_fraction_max::T=0.01`: cap applied to ``\\omega`` (dimensionless).
  - `E_f::T=1.0`: additional enhancement factor.
  - `T_p1_p2::T=263.15`: breakpoint temperature (``\\mathrm{K}``).
  - `A_0_p1`: pre-exponential factor below breakpoint (``\\mathrm{Pa}^{-3}\\,\\mathrm{yr}^{-1}``),
@@ -181,6 +195,7 @@ spatially varying fields, call the scalar method pointwise.
 @kwdef struct LliboutryDuvalRateFactor{T<:Real} <: AbstractRateFactor
     ω::T = 0.0
     γ::T = 181.25
+    water_fraction_max::T = 0.01   # PISM flow_law.gpbld.water_frac_observed_limit
     E_f::T = 1.0
     T_p1_p2::T = 263.15
     A_0_p1::T = 3.985e-13 * SECONDS_PER_YEAR   # Pa^-3 s^-1 published -> Pa^-3 yr^-1 internal
@@ -424,13 +439,13 @@ function rate_factor(
     T_relative::T,
     ldrf::LliboutryDuvalRateFactor,
 ) where {T<:Real}
-    (; ω, γ, E_f, T_p1_p2, A_0_p1, A_0_p2, Q_a_p1, Q_a_p2, R) = ldrf
+    (; ω, γ, water_fraction_max, E_f, T_p1_p2, A_0_p1, A_0_p2, Q_a_p1, Q_a_p2, R) = ldrf
     if T_relative <= T_p1_p2
         A_cold = E_f * A_0_p1 * exp(-Q_a_p1 / (R * T_relative))
     else
         A_cold = E_f * A_0_p2 * exp(-Q_a_p2 / (R * T_relative))
     end
-    return A_cold * (1 + γ * ω)
+    return A_cold * (1 + γ * min(ω, water_fraction_max))
 end
 
 function rate_factor(

@@ -146,6 +146,111 @@ end
 """
 $(TYPEDSIGNATURES)
 
+The full four-component Goldsby–Kohlstedt creep function of
+[goldsby_superplastic_2001](@citet), matching PISM's `gk` flow law. Diffusional flow,
+dislocation creep, grain-boundary sliding (GBS) and basal (easy) slip, with GBS and basal
+slip coupled in series and the other two in parallel:
+
+```math
+\\begin{aligned}
+\\dot{\\varepsilon}_{\\mathrm{diff}}  &= \\frac{42\\, V_m}{R T d^{2}}
+    \\left( D_v + \\frac{\\pi \\delta D_b}{d} \\right) \\sigma_e \\\\
+\\dot{\\varepsilon}_{\\mathrm{disl}}  &= A_{\\mathrm{disl}} \\, \\sigma_e^{n_{\\mathrm{disl}}}
+    \\, e^{-(Q_{\\mathrm{disl}} + pV)/RT} \\\\
+\\dot{\\varepsilon}_{\\mathrm{basal}} &= A_{\\mathrm{basal}} \\, \\sigma_e^{n_{\\mathrm{basal}}}
+    \\, e^{-(Q_{\\mathrm{basal}} + pV)/RT} \\\\
+\\dot{\\varepsilon}_{\\mathrm{gbs}}   &= A_{\\mathrm{gbs}} \\, \\sigma_e^{n_{\\mathrm{gbs}}}
+    \\, d^{-p_{\\mathrm{gbs}}} \\, e^{-(Q_{\\mathrm{gbs}} + pV)/RT} \\\\[4pt]
+\\dot{\\varepsilon}_{\\mathrm{tot}}   &= \\dot{\\varepsilon}_{\\mathrm{diff}}
+    + \\dot{\\varepsilon}_{\\mathrm{disl}}
+    + \\left(\\dot{\\varepsilon}_{\\mathrm{basal}}^{-1}
+          + \\dot{\\varepsilon}_{\\mathrm{gbs}}^{-1}\\right)^{-1}
+\\end{aligned}
+```
+
+with ``D_v = D_{0v} e^{-Q_v/RT}`` and ``D_b = D_{0b} e^{-Q_b/RT}``. The creep function
+returned is ``f(\\sigma_e) = \\dot{\\varepsilon}_{\\mathrm{tot}} / \\sigma_e``.
+
+!!! warning "Untested"
+    Nothing in `test/` exercises this yet — it is transcribed from PISM's
+    `src/rheology/GoldsbyKohlstedt.cc` and checked only by eye. Validate before relying on
+    it quantitatively.
+
+Three things distinguish it from the simplified [`GoldsbyKohlstedtCreep`](@ref): the extra
+dislocation-creep component (``n = 4``), cold/warm Arrhenius branches for dislocation creep
+and GBS, and a pressure dependence entering through the activation volume ``V`` as
+``e^{-(Q + pV)/RT}``. Because of that pressure and temperature dependence this struct is
+evaluated at a point rather than taking pre-evaluated pre-factors — pass the local
+`temperature` and `pressure` and construct it pointwise.
+
+!!! note "`temperature` is pressure-adjusted"
+    Give the temperature relative to the pressure melting point (see
+    [`LinearPressureMeltingPoint`](@ref)), the same convention every
+    [`AbstractRateFactor`](@ref) here uses — *not* the in-situ temperature. `pressure` is
+    separate and feeds only the ``pV`` activation-volume term.
+
+# Fields
+ - `temperature::T`: pressure-adjusted temperature (``\\mathrm{K}``).
+ - `pressure::T`: ice overburden pressure (``\\mathrm{Pa}``).
+ - `d::T=1.0e-3`: mean grain size (``\\mathrm{m}``).
+ - `R::T=8.314`: universal gas constant (``\\mathrm{J}\\,\\mathrm{K}^{-1}\\,\\mathrm{mol}^{-1}``).
+ - `V_act::T=-13.0e-6`: activation volume (``\\mathrm{m}^3\\,\\mathrm{mol}^{-1}``). Negative,
+   so pressure *softens* the ice.
+ - `disl_T_crit::T=258.0`, `disl_A_cold`, `disl_A_warm`, `disl_n::T=4.0`,
+   `disl_Q_cold::T=60e3`, `disl_Q_warm::T=180e3`: dislocation creep. Pre-factors are
+   ``\\mathrm{Pa}^{-4}\\,\\mathrm{yr}^{-1}``, from the published
+   ``4.0\\times10^{-19}`` / ``6.0\\times10^{4}\\,\\mathrm{Pa}^{-4}\\,\\mathrm{s}^{-1}``.
+ - `gbs_T_crit::T=255.0`, `gbs_A_cold`, `gbs_A_warm`, `gbs_n::T=1.8`,
+   `gbs_Q_cold::T=49e3`, `gbs_Q_warm::T=192e3`, `gbs_p::T=1.4`: grain-boundary sliding.
+ - `basal_A`, `basal_n::T=2.4`, `basal_Q::T=60e3`: basal (easy) slip.
+ - `diff_T_crit::T=258.0`, `diff_V_m::T=1.97e-5`, `diff_D_0v`, `diff_Q_v::T=59.4e3`,
+   `diff_D_0b`, `diff_Q_b::T=49e3`, `diff_delta::T=9.04e-10`: diffusional flow. Above
+   `diff_T_crit` the grain-boundary diffusivity is multiplied by `diff_coble_factor`.
+ - `diff_coble_factor::T=1000.0`: Coble-creep scaling applied to ``D_b`` when warm.
+"""
+@kwdef struct GoldsbyKohlstedt4Creep{T<:Real} <: AbstractCreep
+    temperature::T
+    pressure::T
+    d::T = 1.0e-3
+    R::T = 8.314
+    V_act::T = -13.0e-6
+
+    ## dislocation creep
+    disl_T_crit::T = 258.0
+    disl_A_cold::T = 4.0e-19 * SECONDS_PER_YEAR   # Pa^-4 s^-1 published -> Pa^-4 yr^-1
+    disl_A_warm::T = 6.0e4 * SECONDS_PER_YEAR
+    disl_n::T = 4.0
+    disl_Q_cold::T = 60.0e3
+    disl_Q_warm::T = 180.0e3
+
+    ## grain-boundary sliding
+    gbs_T_crit::T = 255.0
+    gbs_A_cold::T = 6.1811e-14 * SECONDS_PER_YEAR # Pa^-1.8 m^1.4 s^-1 -> ... yr^-1
+    gbs_A_warm::T = 4.7547e15 * SECONDS_PER_YEAR
+    gbs_n::T = 1.8
+    gbs_Q_cold::T = 49.0e3
+    gbs_Q_warm::T = 192.0e3
+    gbs_p::T = 1.4
+
+    ## basal (easy) slip
+    basal_A::T = 2.1896e-7 * SECONDS_PER_YEAR     # Pa^-2.4 s^-1 -> Pa^-2.4 yr^-1
+    basal_n::T = 2.4
+    basal_Q::T = 60.0e3
+
+    ## diffusional flow
+    diff_T_crit::T = 258.0
+    diff_V_m::T = 1.97e-5
+    diff_D_0v::T = 9.10e-4 * SECONDS_PER_YEAR     # m^2 s^-1 -> m^2 yr^-1
+    diff_Q_v::T = 59.4e3
+    diff_D_0b::T = 5.8e-4 * SECONDS_PER_YEAR
+    diff_Q_b::T = 49.0e3
+    diff_delta::T = 9.04e-10
+    diff_coble_factor::T = 1000.0
+end
+
+"""
+$(TYPEDSIGNATURES)
+
 Three-component low-strain creep function following [fan_flow_2025](@citet),
 summing contributions from one grain-size insensitive (GSI) dislocation-creep
 component and two grain-size sensitive (GSS) disGBS components:
@@ -237,6 +342,37 @@ function creep(
     ε̇_basal = A_basal * σ_e^n_basal
     ε̇_eff   = ε̇_diff + inv(inv(ε̇_gbs) + inv(ε̇_basal))
     return ε̇_eff / σ_e
+end
+
+function creep(
+    σ_e::T,
+    law::GoldsbyKohlstedt4Creep,
+) where {T<:Real}
+    (; temperature, pressure, d, R, V_act) = law
+    RT = R * temperature
+    pV = pressure * V_act
+
+    ## Diffusional flow. Newtonian, so ε̇ ∝ σ_e and this contributes a stress-independent
+    ## term to f. Coble creep enhances grain-boundary diffusion above `diff_T_crit`.
+    D_v = law.diff_D_0v * exp(-law.diff_Q_v / RT)
+    D_b = law.diff_D_0b * exp(-law.diff_Q_b / RT)
+    D_b = temperature > law.diff_T_crit ? D_b * law.diff_coble_factor : D_b
+    f_diff = 42 * law.diff_V_m * (D_v + π * law.diff_delta * D_b / d) / (RT * d^2)
+
+    A_disl, Q_disl = temperature > law.disl_T_crit ?
+        (law.disl_A_warm, law.disl_Q_warm) : (law.disl_A_cold, law.disl_Q_cold)
+    f_disl = A_disl * σ_e^(law.disl_n - 1) * exp(-(Q_disl + pV) / RT)
+
+    f_basal = law.basal_A * σ_e^(law.basal_n - 1) * exp(-(law.basal_Q + pV) / RT)
+
+    A_gbs, Q_gbs = temperature > law.gbs_T_crit ?
+        (law.gbs_A_warm, law.gbs_Q_warm) : (law.gbs_A_cold, law.gbs_Q_cold)
+    f_gbs = A_gbs * σ_e^(law.gbs_n - 1) * d^(-law.gbs_p) * exp(-(Q_gbs + pV) / RT)
+
+    # Series coupling as `inv(inv + inv)` rather than the algebraically equal
+    # `f_basal*f_gbs/(f_basal+f_gbs)`: at σ_e = 0 both terms vanish and the product form
+    # gives 0/0, while this one gives inv(Inf) = 0. Same idiom as `GoldsbyKohlstedtCreep`.
+    return f_diff + f_disl + inv(inv(f_basal) + inv(f_gbs))
 end
 
 function creep(

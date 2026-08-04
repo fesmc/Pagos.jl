@@ -347,19 +347,27 @@ const _DIVA_PAPER = "Robinson et al. (2022), The Cryosphere 16, 689-709"
     @testset "rate factors agree on the time unit" begin
         A_ref = PrescribedRateFactor().A          # 1e-16 Pa⁻³ yr⁻¹, Cuffey & Paterson
 
-        # Near the melting point the piecewise-Arrhenius law should land within a small
+        # Near the melting point every temperature-dependent law should land within a small
         # factor of the constant everyone quotes. A unit slip is eight orders, not two.
-        for rf in (ArrheniusRateFactor(), LliboutryDuvalRateFactor())
+        for rf in (ArrheniusRateFactor(), LliboutryDuvalRateFactor(), HookeRateFactor())
             A = rate_factor(272.15, rf)
             @test 0.1 < A / A_ref < 10
         end
 
-        # Hooke gets a looser band: it runs ~250x above Arrhenius at *every* temperature,
-        # not just near melting, so the offset is in `A_0` rather than the
-        # proximity-to-melting term. That is a pre-existing calibration question — the
-        # ratio was identical when both prefactors were still in seconds — and this test
-        # is only here to catch unit slips, which are five orders larger than the gap.
-        @test 1 < rate_factor(272.15, HookeRateFactor()) / A_ref < 1e4
+        # Hooke and Arrhenius are independent calibrations of the same Glen law, so they
+        # must agree to within a small factor across the whole cold range — not just at one
+        # temperature. `A_0` was previously 9.302e-7 Pa⁻³s⁻¹, which put Hooke ~210x above
+        # Arrhenius at *every* temperature (a constant offset, so not the melting term).
+        for Tc in (-30, -20, -10, -5, -1)
+            ratio = rate_factor(Tc + 273.15, HookeRateFactor()) /
+                    rate_factor(Tc + 273.15, ArrheniusRateFactor())
+            @test 0.5 < ratio < 5
+        end
+
+        # Hooke states the law via `B_0 = 1.928 Pa yr^(1/3)`, not via `A` — so `A_0` must
+        # come back to `B_0^-3` in the internal (per-year) convention. Independent of the
+        # SI figure, and the check that would have caught the old value.
+        @test HookeRateFactor().A_0 ≈ 1.928^-3 rtol = 1e-4
 
         # Colder ice is stiffer, and monotonically so.
         A_cold = rate_factor(253.15, ArrheniusRateFactor())
@@ -369,7 +377,7 @@ const _DIVA_PAPER = "Robinson et al. (2022), The Cryosphere 16, 689-709"
         # `time_unit = :second` must undo exactly the conversion baked into the defaults.
         @test ArrheniusRateFactor(:second; A_0_p1 = 3.985e-13, A_0_p2 = 1.916e3) ==
               ArrheniusRateFactor()
-        @test HookeRateFactor(:second; A_0 = 9.302e-7) == HookeRateFactor()
+        @test HookeRateFactor(:second; A_0 = 4.42165e-9) == HookeRateFactor()
         @test PrescribedRateFactor(:second; A = 3.2e-24).A ≈ A_ref rtol = 0.02
         @test PrescribedRateFactor(:year; A = 1e-16) == PrescribedRateFactor()
 
@@ -378,6 +386,36 @@ const _DIVA_PAPER = "Robinson et al. (2022), The Cryosphere 16, 689-709"
         @test ArrheniusRateFactor(:second; Q_a_p1 = 60e3).Q_a_p1 == 60e3
         @test ArrheniusRateFactor(:second; A_0_p1 = 3.985e-13) == ArrheniusRateFactor()
         @test_throws ArgumentError ArrheniusRateFactor(:fortnight)
+    end
+
+    # The Lliboutry-Duval enhancement is linear in ω and was calibrated against ice that
+    # only ever reaches a percent or so of liquid water, so ω is capped before use (PISM's
+    # `water_frac_observed_limit`). Uncapped it extrapolates wildly: ω = 0.1 would soften
+    # the ice 19x rather than the 2.8x the cap allows.
+    @testset "LliboutryDuvalRateFactor: water fraction is capped" begin
+        T = 272.15
+        dry = rate_factor(T, LliboutryDuvalRateFactor(ω = 0.0))
+
+        # ω = 0 must reduce exactly to the underlying Arrhenius law.
+        @test dry == rate_factor(T, ArrheniusRateFactor())
+
+        # Below the cap the enhancement is linear, 1 + γω.
+        @test rate_factor(T, LliboutryDuvalRateFactor(ω = 0.005)) / dry ≈ 1 + 181.25 * 0.005
+
+        # At and above it, saturated — every ω ≥ the cap gives the same answer.
+        capped = 1 + 181.25 * 0.01
+        for ω in (0.01, 0.05, 0.1, 1.0)
+            @test rate_factor(T, LliboutryDuvalRateFactor(; ω)) / dry ≈ capped
+        end
+
+        # The cap is a knob, not a hard-coded limit.
+        loose = LliboutryDuvalRateFactor(ω = 0.1, water_fraction_max = 0.1)
+        @test rate_factor(T, loose) / dry ≈ 1 + 181.25 * 0.1
+
+        # It is dimensionless, so `time_unit` must leave it alone while still scaling the
+        # prefactors it sits beside.
+        @test LliboutryDuvalRateFactor(:second; water_fraction_max = 0.02).water_fraction_max == 0.02
+        @test LliboutryDuvalRateFactor(:second; A_0_p1 = 3.985e-13) == LliboutryDuvalRateFactor()
     end
 
     # PeriodicDIVUpdate must actually reach `pseudo_dt!`, not just `diva_update!` — decision

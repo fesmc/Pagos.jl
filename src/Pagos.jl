@@ -196,7 +196,7 @@ export rate_factor, rate_factor!
 
 include("material/creep.jl")
 export AbstractCreep, GlenNyeCreep, SmithMorlandCreep
-export PettitWaddingtonCreep, GoldsbyKohlstedtCreep
+export PettitWaddingtonCreep, GoldsbyKohlstedtCreep, GoldsbyKohlstedt4Creep
 export FanLowStrainCreep
 export creep, creep!
 
