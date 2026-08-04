@@ -274,6 +274,58 @@ function velocitygradients!(velocity::VelocityState, H, rt::Runtime,
     return nothing
 end
 
+###############################################################
+# Velocity-gradient clamp — a Blatter-Pattyn numerical safety net
+###############################################################
+#
+# Not a physical strain-rate regularization (contrast `GlenViscosityContinuation`'s `ε̇0`,
+# which floors a *denominator*): a hard ceiling on the gradients themselves, for real
+# geometry where a masked, ice-free-adjacent column can lose its entire vertical-stiffness
+# contribution to the Gershgorin bound (the strict `node_fully_active` check zeroing `R₋`/
+# `R₊` at every `k` in that column, since activity there doesn't depend on `k` —
+# `roadmaps/blatter-pattyn.md`, Phase 4 "Thin and ice-free columns", found on real 8 km AIS
+# geometry rather than fixed there). The vertical term is normally *dominant* (§2.1), so
+# losing it can leave `Δτ` orders of magnitude too large at exactly that column, and a single
+# explicit step from an otherwise unremarkable driving stress produces an unphysical
+# velocity there — which the *next* iteration reads back as an unphysical gradient, feeding
+# an equally unphysical `σxx`/`σxy`/`σxz` right back into the residual.
+#
+# Clamping the gradients breaks that feedback loop at its source, complementing (not
+# replacing) `gershgorin_dt!`'s own `dtau_cap`, which addresses the *first* step's `Δτ`
+# directly. Real ice strain rates are `~1e-4`–`~1e-2` /yr even in fast shear margins, so any
+# `cap` worth using is several orders of magnitude below where this could ever bind on a
+# physically sane velocity field; `cap = Inf` (the default everywhere this is threaded
+# through) is a no-op.
+
+@kernel inbounds = true function _clamp_velocity_gradients!(velocity, cap, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    velocity.x_dx[I...] = clamp(velocity.x_dx[I...], -cap, cap)
+    velocity.y_dy[I...] = clamp(velocity.y_dy[I...], -cap, cap)
+    velocity.x_dy[I...] = clamp(velocity.x_dy[I...], -cap, cap)
+    velocity.y_dx[I...] = clamp(velocity.y_dx[I...], -cap, cap)
+    velocity.x_dz[I...] = clamp(velocity.x_dz[I...], -cap, cap)
+    velocity.y_dz[I...] = clamp(velocity.y_dz[I...], -cap, cap)
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Clamp every velocity-gradient component (`x_dx`, `y_dy`, `x_dy`, `y_dx`, `x_dz`, `y_dz`) to
+`[-cap, cap]`, in place. A [`MomentumBalance3D`](@ref) numerical safety net, not a physical
+regularization — see the source note above. `cap = Inf` (the default) is a no-op; masked
+(inactive) nodes are already zero from [`velocitygradients!`](@ref), so clamping them is
+harmless and the mask is not re-checked here.
+
+Call after [`velocitygradients!`](@ref) and before anything that reads the gradients
+(membrane stress, the effective strain rate) — [`pseudo_rate!`](@ref) does so for BP.
+"""
+function clamp_velocity_gradients!(velocity::VelocityState, cap, rt::Runtime)
+    isfinite(cap) || return nothing
+    rt.launch(rt.arch, rt.grid, _clamp_velocity_gradients! => (velocity, cap))
+    return nothing
+end
+
 # The depth-averaged counterpart of `_velocity_gradients!`, for the four horizontal
 # gradients of `ū`/`v̄` that the SSA/DIVA membrane stress is built from. Same node algebra
 # as the column kernel — `∂x` of an `acx` field lands on `aa`, `∂y` of it on `ab` — but
@@ -644,9 +696,14 @@ membranestress!(mech::MechanicState,
 # does. `σxz`/`σyz` need `µ` **two-way** staggered onto `acx_ac`/`acy_ac` — staggered in both
 # x and z — which is exactly what Chmy's `hlerp` already does with no special-casing: it
 # interpolates every dimension on which `location(µ)` and the target differ, and dimension 3
-# (z) is one of them here (§1.1's "the one genuinely new interpolation"). Strict masking
-# (`node_fully_active`) at every `hlerp` site, for the same NaN-avoidance reason as
-# `_deviatoric_stress_staggered!`.
+# (z) is one of them here (§1.1's "the one genuinely new interpolation").
+#
+# Masking is *not* uniform across the three sites, and the split is load-bearing. `σxy` at
+# `ab` keeps the strict `node_fully_active` rule `_membrane_stress_staggered!` uses: `ab` is a
+# genuine four-cell node, and a corner touching ice-free ground really does transmit no shear
+# in this discretization. `σxz`/`σyz` do not, because `acx_ac`/`acy_ac` resolve to the *same*
+# cell pair the unknown itself does — applying the strict rule there deletes BP's vertical
+# operator along the whole margin ring. `_mu_acxz`/`_mu_acyz` carry that argument in full.
 
 @kernel inbounds = true function _membrane_stress_staggered_bp!(sxx, sxy, sxz, syy, syz, μ,
                                                                  vel, mask, grid, O)
@@ -668,10 +725,13 @@ membranestress!(mech::MechanicState,
 
     sxy[I...] = node_fully_active(mask, NODE_AB, i, j) ?
         hlerp(μ, NODE_AB, grid, I...) * (vel.x_dy[I...] + vel.y_dx[I...]) : Z
-    sxz[I...] = node_fully_active(mask, NODE_ACX_AC, i, j) ?
-        hlerp(μ, NODE_ACX_AC, grid, I...) * vel.x_dz[I...] : Z
-    syz[I...] = node_fully_active(mask, NODE_ACY_AC, i, j) ?
-        hlerp(μ, NODE_ACY_AC, grid, I...) * vel.y_dz[I...] : Z
+    # `_mu_acxz`/`_mu_acyz` (`src/mechanics/pseudotransient.jl`), shared with the Gershgorin
+    # bound rather than restated here: the two must apply the *same* `µ` to the same
+    # interface or the bound stops describing the operator it bounds. They are one-sided at
+    # the margin rather than strictly masked — see the note at their definition for why
+    # `node_fully_active` is the wrong rule for this node class in particular.
+    sxz[I...] = _mu_acxz(μ, mask, grid, I...) * vel.x_dz[I...]
+    syz[I...] = _mu_acyz(μ, mask, grid, I...) * vel.y_dz[I...]
 end
 
 """
@@ -691,10 +751,18 @@ harmonically (`hlerp`), matching [`deviatoric_stress!`](@ref)'s stress-continuit
 
 Runs on `rt.grid`, the column grid — every operand is a genuine 3D field.
 
+!!! note "`σxz`/`σyz` are one-sided at the margin, `σxy` is not"
+    The `µ` behind `σxz`/`σyz` comes from `_mu_acxz`/`_mu_acyz`, shared with
+    [`gershgorin_dt!`](@ref) so the bound and the operator cannot drift apart. Where only one
+    of the two cells under an `acx`/`acy` face carries ice, `µ` is taken from that column
+    alone rather than zeroed — see the note at their definition for why the strict rule that
+    is right at `ab` is wrong here.
+
 !!! warning "A zero viscosity gives `NaN`, not zero — same trap as `deviatoric_stress!`"
-    `hlerp` averages reciprocals, so an unmasked ice-free neighbour produces `NaN` at `ab`,
-    `acx_ac` or `acy_ac` rather than `0`; pass an [`IceMask`](@ref) once the material state
-    has ice-free cells.
+    `hlerp` averages reciprocals, so an unmasked ice-free neighbour produces `NaN` at `ab`
+    rather than `0`; pass an [`IceMask`](@ref) once the material state has ice-free cells.
+    The one-sided `acx_ac`/`acy_ac` path never inverts an ice-free cell's `µ` and so is safe
+    either way.
 """
 function membranestress!(stress::StressState, velocity::VelocityState,
                          material::MechanicMaterialState, momentum::MomentumBalance3D,

@@ -238,17 +238,43 @@ end
     node_fully_active(mask, NODE_AB, i, j) ?
     hlerp(μ, NODE_AB, grid, i, j, k) : zero(eltype(μ))
 
-@inline _mu_acxz(μ, mask, grid, i, j, k) =
-    node_fully_active(mask, NODE_ACX_AC, i, j) ?
-    hlerp(μ, NODE_ACX_AC, grid, i, j, k) : zero(eltype(μ))
+# `µ` at the `acx_ac`/`acy_ac` interfaces `σxz`/`σyz` live on. **Not `node_fully_active`**,
+# unlike `_mu_ab` above, and the asymmetry is forced rather than a preference:
+# `_mask_cells` reads only the horizontal part of a node class, so `NODE_ACX_AC` and
+# `NODE_ACX` resolve to the *same* cell pair `((i-1,j), (i,j))`. Gating `σxz` on the strict
+# rule while the unknown itself is created under the loose one
+# (`node_active(mask, NODE_ACX, ...)`, in `_dotvel_staggered_bp!`) therefore zeroes the entire
+# vertical operator on every face of the margin ring — ~1 % of the solved faces on 8 km AIS.
+# That is fatal for BP specifically: basal drag enters as the `k = 1` interface flux and
+# nothing else couples the column to the bed, so layers `k ≥ 2` above such a face are left
+# with no restoring force at all and drift linearly in pseudo-time
+# (`roadmaps/blatter-pattyn.md`, Phase 1 "margin `σxz`"). `NODE_AB` is a genuine four-cell
+# node, so the strict rule there stays right and stays put.
+#
+# One-sided instead of zero: interpolate down the ice-covered column alone (`NODE_AA_AC`,
+# harmonic in `z` only), which is what `hlerp` onto `NODE_ACX_AC` already reduces to when the
+# two columns carry equal `µ`. This never inverts an ice-free cell's `µ`, so it keeps the
+# NaN-avoidance the strict check was reached for in the first place, and it is bit-for-bit
+# the previous expression wherever both cells are active — i.e. everywhere but the margin.
+@inline function _mu_acxz(μ, mask, grid, i, j, k)
+    west = node_active(mask, NODE_AA, i - 1, j)
+    east = node_active(mask, NODE_AA, i, j)
+    return (west & east) ? hlerp(μ, NODE_ACX_AC, grid, i, j, k) :
+           west ? hlerp(μ, NODE_AA_AC, grid, i - 1, j, k) :
+           east ? hlerp(μ, NODE_AA_AC, grid, i, j, k) : zero(eltype(μ))
+end
 
-@inline _mu_acyz(μ, mask, grid, i, j, k) =
-    node_fully_active(mask, NODE_ACY_AC, i, j) ?
-    hlerp(μ, NODE_ACY_AC, grid, i, j, k) : zero(eltype(μ))
+@inline function _mu_acyz(μ, mask, grid, i, j, k)
+    south = node_active(mask, NODE_AA, i, j - 1)
+    north = node_active(mask, NODE_AA, i, j)
+    return (south & north) ? hlerp(μ, NODE_ACY_AC, grid, i, j, k) :
+           south ? hlerp(μ, NODE_AA_AC, grid, i, j - 1, k) :
+           north ? hlerp(μ, NODE_AA_AC, grid, i, j, k) : zero(eltype(μ))
+end
 
 @kernel inbounds = true function _pseudo_dt_gershgorin_bp!(dtau_x, dtau_y, μ, H, β, ρ, scale,
                                                             drag, nz, mask, dx, dy, grid,
-                                                            grid2d, O)
+                                                            grid2d, dtau_cap, O)
     I = @index(Global, NTuple)
     I = I + O
     i, j, k = I
@@ -277,7 +303,14 @@ end
         end
 
         Λ = Hx > Z ? (Λ_horiz + bottom + top) / ρ : Z
-        dtau_x[I...] = (Hx > Z && Λ > Z) ? scale / Λ : Z
+        # `min(·, dtau_cap)`, not a mask-style ternary: a row whose vertical stiffness has
+        # been zeroed by the strict `node_fully_active` check at a margin (bottom/top above)
+        # still reports a mathematically valid — but locally much weaker — Λ than an interior
+        # row of the same column, since the vertical term is normally dominant (§2.1). Left
+        # uncapped (`dtau_cap = Inf`, the default), that is honest; a finite cap is an opt-in
+        # numerical safety net for exactly that case, complementing (not replacing)
+        # `clamp_velocity_gradients!`, which bounds the *consequence* rather than the cause.
+        dtau_x[I...] = (Hx > Z && Λ > Z) ? min(scale / Λ, dtau_cap) : Z
     else
         dtau_x[I...] = Z
     end
@@ -305,7 +338,7 @@ end
         end
 
         Λ = Hy > Z ? (Λ_horiz + bottom + top) / ρ : Z
-        dtau_y[I...] = (Hy > Z && Λ > Z) ? scale / Λ : Z
+        dtau_y[I...] = (Hy > Z && Λ > Z) ? min(scale / Λ, dtau_cap) : Z
     else
         dtau_y[I...] = Z
     end
@@ -316,12 +349,15 @@ $(TYPEDSIGNATURES)
 
 [`MomentumBalance3D`](@ref) counterpart of [`gershgorin_dt!`](@ref): fills
 `solver.dtau_x`/`dtau_y` (`ACX3`/`ACY3`, one `Δτ` per layer, not just per column) with
-`scale / Λ`, `Λ` being the row sum of §2.1 above. Same `scale` convention as the 2D method:
-`2·cfl` for the plain iteration, `Δτ²` for [`AutotunedDynamicRelaxation`](@ref).
+`min(scale / Λ, dtau_cap)`, `Λ` being the row sum of §2.1 above. Same `scale` convention as
+the 2D method: `2·cfl` for the plain iteration, `Δτ²` for [`AutotunedDynamicRelaxation`](@ref).
+
+`dtau_cap` (default `Inf`, a no-op) is a numerical safety net, not part of the row-sum
+derivation: see the source note above `_pseudo_dt_gershgorin_bp!`.
 """
 function gershgorin_dt!(solver::PseudoTransientSolver, mech::MechanicState, c::Constants,
                         rt::Runtime, momentum::MomentumBalance3D, mask::AbstractIceMask,
-                        scale)
+                        scale; dtau_cap = Inf)
     T = eltype(solver.dtau_x)
     dx = Δx(rt.grid2d, Center(), 1, 1, 1)
     dy = Δy(rt.grid2d, Center(), 1, 1, 1)
@@ -332,7 +368,7 @@ function gershgorin_dt!(solver::PseudoTransientSolver, mech::MechanicState, c::C
                    mech.topography.thickness, mech.friction.beta_eff,
                    convert(T, c.density_ice), convert(T, scale),
                    _drag_in_spectrum(solver.friction_update), nz, mask,
-                   convert(T, dx), convert(T, dy), rt.grid, rt.grid2d))
+                   convert(T, dx), convert(T, dy), rt.grid, rt.grid2d, convert(T, dtau_cap)))
     return nothing
 end
 
@@ -344,18 +380,24 @@ Fill `solver.dtau_x`/`dtau_y` for one Blatter-Pattyn solve. Only
 Eq. 7 (`ViscosityPseudoTimeStep`) bounds only the membrane part of a *depth-integrated*
 operator and has no vertical-shear term to extend, so it is not a meaningful bound for BP at
 all, and passing it raises a `MethodError` rather than silently reusing the wrong formula.
+
+`dtau_cap` (default `Inf`) is forwarded to [`gershgorin_dt!`](@ref).
 """
 function pseudo_dt!(solver::PseudoTransientSolver, mech::MechanicState, c::Constants,
-                    rt::Runtime, momentum::MomentumBalance3D, mask::AbstractIceMask = NoMask())
+                    rt::Runtime, momentum::MomentumBalance3D, mask::AbstractIceMask = NoMask();
+                    dtau_cap = Inf)
     dx = Δx(rt.grid2d, Center(), 1, 1, 1)
     dy = Δy(rt.grid2d, Center(), 1, 1, 1)
-    return pseudo_dt!(solver, solver.pseudo_timestep, mech, c, rt, momentum, mask, dx, dy)
+    return pseudo_dt!(solver, solver.pseudo_timestep, mech, c, rt, momentum, mask, dx, dy;
+                      dtau_cap)
 end
 
 function pseudo_dt!(solver::PseudoTransientSolver, pt::GershgorinPseudoTimeStep,
                     mech::MechanicState, c::Constants, rt::Runtime,
-                    momentum::MomentumBalance3D, mask::AbstractIceMask, dx, dy)
-    gershgorin_dt!(solver, mech, c, rt, momentum, mask, 2 * pt.cfl * solver.dtau_scaling)
+                    momentum::MomentumBalance3D, mask::AbstractIceMask, dx, dy;
+                    dtau_cap = Inf)
+    gershgorin_dt!(solver, mech, c, rt, momentum, mask, 2 * pt.cfl * solver.dtau_scaling;
+                   dtau_cap)
     return nothing
 end
 
@@ -1198,18 +1240,23 @@ update_basalstress!(::MechanicState, ::NoFrictionUpdate, ::Runtime, ::MomentumBa
 $(TYPEDSIGNATURES)
 
 Evaluate the Blatter-Pattyn PT velocity rate: column velocity gradients
-([`velocitygradients!`](@ref)), viscosity continuation, membrane stress
-([`membranestress!`](@ref)), basal stress, then [`dotvel!`](@ref) — the same order as
+([`velocitygradients!`](@ref), then [`clamp_velocity_gradients!`](@ref) if `strainrate_cap`
+is finite), viscosity continuation, membrane stress ([`membranestress!`](@ref)), basal
+stress, then [`dotvel!`](@ref) — the same order as
 [`pseudo_rate!(..., ::MomentumBalance2D, ...)`](@ref), minus the DIVA-only
 `diva_update!` step BP has no counterpart for (`roadmaps/blatter-pattyn.md`, §2.2).
+
+`strainrate_cap` (default `Inf`, a no-op) is the numerical safety net documented at
+[`clamp_velocity_gradients!`](@ref).
 """
 function pseudo_rate!(mech::MechanicState, c::Constants, rt::Runtime,
                       momentum::MomentumBalance3D,
                       solver::PseudoTransientSolver, mask::AbstractIceMask = NoMask();
-                      gamma = 1)
+                      gamma = 1, strainrate_cap = Inf)
     (; velocity, material, stress, topography) = mech
 
     velocitygradients!(velocity, topography.thickness, rt, mask)
+    clamp_velocity_gradients!(velocity, strainrate_cap, rt)
     _iterate_viscosity!(mech, momentum, solver, rt, mask)
     membranestress!(stress, velocity, material, momentum, rt, mask)
 
@@ -1225,25 +1272,26 @@ end
 
 function _tuning_init!(tu::FixedTuning, solver::PseudoTransientSolver, mech::MechanicState,
                        c::Constants, rt::Runtime, momentum::MomentumBalance3D,
-                       mask::AbstractIceMask)
-    pseudo_dt!(solver, mech, c, rt, momentum, mask)
+                       mask::AbstractIceMask; dtau_cap = Inf)
+    pseudo_dt!(solver, mech, c, rt, momentum, mask; dtau_cap)
     return _tuning_state(eltype(solver.dtau_x), tu.gamma, tu.theta_v, NaN)
 end
 
 function _tuning_init!(::AutotunedDynamicRelaxation, solver::PseudoTransientSolver,
                        mech::MechanicState, c::Constants, rt::Runtime,
-                       momentum::MomentumBalance3D, mask::AbstractIceMask)
+                       momentum::MomentumBalance3D, mask::AbstractIceMask; dtau_cap = Inf)
     T = eltype(solver.dtau_x)
     scale = T(solver.dtau_scaling)
-    gershgorin_dt!(solver, mech, c, rt, momentum, mask, scale)
+    gershgorin_dt!(solver, mech, c, rt, momentum, mask, scale; dtau_cap)
     return _tuning_state(T, 1, 1, scale)
 end
 
-_tune!(::FixedTuning, state, solver, mech, c, rt, ::MomentumBalance3D, mask, ux, uy) = state
+_tune!(::FixedTuning, state, solver, mech, c, rt, ::MomentumBalance3D, mask, ux, uy;
+      dtau_cap = Inf) = state
 
 function _tune!(tu::AutotunedDynamicRelaxation, state, solver::PseudoTransientSolver,
                 mech::MechanicState, c::Constants, rt::Runtime, momentum::MomentumBalance3D,
-                mask::AbstractIceMask, ux, uy)
+                mask::AbstractIceMask, ux, uy; dtau_cap = Inf)
     state.armed || return state
     T = typeof(state.gamma)
     numerator = abs(_sum_du_dot_r(solver, ux, uy) - state.rayleigh_ur)
@@ -1254,7 +1302,7 @@ function _tune!(tu::AutotunedDynamicRelaxation, state, solver::PseudoTransientSo
     cc = convert(T, solver.pseudo_timestep.cfl)^2
     dtau = -cc * d + sqrt(cc^2 * d^2 + 4 * cc)
     scale = dtau^2 * convert(T, solver.dtau_scaling)
-    gershgorin_dt!(solver, mech, c, rt, momentum, mask, scale)
+    gershgorin_dt!(solver, mech, c, rt, momentum, mask, scale; dtau_cap)
     return merge(state, (; gamma = d * dtau, scale, lambda_min = λ_min, armed = false))
 end
 
@@ -1318,11 +1366,21 @@ solver-held strategies, same halo-filling contract; the differences are exactly 
 Requires a column [`StaggeredGrid`](@ref) (`nz > 1`), checked by
 [`_check_momentum_grid`](@ref) — on `nz == 1` BP would silently degenerate to SSA with the
 wrong (3D, unaveraged) viscosity rather than raise a clear error.
+
+`strainrate_cap`/`dtau_cap` (both default `Inf`, a no-op) are the numerical safety nets
+documented at [`clamp_velocity_gradients!`](@ref) and above
+[`_pseudo_dt_gershgorin_bp!`](@ref) respectively — added after real 8 km AIS geometry showed
+a masked, ice-free-adjacent column can lose its Gershgorin bound's dominant vertical term
+entirely (`roadmaps/blatter-pattyn.md`, Phase 4 "Thin and ice-free columns"). Two
+complementary nets, not one: `dtau_cap` bounds the *first* explicit step at such a column,
+`strainrate_cap` bounds the membrane-stress feedback a first step that is still too large
+would otherwise feed into every following iteration.
 """
 function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTransientSolver,
                            rt::Runtime,
                            momentum::MomentumBalance3D,
-                           mask::AbstractIceMask = NoMask())
+                           mask::AbstractIceMask = NoMask();
+                           strainrate_cap = Inf, dtau_cap = Inf)
     _check_momentum_grid(momentum, rt)
 
     (; velocity) = mech
@@ -1336,7 +1394,7 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
 
     # Fields held fixed over the PT iteration.
     drivingstress!(mech, c, rt, momentum, mask)
-    state = _tuning_init!(tuning, solver, mech, c, rt, momentum, mask)
+    state = _tuning_init!(tuning, solver, mech, c, rt, momentum, mask; dtau_cap)
     # After `drivingstress!` (it reads the driving stress) and before the loop (it borrows
     # `residual_x`/`residual_y` as scratch, which `dotvel!` overwrites on iteration 1).
     scale = _convergence_scale(solver.convergence, mech, c, solver, rt, momentum, mask)
@@ -1347,8 +1405,8 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
     while err > abstol && iter < maxiter
         iter += 1
 
-        pseudo_rate!(mech, c, rt, momentum, solver, mask; gamma = state.gamma)
-        state = _tune!(tuning, state, solver, mech, c, rt, momentum, mask, ux, uy)
+        pseudo_rate!(mech, c, rt, momentum, solver, mask; gamma = state.gamma, strainrate_cap)
+        state = _tune!(tuning, state, solver, mech, c, rt, momentum, mask, ux, uy; dtau_cap)
 
         # After `_tune!`, which needs the pre-copy `u_old` (see its docstring).
         copyto!(asarray(ux_old), asarray(ux))

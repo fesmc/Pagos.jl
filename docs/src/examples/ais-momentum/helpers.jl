@@ -168,7 +168,7 @@ const SOLVER_KWARGS = (
     pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.99),
     convergence = ScaledResidual(),
     friction_update = ActiveFrictionUpdate(),
-    tuning = AutotunedDynamicRelaxation(),
+    tuning = AutotunedDynamicRelaxation(cadence = 50),
 )
 
 set_theme!(theme_latexfonts())

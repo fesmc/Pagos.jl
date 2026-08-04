@@ -119,6 +119,64 @@ end
         @test all(≈(0.0, atol = 1e-8), interior(mech.stress.yz))  # v has no z-dependence
     end
 
+    @testset "margin faces keep their vertical operator" begin
+        # The regression the AIS 8 km run exposed (`roadmaps/blatter-pattyn.md`, Phase 1
+        # "margin σxz"). `NODE_ACX_AC` and `NODE_ACX` resolve to the *same* cell pair, so
+        # gating σxz on `node_fully_active` while the unknown is created under `node_active`
+        # zeroed the whole vertical operator along the margin — and BP's only tie between a
+        # column and the bed is the k = 1 flux, so layers above drift without a restoring
+        # force. Half the domain is iced, giving one clean margin at the `acx` face i = m + 1.
+        # A realistic aspect ratio (Δx = 1 km against H = 100 m) on purpose: it is what makes
+        # the vertical term dominate the Gershgorin row sum, and hence what lets the Δτ
+        # assertion below discriminate. At Δx ~ H the horizontal term dominates and a missing
+        # vertical operator barely moves Δτ at all.
+        nx, ny, nz = 8, 4, 6
+        H0, μ0, e, dx = 100.0, 1e7, 0.02, 1e3
+        m = nx ÷ 2
+        grid = StaggeredGrid(Float64, nx * dx, ny * dx, dx, dx, layering(; nz))
+        rt = Runtime(grid)
+        mech = MechanicState(grid)
+        topo = TopographicState(grid)
+
+        setdata!(topo.mask.is_ice, false)
+        interior(topo.mask.is_ice)[1:m, :, 1] .= true
+        mask = IceMask(topo.mask.is_ice)
+
+        fill_analytic!(mech.topography.thickness, rt.grid2d, (x, y) -> H0)
+        fill_analytic3d!(mech.velocity.x, rt.grid, (x, y, ζ) -> e * ζ)
+        # µ = 0 off ice: the case the strict rule was reached for. A one-sided harmonic mean
+        # never inverts it, so σxz must come out finite *and* non-zero on the margin face.
+        fill_analytic3d!(mech.material.viscosity, rt.grid, (x, y, ζ) -> 0.0)
+        for k in 1:nz, j in -1:(ny + 2), i in 1:m
+            mech.material.viscosity[i, j, k] = μ0
+        end
+
+        velocitygradients!(mech.velocity, mech.topography.thickness, rt, mask)
+        membranestress!(mech, BlatterPattynMomentumBalance(), rt, mask)
+
+        # Interior face (both cells iced): unchanged, the two-way `hlerp`.
+        @test mech.stress.xz[m, 2, 3] ≈ μ0 * (e / H0)
+        # Margin face i = m + 1 (cell m iced, cell m+1 not): the unknown lives here
+        # (`node_active(NODE_ACX)`), so σxz must too — one-sided onto column m.
+        @test node_active(mask, Pagos.NODE_ACX, m + 1, 2)
+        @test isfinite(mech.stress.xz[m + 1, 2, 3])
+        @test mech.stress.xz[m + 1, 2, 3] ≈ μ0 * (e / H0)
+        # Fully off-ice face: still zero, and still finite.
+        @test mech.stress.xz[m + 3, 2, 3] == 0.0
+
+        # And the Gershgorin bound must see the same µ, or it stops describing the operator
+        # it bounds. Both faces are then vertical-stiffness-limited by the *same* µ, so their
+        # Δτ agree to within the horizontal row sum — which does legitimately halve at the
+        # margin (the ice-free `aa` cell contributes µ = 0), but is ~4 orders of magnitude
+        # below the vertical term at this aspect ratio. Drop the vertical term at the margin
+        # only, and this ratio jumps from ~1 to ~10⁴.
+        solver = PseudoTransientSolver(grid, BlatterPattynMomentumBalance();
+                                       tuning = AutotunedDynamicRelaxation())
+        fill_analytic!(mech.friction.beta_eff, rt.grid2d, (x, y) -> 1e3)
+        pseudo_dt!(solver, mech, cst, rt, BlatterPattynMomentumBalance(), mask)
+        @test solver.dtau_x[m + 1, 2, 3] ≈ solver.dtau_x[m, 2, 3] rtol = 1e-2
+    end
+
     @testset "uniform slab, constant viscosity — pseudo_transient!" begin
         const_case = (H0 = 1000.0, μ0 = 1e8, β0 = 1e3, α = 1e-2)
         an = bp_slab_analytical(; const_case...)

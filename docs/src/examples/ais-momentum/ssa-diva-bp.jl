@@ -56,20 +56,24 @@ diff_diva_ssa = pairwise_stats("DIVA vs SSA", diva.speed, ssa.speed)
 #=
 ## Figure
 
-Top row (speed, shared colour range): SSA, DIVA, BP. Bottom row (Δ speed, shared symmetric
-colour range): BP - SSA, BP - DIVA, DIVA - SSA.
+Top row (speed, shared colour range): SSA, DIVA, BP, each subtitled with the solve's
+iteration count and wall-clock time (`run_solve`'s own `iterations`/`elapsed`, printed above
+too). Bottom row (Δ speed, shared symmetric colour range): BP - SSA, BP - DIVA, DIVA - SSA.
 =#
 
-fig1 = Figure(size = (1650, 1120))
+fig1 = Figure(size = (1650, 1150))
+
+perf_label(r) = @sprintf("%d it · %.1f s%s", r.iterations, r.elapsed,
+                         r.converged ? "" : " (not converged)")
 
 crange_top = (0, quantile(filter(!isnan, on_ice(bp.speed)), 0.995))
-for (col, (data, title)) in enumerate((
-    (on_ice(ssa.speed),  "Pagos SSA"),
-    (on_ice(diva.speed), "Pagos DIVA"),
-    (on_ice(bp.speed),   "Pagos Blatter-Pattyn"),
+for (col, (data, title, result)) in enumerate((
+    (on_ice(ssa.speed),  "Pagos SSA",           ssa),
+    (on_ice(diva.speed), "Pagos DIVA",          diva),
+    (on_ice(bp.speed),   "Pagos Blatter-Pattyn", bp),
 ))
     ax = Axis(fig1[1, col], xlabel = "x (km)", ylabel = col == 1 ? "y (km)" : "",
-        aspect = DataAspect(), title = title)
+        aspect = DataAspect(), title = title, subtitle = perf_label(result))
     hm = heatmap!(ax, xc, yc, data; colorrange = crange_top)
     col == 3 && Colorbar(fig1[1, 4], hm, label = "speed (m/yr)")
 end
