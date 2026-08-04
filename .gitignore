@@ -7,6 +7,8 @@ docs/build/
 docs/src/physics/*.md
 benchmark/plots/*
 benchmark/data/*
+benchmark/results/
+benchmark/tune.json
 ice-data
 ice_data
 notes.md
