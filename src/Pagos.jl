@@ -19,7 +19,6 @@ using DocStringExtensions
 using Downloads
 using KernelAbstractions
 using LinearAlgebra
-using LinearSolve           # TODO: externalize
 using Random
 using Reexport
 using StatsBase
@@ -153,7 +152,7 @@ export basal_velocity_from_surface_velocity!, depthavg_velocity!
 include("mechanics/pseudotransient.jl")
 export PseudoTransientSolver
 export AbstractViscosityContinuation, NoViscosityContinuation, GlenViscosityContinuation
-export DIVAViscosityContinuation
+export DIVAViscosityContinuation, BPViscosityContinuation
 export AbstractDIVUpdate, NoDIVUpdate, PeriodicDIVUpdate
 export AbstractFrictionUpdate, ActiveFrictionUpdate, NoFrictionUpdate
 export AbstractPseudoTimeStep, ViscosityPseudoTimeStep, GershgorinPseudoTimeStep
@@ -176,7 +175,8 @@ include("mechanics/strainrate.jl")
 export strainrate!, scaledstrainrate!, velocitygradients!
 export depthaverage_velocitygradients!, membranestress!
 export raw_strainrate!, raw_strainrate_effective!
-export effective_strainrate_ssa!, effective_strainrate_diva!
+export effective_strainrate_ssa!, effective_strainrate_diva!, effective_strainrate_bp!
+export verticalvelocity!
 
 ###########################################################
 # Material

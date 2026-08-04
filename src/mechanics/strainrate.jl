@@ -325,6 +325,74 @@ function depthaverage_velocitygradients!(velocity::VelocityState, rt::Runtime,
     return nothing
 end
 
+###############################################################
+# Blatter-Pattyn/Stokes vertical velocity from incompressibility
+###############################################################
+#
+# `w` is not an unknown of the momentum solve (`roadmaps/blatter-pattyn.md`, Phase 1): BP
+# resolves `u`/`v` only, and `∂w/∂z = -(u_x + v_y)` diagnoses `w` afterward, by integrating
+# up from the bed where `w = 0` (no basal melting/penetration). Per-column, serial in `k` —
+# the same `rt.launch2d` + internal `for k in 1:nz` shape as `_viscosity_integrals!`
+# (`src/mechanics/velocities.jl`), for the same reason: a cumulative sum has no useful
+# parallelism across `k`, and `w`/`x_dx`/`y_dy` are column (3D) fields read/written at their
+# own `k` inside the loop despite the launch itself sweeping only `(i, j)`.
+#
+# Midpoint rule: `Δw_k = -(u_x[k] + v_y[k]) · Δz_k(phys)`, `Δz_k(phys) = Δζ_k · H` — the same
+# sigma-to-physical conversion `_viscosity_integrals!` uses for its own `dz`. Requires
+# `velocity.x_dx`/`y_dy` to already be current — call [`velocitygradients!`](@ref) first.
+
+@kernel inbounds = true function _verticalvelocity!(w, dux, dvy, H, nz, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    T = eltype(w)
+    Hij = H[i, j, 1]
+
+    if node_active(mask, NODE_AA, i, j) && Hij > zero(T)
+        acc = zero(T)
+        w[i, j, 1] = acc
+        for k in 1:nz
+            acc -= (dux[i, j, k] + dvy[i, j, k]) * Δz(grid, Center(), i, j, k) * Hij
+            w[i, j, k + 1] = acc
+        end
+    else
+        for k in 1:(nz + 1)
+            w[i, j, k] = zero(T)
+        end
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Diagnose the vertical velocity `velocity.z` (`AAZ3`, at the layer interfaces) from
+incompressibility, `∂w/∂z = -(u_x + v_y)`, integrated up from the bed (`w = 0`) —
+[`MomentumBalance3D`](@ref)'s `w` is a post-solve diagnostic, not an unknown of
+[`pseudo_transient!`](@ref) (`roadmaps/blatter-pattyn.md`, Phase 1), so this is called
+*after* a converged solve, never from inside the PT loop.
+
+Requires `velocity.x_dx`/`y_dy` to already be current (see [`velocitygradients!`](@ref)).
+Feeds `velocity.z_dx`/`z_dy`/`z_dz` on the *next* call to [`velocitygradients!`](@ref) — that
+function already differentiates `velocity.z` (see `_velocity_gradients!`'s `z_dx`/`z_dy`/
+`z_dz` lines), so nothing here duplicates that; it exists only to fill the `w` those read.
+"""
+function verticalvelocity!(velocity::VelocityState, H, rt::Runtime,
+                           mask::AbstractIceMask = NoMask())
+    nz = size(rt.grid, Center())[3]
+    rt.launch2d(rt.arch, rt.grid2d,
+                _verticalvelocity! =>
+                    (velocity.z, velocity.x_dx, velocity.y_dy, H, nz, mask, rt.grid))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level [`verticalvelocity!`](@ref).
+"""
+verticalvelocity!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMask()) =
+    verticalvelocity!(mech.velocity, mech.topography.thickness, rt, mask)
+
 # `yx`/`zx`/`zy` are the symmetric duplicates of `xy`/`xz`/`yz` and live at the same node
 # classes. The collocated kernels leave them untouched; filling them costs three stores and
 # removes a "why is `strainrate.yx` zero" trap for anything that reads the full tensor.
@@ -552,6 +620,105 @@ membranestress!(mech::MechanicState,
                     momentum, rt, mask)
 
 ###############################################################
+# Chmy-native, C-grid staggered Blatter-Pattyn membrane stress
+###############################################################
+#
+# Per unit *volume* rather than per unit area — no `H` anywhere, unlike the SSA/DIVA method
+# above — and with a genuine vertical-shear pair `σxz`/`σyz` the depth-integrated balance has
+# none of (`roadmaps/blatter-pattyn.md`, §1):
+#
+#   σxx = 2µ(2u_x + v_y)   σxy = µ(u_y + v_x)   σxz = µ u_z
+#
+# and `σyy`/`σyz` the mirror image. Written into `stress.xx`/`xy`/`xz`/`yy`/`yz` directly —
+# unlike SSA/DIVA's `membrane_xx`/`xy`/`yy`, no dedicated field is needed here, because BP's
+# operand is honestly `AA3`/`AB3`/`ACXZ3`-shaped already (no `nz == 1` shape-collapse
+# coincidence to launder, which is what forced SSA/DIVA's quantity out into its own field in
+# the first place). `deviatoric_stress!` writes the *true* pointwise deviatoric stress into
+# the same fields from `strainrate.xx`/`xy`/`xz` (a different combination — 2µε̇xx, not
+# 2µ(2ε̇xx+ε̇yy)); the two are simply never live at once, exactly as this field's role for
+# SSA/DIVA already is one thing during the PT loop (`membrane_xx`) and another once a caller
+# runs `raw_strainrate!` + `deviatoric_stress!` afterward for diagnostics.
+#
+# `σxx`/`σyy` need no interpolation of `µ` (already at `aa`, matching `x_dx`/`y_dy`); `σxy`
+# needs the ordinary one-way `hlerp` onto `ab`, exactly as `_membrane_stress_staggered!`'s
+# does. `σxz`/`σyz` need `µ` **two-way** staggered onto `acx_ac`/`acy_ac` — staggered in both
+# x and z — which is exactly what Chmy's `hlerp` already does with no special-casing: it
+# interpolates every dimension on which `location(µ)` and the target differ, and dimension 3
+# (z) is one of them here (§1.1's "the one genuinely new interpolation"). Strict masking
+# (`node_fully_active`) at every `hlerp` site, for the same NaN-avoidance reason as
+# `_deviatoric_stress_staggered!`.
+
+@kernel inbounds = true function _membrane_stress_staggered_bp!(sxx, sxy, sxz, syy, syz, μ,
+                                                                 vel, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    Z = zero(eltype(sxx))
+
+    if node_active(mask, NODE_AA, i, j)
+        two_μ = 2 * μ[I...]
+        dux = vel.x_dx[I...]
+        dvy = vel.y_dy[I...]
+        sxx[I...] = two_μ * (2 * dux + dvy)
+        syy[I...] = two_μ * (dux + 2 * dvy)
+    else
+        sxx[I...] = Z
+        syy[I...] = Z
+    end
+
+    sxy[I...] = node_fully_active(mask, NODE_AB, i, j) ?
+        hlerp(μ, NODE_AB, grid, I...) * (vel.x_dy[I...] + vel.y_dx[I...]) : Z
+    sxz[I...] = node_fully_active(mask, NODE_ACX_AC, i, j) ?
+        hlerp(μ, NODE_ACX_AC, grid, I...) * vel.x_dz[I...] : Z
+    syz[I...] = node_fully_active(mask, NODE_ACY_AC, i, j) ?
+        hlerp(μ, NODE_ACY_AC, grid, I...) * vel.y_dz[I...] : Z
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native, C-grid staggered Blatter-Pattyn membrane stress: writes `stress.xx`/`yy` (at
+`aa`), `stress.xy` (at `ab`) and `stress.xz`/`yz` (at `acx`/`acy`, z-`Vertex`) from the 3D
+viscosity `material.viscosity` and the column velocity gradients [`velocitygradients!`](@ref)
+already wrote — `σxx = 2µ(2u_x+v_y)`, `σxy = µ(u_y+v_x)`, `σxz = µ u_z` (Robinson et al. 2022,
+Eq. 1) and the `y` mirror image.
+
+Per unit volume, unlike [`membranestress!(::MomentumBalance2D)`](@ref) — no thickness enters
+anywhere, so no `topo` argument is taken. `µ` is interpolated onto `ab`/`acx_ac`/`acy_ac`
+harmonically (`hlerp`), matching [`deviatoric_stress!`](@ref)'s stress-continuity argument;
+`σxz`/`σyz` need `µ` staggered in *both* x and z, which `hlerp` handles with no extra code
+(see the source note above).
+
+Runs on `rt.grid`, the column grid — every operand is a genuine 3D field.
+
+!!! warning "A zero viscosity gives `NaN`, not zero — same trap as `deviatoric_stress!`"
+    `hlerp` averages reciprocals, so an unmasked ice-free neighbour produces `NaN` at `ab`,
+    `acx_ac` or `acy_ac` rather than `0`; pass an [`IceMask`](@ref) once the material state
+    has ice-free cells.
+"""
+function membranestress!(stress::StressState, velocity::VelocityState,
+                         material::MechanicMaterialState, momentum::MomentumBalance3D,
+                         rt::Runtime, mask::AbstractIceMask = NoMask())
+    rt.launch(rt.arch, rt.grid,
+              _membrane_stress_staggered_bp! =>
+                  (stress.xx, stress.xy, stress.xz, stress.yy, stress.yz,
+                   material.viscosity, velocity, mask, rt.grid))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level [`membranestress!`](@ref) for the Blatter-Pattyn momentum balance: writes
+`mech.stress.xx`/`xy`/`xz`/`yy`/`yz` from `mech.material` and `mech.velocity` (which must
+already carry the column velocity gradients, see [`velocitygradients!`](@ref)).
+"""
+membranestress!(mech::MechanicState,
+                momentum::MomentumBalance3D,
+                rt::Runtime, mask::AbstractIceMask = NoMask()) =
+    membranestress!(mech.stress, mech.velocity, mech.material, momentum, rt, mask)
+
+###############################################################
 # Chmy-native, C-grid staggered SSA/DIVA effective strain rate
 ###############################################################
 #
@@ -719,3 +886,74 @@ effective_strainrate_diva!(mech::MechanicState, rt::Runtime,
                            mask::AbstractIceMask = NoMask()) =
     effective_strainrate_diva!(mech.strainrate, mech.velocity, mech.material, mech.stress,
                                rt, mask)
+
+###############################################################
+# Chmy-native Blatter-Pattyn effective strain rate (per layer)
+###############################################################
+#
+# Same invariant as DIVA (Eq. 13), but every term is genuinely 3D: BP already carries a
+# resolved column velocity, so `u_z`/`v_z` are read straight from `velocity.x_dz`/`y_dz`
+# rather than diagnosed from `τ_b` via Eq. (21). No `µ`, no basal stress and no `grid2d`
+# argument are needed here at all — the sole difference from `_effective_strainrate_diva!`.
+#
+# `x_dx`/`y_dy` are already at `aa`; `x_dy`/`y_dx` at `ab` and `x_dz`/`y_dz` at
+# `acx_ac`/`acy_ac` each need one `lerp` onto `aa` — the `x_dz`/`y_dz` one is a two-way
+# stagger (x *and* z), handled by Chmy's `lerp` without any special-casing (it interpolates
+# every dimension on which `from`/`to` differ; see `hlerp`'s use for `σxz` in
+# `_membrane_stress_staggered_bp!`, the same mechanism). Arithmetic, not harmonic: this
+# interpolates a strain rate, not a viscosity, so there is no series/parallel argument for
+# `hlerp` here, and no NaN trap either — `_velocity_gradients!` already zeroes an inactive
+# neighbour instead of leaving a placeholder to invert.
+
+@kernel inbounds = true function _effective_strainrate_bp!(eff, velocity, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    if node_active(mask, NODE_AA, i, j)
+        dxx = velocity.x_dx[I...]
+        dyy = velocity.y_dy[I...]
+        dxy = lerp(velocity.x_dy, NODE_AA, grid, I...)
+        dyx = lerp(velocity.y_dx, NODE_AA, grid, I...)
+        uz  = lerp(velocity.x_dz, NODE_AA, grid, I...)
+        vz  = lerp(velocity.y_dz, NODE_AA, grid, I...)
+        eff[I...] = sqrt(
+            dxx^2 + dyy^2 + dxx * dyy + ((dxy + dyx) / 2)^2 + (uz^2 + vz^2) / 4
+        )
+    else
+        eff[I...] = zero(eltype(eff))
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native Blatter-Pattyn effective strain rate at `aa` (Robinson et al. 2022, Eq. 3):
+
+```math
+\\dot\\varepsilon_e^2 = u_x^2 + v_y^2 + u_x v_y + \\tfrac14(u_y + v_x)^2
+    + \\tfrac14 u_z^2 + \\tfrac14 v_z^2
+```
+
+Writes `strainrate.effective` (`AA3`), the same field [`effective_strainrate_diva!`](@ref)
+writes — the two momentum balances never run in the same solve, so sharing the field costs
+nothing. Unlike DIVA's Eq. (13), every term (including `u_z`/`v_z`) comes from the real
+velocity gradients [`velocitygradients!`](@ref) already wrote, since BP resolves the column
+velocity directly rather than reconstructing it afterwards.
+
+Requires `velocitygradients!` to have already run (all nine gradient fields current).
+"""
+function effective_strainrate_bp!(strainrate::StrainRateState, velocity::VelocityState,
+                                  rt::Runtime, mask::AbstractIceMask = NoMask())
+    rt.launch(rt.arch, rt.grid,
+              _effective_strainrate_bp! => (strainrate.effective, velocity, mask, rt.grid))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level [`effective_strainrate_bp!`](@ref).
+"""
+effective_strainrate_bp!(mech::MechanicState, rt::Runtime,
+                         mask::AbstractIceMask = NoMask()) =
+    effective_strainrate_bp!(mech.strainrate, mech.velocity, rt, mask)

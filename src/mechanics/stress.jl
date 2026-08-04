@@ -416,3 +416,58 @@ drivingstress!(mech::MechanicState, c::Constants, rt::Runtime,
     drivingstress!(mech.stress.driving_x, mech.stress.driving_y,
                    mech.topography.surface, mech.topography.thickness,
                    c.density_ice, c.gravity, rt, mask)
+
+###############################################################
+# Chmy-native, C-grid staggered Blatter-Pattyn (un-integrated) driving stress
+###############################################################
+#
+# `ρg ∂s/∂x`, not `ρgH ∂s/∂x`: the Blatter-Pattyn residual is per unit *volume*
+# (`roadmaps/blatter-pattyn.md`, §1), so no thickness enters. The surface slope has no `z`
+# dependence, so `stress.driving_x`/`driving_y` stay the same `ACX2`/`ACY2` fields
+# [`drivingstress!(::MomentumBalance2D)`](@ref) already uses — written once on `grid2d` here
+# and simply read at `k = 1` inside the 3D [`dotvel!`](@ref) sweep, the same broadcast
+# convention `_velocity_gradients!` already uses for `H`. A fused kernel (gradient and `ρg`
+# scale in one pass), matching `_drivingstress!`'s shape above; unlike it, there is no `H` to
+# stagger, so no `lerp` appears at all.
+
+@kernel inbounds = true function _drivingstress_bp!(τx, τy, s, ρg, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    Z = zero(eltype(τx))
+    τx[I...] = node_active(mask, NODE_ACX, i, j) ? ρg * ∂x(s, grid, I...) : Z
+    τy[I...] = node_active(mask, NODE_ACY, i, j) ? ρg * ∂y(s, grid, I...) : Z
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Chmy-native, C-grid staggered Blatter-Pattyn driving stress: writes `τx` at `acx` and `τy`
+at `acy` from the cell-centred surface elevation `s`, as `ρ_ice · g · ∂s/∂x` — no thickness,
+unlike [`drivingstress!(::MomentumBalance2D)`](@ref), since the Blatter-Pattyn residual is
+per unit volume. Runs on `rt.grid2d`: the surface slope has no `z` dependence, so this is
+written once and read broadcast down the column (see the source note above), not copied into
+a 3D field.
+
+Same sign convention as the depth-integrated method: stores `+ρgH∇s` scaled *without* `H`,
+i.e. `+ρg∇s`, matching what [`dotvel!`](@ref) subtracts.
+"""
+function drivingstress!(τx, τy, s, ρ_ice, g, rt::Runtime, ::MomentumBalance3D,
+                        mask::AbstractIceMask = NoMask())
+    ρg = convert(eltype(τx), ρ_ice * g)
+    rt.launch2d(rt.arch, rt.grid2d,
+                _drivingstress_bp! => (τx, τy, s, ρg, mask, rt.grid2d))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+State-level [`drivingstress!`](@ref) for the Blatter-Pattyn momentum balance: reads the
+geometry from `mech.topography` and writes `mech.stress.driving_x`/`driving_y` — the same
+fields the depth-integrated method writes, since both are genuinely 2D.
+"""
+drivingstress!(mech::MechanicState, c::Constants, rt::Runtime, momentum::MomentumBalance3D,
+               mask::AbstractIceMask = NoMask()) =
+    drivingstress!(mech.stress.driving_x, mech.stress.driving_y, mech.topography.surface,
+                   c.density_ice, c.gravity, rt, momentum, mask)

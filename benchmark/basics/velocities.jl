@@ -158,8 +158,8 @@ println("=" ^ w)
 # ---------------------------------------------------------------------------
 # Table 2: Solve — velocity!(lsd)
 #
-# v1: LinearProblem rebuilds sparse(Ai,Aj,Av) on every call, then solves.
-# v2: LinearProblem uses the pre-built CSC matrix, then solves.
+# v1: rebuilds sparse(Ai,Aj,Av) on every call, then factorizes and solves via `\`.
+# v2: reuses the pre-built CSC matrix, then factorizes and solves via lu!/ldiv!.
 # GPU sparse direct solvers require cuSolver / additional LinearSolve extensions
 # and are not benchmarked here.
 # ---------------------------------------------------------------------------

@@ -203,6 +203,162 @@ function gershgorin_dt!(solver::PseudoTransientSolver, mech::MechanicState, c::C
     return nothing
 end
 
+###############################################################
+# Blatter-Pattyn Gershgorin pseudo-time step
+###############################################################
+#
+# Row sums for BP's residual (`roadmaps/blatter-pattyn.md`, §2.1), per unit *volume* rather
+# than per unit area: `P`/`Q` above are `ηH` at `aa`/`ab`; here they are bare `µ` (no `H`,
+# matching `_membrane_stress_staggered_bp!`'s `σxx`/`σxy`), and there is a third,
+# vertical-shear contribution `Λ_vert` the 2D bound has no counterpart for at all:
+#
+#   ∂x(σxx) : u-terms 8(P₋+P₊)/dx²   v-terms 4(P₋+P₊)/(dx·dy)
+#   ∂y(σxy) : u-terms 2(Q₋+Q₊)/dy²   v-terms 2(Q₋+Q₊)/(dx·dy)
+#   ∂z(σxz) : u-terms 2(R₋/δ₋ + R₊/δ₊)/Δ_k
+#
+# all divided by `ρ̃` (not `ρ̃H`) — `Λ_horiz` therefore carries **no** `H` at all (unlike the
+# 2D bound's `/(ρHx)`), while `Λ_vert` alone carries the `1/H²` that falls out of `δ±`/`Δ_k`
+# both being `H·Δζ` quantities (`R`/`µ` is already staggered in physical space via `hlerp`,
+# but the two sigma-to-z conversions — one inside `σxz` itself via `x_dz`, one in the outer
+# flux-difference — each contribute a `1/H`). At `k = 1` the bottom flux is the bed BC: its
+# row-sum contribution is `β_face/(Δζ₁·Hx)`, **not** doubled and **not** `1/Hx²` — unlike an
+# interior `R/δ` term, `β u_b` has no neighbouring layer to also appear as an off-diagonal
+# for, and it carries only the single `1/H` `dotvel!`'s outer `_dz_over_H` division
+# contributes (`β` itself, unlike `µ`, is not a per-length quantity). At `k = nz` the top
+# flux is dropped outright (stress-free surface): no substitute term, matching `dotvel!`'s
+# `top = k < nz ? sxz[k+1] : 0`. Sanity check to assert in tests: uniform `µ`, no drag,
+# `dx = dy` and a single layer must reproduce the existing 2D bound divided by `H` — but
+# `_check_momentum_grid` rejects `nz == 1` for BP outright, so this is only ever exercised at
+# `nz ≥ 2`, where both `k = 1` and `k = nz` always have a genuine interior neighbour.
+
+@inline _mu_aa(μ, mask, i, j, k) =
+    node_active(mask, NODE_AA, i, j) ? μ[i, j, k] : zero(eltype(μ))
+
+@inline _mu_ab(μ, mask, grid, i, j, k) =
+    node_fully_active(mask, NODE_AB, i, j) ?
+    hlerp(μ, NODE_AB, grid, i, j, k) : zero(eltype(μ))
+
+@inline _mu_acxz(μ, mask, grid, i, j, k) =
+    node_fully_active(mask, NODE_ACX_AC, i, j) ?
+    hlerp(μ, NODE_ACX_AC, grid, i, j, k) : zero(eltype(μ))
+
+@inline _mu_acyz(μ, mask, grid, i, j, k) =
+    node_fully_active(mask, NODE_ACY_AC, i, j) ?
+    hlerp(μ, NODE_ACY_AC, grid, i, j, k) : zero(eltype(μ))
+
+@kernel inbounds = true function _pseudo_dt_gershgorin_bp!(dtau_x, dtau_y, μ, H, β, ρ, scale,
+                                                            drag, nz, mask, dx, dy, grid,
+                                                            grid2d, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, k = I
+    Z = zero(eltype(dtau_x))
+
+    if node_active(mask, NODE_ACX, i, j)
+        Hx = lerp(H, NODE_ACX, grid2d, i, j, 1)
+        Ps = _mu_aa(μ, mask, i - 1, j, k) + _mu_aa(μ, mask, i, j, k)
+        Qs = _mu_ab(μ, mask, grid, i, j, k) + _mu_ab(μ, mask, grid, i, j + 1, k)
+        Λ_horiz = 8Ps / dx^2 + 4Ps / (dx * dy) + 2Qs / dy^2 + 2Qs / (dx * dy)
+
+        Δk = Δz(grid, Center(), i, j, k)
+        bottom = if k > 1
+            Rm = _mu_acxz(μ, mask, grid, i, j, k)
+            δm = Δz(grid, Vertex(), i, j, k)
+            2Rm / δm / Δk / Hx^2
+        else
+            drag ? lerp(β, NODE_ACX, grid2d, i, j, 1) / Δk / Hx : Z
+        end
+        top = if k < nz
+            Rp = _mu_acxz(μ, mask, grid, i, j, k + 1)
+            δp = Δz(grid, Vertex(), i, j, k + 1)
+            2Rp / δp / Δk / Hx^2
+        else
+            Z
+        end
+
+        Λ = Hx > Z ? (Λ_horiz + bottom + top) / ρ : Z
+        dtau_x[I...] = (Hx > Z && Λ > Z) ? scale / Λ : Z
+    else
+        dtau_x[I...] = Z
+    end
+
+    if node_active(mask, NODE_ACY, i, j)
+        Hy = lerp(H, NODE_ACY, grid2d, i, j, 1)
+        Ps = _mu_aa(μ, mask, i, j - 1, k) + _mu_aa(μ, mask, i, j, k)
+        Qs = _mu_ab(μ, mask, grid, i, j, k) + _mu_ab(μ, mask, grid, i + 1, j, k)
+        Λ_horiz = 8Ps / dy^2 + 4Ps / (dx * dy) + 2Qs / dx^2 + 2Qs / (dx * dy)
+
+        Δk = Δz(grid, Center(), i, j, k)
+        bottom = if k > 1
+            Rm = _mu_acyz(μ, mask, grid, i, j, k)
+            δm = Δz(grid, Vertex(), i, j, k)
+            2Rm / δm / Δk / Hy^2
+        else
+            drag ? lerp(β, NODE_ACY, grid2d, i, j, 1) / Δk / Hy : Z
+        end
+        top = if k < nz
+            Rp = _mu_acyz(μ, mask, grid, i, j, k + 1)
+            δp = Δz(grid, Vertex(), i, j, k + 1)
+            2Rp / δp / Δk / Hy^2
+        else
+            Z
+        end
+
+        Λ = Hy > Z ? (Λ_horiz + bottom + top) / ρ : Z
+        dtau_y[I...] = (Hy > Z && Λ > Z) ? scale / Λ : Z
+    else
+        dtau_y[I...] = Z
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+[`MomentumBalance3D`](@ref) counterpart of [`gershgorin_dt!`](@ref): fills
+`solver.dtau_x`/`dtau_y` (`ACX3`/`ACY3`, one `Δτ` per layer, not just per column) with
+`scale / Λ`, `Λ` being the row sum of §2.1 above. Same `scale` convention as the 2D method:
+`2·cfl` for the plain iteration, `Δτ²` for [`AutotunedDynamicRelaxation`](@ref).
+"""
+function gershgorin_dt!(solver::PseudoTransientSolver, mech::MechanicState, c::Constants,
+                        rt::Runtime, momentum::MomentumBalance3D, mask::AbstractIceMask,
+                        scale)
+    T = eltype(solver.dtau_x)
+    dx = Δx(rt.grid2d, Center(), 1, 1, 1)
+    dy = Δy(rt.grid2d, Center(), 1, 1, 1)
+    nz = size(rt.grid, Center())[3]
+    rt.launch(rt.arch, rt.grid,
+              _pseudo_dt_gershgorin_bp! =>
+                  (solver.dtau_x, solver.dtau_y, mech.material.viscosity,
+                   mech.topography.thickness, mech.friction.beta_eff,
+                   convert(T, c.density_ice), convert(T, scale),
+                   _drag_in_spectrum(solver.friction_update), nz, mask,
+                   convert(T, dx), convert(T, dy), rt.grid, rt.grid2d))
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Fill `solver.dtau_x`/`dtau_y` for one Blatter-Pattyn solve. Only
+[`GershgorinPseudoTimeStep`](@ref) is implemented for [`MomentumBalance3D`](@ref) — Sandip's
+Eq. 7 (`ViscosityPseudoTimeStep`) bounds only the membrane part of a *depth-integrated*
+operator and has no vertical-shear term to extend, so it is not a meaningful bound for BP at
+all, and passing it raises a `MethodError` rather than silently reusing the wrong formula.
+"""
+function pseudo_dt!(solver::PseudoTransientSolver, mech::MechanicState, c::Constants,
+                    rt::Runtime, momentum::MomentumBalance3D, mask::AbstractIceMask = NoMask())
+    dx = Δx(rt.grid2d, Center(), 1, 1, 1)
+    dy = Δy(rt.grid2d, Center(), 1, 1, 1)
+    return pseudo_dt!(solver, solver.pseudo_timestep, mech, c, rt, momentum, mask, dx, dy)
+end
+
+function pseudo_dt!(solver::PseudoTransientSolver, pt::GershgorinPseudoTimeStep,
+                    mech::MechanicState, c::Constants, rt::Runtime,
+                    momentum::MomentumBalance3D, mask::AbstractIceMask, dx, dy)
+    gershgorin_dt!(solver, mech, c, rt, momentum, mask, 2 * pt.cfl * solver.dtau_scaling)
+    return nothing
+end
+
 """
 $(TYPEDSIGNATURES)
 
@@ -272,6 +428,102 @@ end
         resid_y[I...] = Z
         dvy[I...] = Z
     end
+end
+
+###############################################################
+# Blatter-Pattyn pseudo-transient velocity rate
+###############################################################
+#
+# Three structural differences from `_dotvel_staggered!` above (`roadmaps/blatter-pattyn.md`
+# §1, §2.3), all of them changes to what is assembled, not a new mechanism:
+#
+#  - a third divergence term, `∂z(σxz)`, on top of the same `∂x(σxx) + ∂y(σxy)` the 2D
+#    kernel already computes (`sxx`/`sxy`/`syy` are per-unit-volume here, but the operator
+#    algebra staggering them onto `acx`/`acy` is identical);
+#  - **no `base_x`/`base_y` term in the residual body.** Basal drag has left the momentum
+#    balance and become the *bed interface flux* inside `∂z(σxz)`'s own assembly (`bot`
+#    below) — folding the BC into this kernel rather than a separate pass keeps `stress.xz`
+#    honestly meaning `σxz` everywhere a caller might read it for diagnostics, never a
+#    substituted boundary value;
+#  - mass scaling is `/ρ̃` (a volume), not `/(ρ̃H)` (an area) — only the vertical term's
+#    ζ→z conversion still needs `H`, via the same `_dz_over_H` `_velocity_gradients!` uses.
+#
+# `∂z(σxz)` is assembled as `_dz_over_H((top - bot) / Δζ_k, Hx)`, mirroring `∂z_σ`'s own
+# `δ(f) * iΔ(...)` exactly (`Δz(grid, Center(), i, j, k)` is the same `Δζ_k` denominator
+# `_viscosity_integrals!` already reads off the sigma axis) but with the two interface
+# values substituted at the column ends per §2.3:
+#
+#   top = k < nz ? σxz[k+1] : 0          (surface: σxz = 0, stress-free)
+#   bot = k > 1  ? σxz[k]   : τ_b,x      (bed: the flux *is* the basal traction)
+#
+# `τ_b,x` is `stress.base_x`, filled once per iteration by the same `update_basalstress!`
+# SSA/DIVA already call — BP does not recompute it, it only relocates where it enters.
+
+@kernel inbounds = true function _dotvel_staggered_bp!(dvx, dvy, resid_x, resid_y, sxx, sxy,
+                                                        sxz, syy, syz, base_x, base_y,
+                                                        driving_x, driving_y, H, ρ, γ, nz,
+                                                        mask, grid, grid2d, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, k = I
+    Z = zero(eltype(dvx))
+    one_m_γ = one(γ) - γ
+
+    if node_active(mask, NODE_ACX, i, j)
+        Hx = lerp(H, NODE_ACX, grid2d, i, j, 1)
+        dζ = Δz(grid, Center(), i, j, k)
+        top = k < nz ? sxz[i, j, k + 1] : Z
+        bot = k > 1  ? sxz[i, j, k]     : base_x[i, j, 1]
+        vert_x = _dz_over_H((top - bot) / dζ, Hx)
+        shear_x = ∂x(sxx, grid, I...) + ∂y(sxy, grid, I...) + vert_x
+        raw_x = Hx > zero(Hx) ? (shear_x - driving_x[i, j, 1]) / ρ : Z
+        resid_x[I...] = raw_x
+        dvx[I...] = one_m_γ * dvx[I...] + raw_x
+    else
+        resid_x[I...] = Z
+        dvx[I...] = Z
+    end
+
+    if node_active(mask, NODE_ACY, i, j)
+        Hy = lerp(H, NODE_ACY, grid2d, i, j, 1)
+        dζ = Δz(grid, Center(), i, j, k)
+        top = k < nz ? syz[i, j, k + 1] : Z
+        bot = k > 1  ? syz[i, j, k]     : base_y[i, j, 1]
+        vert_y = _dz_over_H((top - bot) / dζ, Hy)
+        shear_y = ∂x(sxy, grid, I...) + ∂y(syy, grid, I...) + vert_y
+        raw_y = Hy > zero(Hy) ? (shear_y - driving_y[i, j, 1]) / ρ : Z
+        resid_y[I...] = raw_y
+        dvy[I...] = one_m_γ * dvy[I...] + raw_y
+    else
+        resid_y[I...] = Z
+        dvy[I...] = Z
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+The Blatter-Pattyn pseudo-transient velocity rate — the [`dotvel!`](@ref) counterpart of
+[`dotvel!(..., ::MomentumBalance2D, ...)`](@ref) for [`MomentumBalance3D`](@ref) — Robinson
+et al. (2022) Eq. (1), assembled per unit volume with the bed/surface flux boundary
+conditions folded into the vertical term (see the source note above).
+
+Runs on `rt.grid`, the column grid. `resid_x`/`resid_y`, `gamma` and the damped-accumulator
+semantics are otherwise identical to the 2D method: mandatory keyword outputs receiving the
+raw, undamped rate, `gamma = 1` reproducing the plain rate every call.
+"""
+function dotvel!(dvx, dvy, sxx, sxy, sxz, syy, syz, base_x, base_y, driving_x, driving_y,
+                 H, density_ice, rt::Runtime,
+                 momentum::MomentumBalance3D,
+                 mask::AbstractIceMask = NoMask(); gamma = 1, resid_x, resid_y)
+    ρ = convert(eltype(dvx), density_ice)
+    γ = convert(eltype(dvx), gamma)
+    nz = size(rt.grid, Center())[3]
+    rt.launch(rt.arch, rt.grid,
+              _dotvel_staggered_bp! => (dvx, dvy, resid_x, resid_y, sxx, sxy, sxz, syy, syz,
+                                        base_x, base_y, driving_x, driving_y, H, ρ, γ, nz,
+                                        mask, rt.grid, rt.grid2d))
+    return nothing
 end
 
 ###############################################################
@@ -550,6 +802,30 @@ function update_viscosity!(mech::MechanicState, vc::DIVAViscosityContinuation, r
     return nothing
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+[`BPViscosityContinuation`](@ref): the same per-layer Glen law as
+[`DIVAViscosityContinuation`](@ref)'s method above, but from BP's effective strain rate
+([`effective_strainrate_bp!`](@ref), Eq. 3, built from the real `velocity.x_dz`/`y_dz`
+rather than diagnosed from `τ_b`) and reusing `_glen_viscosity_continuation!` unchanged.
+
+Does **not** derive `material.viscosity_depthaveraged`: nothing on the BP path reads it
+(`roadmaps/blatter-pattyn.md`, §1.3), so — unlike the DIVA method — there is no
+`depthaverage!` call here, and the field is left at whatever degenerate allocation the state
+constructor gave it.
+"""
+function update_viscosity!(mech::MechanicState, vc::BPViscosityContinuation, rt::Runtime,
+                           mask::AbstractIceMask = NoMask())
+    (; material, strainrate) = mech
+    effective_strainrate_bp!(mech, rt, mask)
+    rt.launch(rt.arch, rt.grid,
+              _glen_viscosity_continuation! =>
+                  (material.viscosity, material.rate_factor, strainrate.effective,
+                   vc.n_glen, vc.strainrate_reg, vc.theta_mu, mask))
+    return nothing
+end
+
 ###############################################################
 # DIVA depth-integrated-viscosity chain
 ###############################################################
@@ -620,6 +896,14 @@ _iterate_viscosity!(mech::MechanicState, ::SSAMomentumBalance,
 
 _iterate_viscosity!(::MechanicState, ::DIVAMomentumBalance, ::PseudoTransientSolver,
                     ::Runtime, ::AbstractIceMask) = nothing
+
+# BP: like SSA, not DIVA. `BPViscosityContinuation` writes `viscosity` (`µ(z)`) directly
+# from the real velocity gradients every iteration — there is no `τ_b`/`F₂` fixed point to
+# stagger it against (`roadmaps/blatter-pattyn.md`, §2.2: "no F₁/F₂ chain and no β_eff — BP
+# has no depth-integrated closure to build"), so `solver.div_update` plays no role here.
+_iterate_viscosity!(mech::MechanicState, ::BlatterPattynMomentumBalance,
+                    solver::PseudoTransientSolver, rt::Runtime, mask::AbstractIceMask) =
+    update_viscosity!(mech, solver.viscosity_continuation, rt, mask)
 
 ###############################################################
 # Basal friction update
@@ -693,6 +977,23 @@ function _check_momentum_grid(::DIVAMomentumBalance, rt::Runtime)
         "depth-averaged grid (nz == 1, rt.grid === rt.grid2d) the viscosity integral F₂ " *
         "is 25% low — a plausible-looking wrong answer, not an approximation. Build the " *
         "grid with a `layering` argument, e.g. " *
+        "`StaggeredGrid(T, lx, ly, dx, dy, CorrectedVerticalLayering(T, " *
+        "QuadraticSigmaTransform(T, nz)))`, or use SSAMomentumBalance()."))
+    return nothing
+end
+
+# BP is stricter still than DIVA: on `nz == 1` it does not merely lose 25% accuracy in a
+# derived quantity, it silently *degenerates to SSA* — the vertical-shear divergence
+# `∂z(µ u_z)` a single layer cannot resolve simply vanishes, and the remaining membrane-only
+# balance is a plausible-looking wrong answer with the wrong (3D, unaveraged) viscosity to
+# boot (`roadmaps/blatter-pattyn.md`, Phase 1).
+function _check_momentum_grid(::BlatterPattynMomentumBalance, rt::Runtime)
+    rt.grid === rt.grid2d && throw(ArgumentError(
+        "BlatterPattynMomentumBalance requires a column StaggeredGrid (nz > 1). On a " *
+        "depth-averaged grid (nz == 1, rt.grid === rt.grid2d) the vertical-shear term " *
+        "∂z(µ u_z) cannot be resolved and the solve silently degenerates to SSA with the " *
+        "wrong (3D, unaveraged) viscosity — a plausible-looking wrong answer, not an " *
+        "approximation. Build the grid with a `layering` argument, e.g. " *
         "`StaggeredGrid(T, lx, ly, dx, dy, CorrectedVerticalLayering(T, " *
         "QuadraticSigmaTransform(T, nz)))`, or use SSAMomentumBalance()."))
     return nothing
@@ -826,6 +1127,240 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
 
         bc!(rt.arch, rt.grid2d, ux => Neumann())
         bc!(rt.arch, rt.grid2d, uy => Neumann())
+
+        state = _arm_tuning(tuning, state, solver, ux, uy, iter)
+
+        if iter % ncheck == 0 || iter == maxiter
+            err = _pt_error(solver.convergence, solver, ux, uy, scale)
+        end
+        if iter % printout_every == 0
+            println("PT iteration $iter: err = $err, gamma = $(state.gamma)")
+        end
+    end
+
+    # Diagnostic only (does not gate the loop above): the raw, undamped rate norm at the
+    # final iterate, independent of `gamma` — see `dotvel!`'s `resid_x`/`resid_y` note.
+    residual = max(maximum(abs, asarray(resid_x)), maximum(abs, asarray(resid_y)))
+
+    return (; iterations = iter, error = err, converged = err <= abstol, residual,
+              damping = state.gamma, lambda_min = state.lambda_min)
+end
+
+###############################################################
+# Blatter-Pattyn pseudo-transient solve
+###############################################################
+#
+# `roadmaps/blatter-pattyn.md`, Phase 1. Every piece below is a new method distinguished
+# from its `MomentumBalance2D` counterpart either by dispatching on the disjoint
+# `MomentumBalance3D` union or, where the existing function takes no `momentum` argument at
+# all (`update_basalstress!`, `pseudo_dt!`, `gershgorin_dt!`, `_tuning_init!`, `_tune!`,
+# `_convergence_scale`), by a new method one argument longer — so nothing here can ever be
+# reached by a 2D call, and no 2D method body is touched.
+
+# `_arm_tuning` is not repeated here: it already takes no `momentum`/grid argument at all
+# (`solver.residual_x`/`velocity_x_old`/`dtau_x` alone, reduced via `asarray`), so the
+# existing method serves BP unchanged (`roadmaps/blatter-pattyn.md`, §1.2).
+
+@kernel inbounds = true function _basal_velocity_bp!(base_x, base_y, x, y, mask, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    base_x[i, j, 1] = node_active(mask, NODE_ACX, i, j) ? x[i, j, 1] : zero(eltype(base_x))
+    base_y[i, j, 1] = node_active(mask, NODE_ACY, i, j) ? y[i, j, 1] : zero(eltype(base_y))
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+[`MomentumBalance3D`](@ref) counterpart of
+[`update_basalstress!(..., ::ActiveFrictionUpdate, ::Runtime)`](@ref): overwrites
+`velocity.base_x`/`base_y` from the **actual** basal-layer velocity `velocity.x`/`y[:,:,1]`
+— not the SSA-limit `depthaverage_x`/`y` the 2D method reads, which BP never populates (a
+degenerate `1×1` allocation on this path, `roadmaps/blatter-pattyn.md`, §1.3) — then
+`stress.base_x`/`base_y` from `friction.beta_eff * velocity.base_{x,y}` via
+[`basalstress!`](@ref), exactly as the 2D method does downstream.
+"""
+function update_basalstress!(mech::MechanicState, ::ActiveFrictionUpdate, rt::Runtime,
+                             ::MomentumBalance3D, mask::AbstractIceMask = NoMask())
+    (; velocity, stress, friction) = mech
+    rt.launch2d(rt.arch, rt.grid2d,
+                _basal_velocity_bp! => (velocity.base_x, velocity.base_y, velocity.x,
+                                        velocity.y, mask))
+    basalstress!(stress.base_x, stress.base_y, friction.beta_eff,
+                velocity.base_x, velocity.base_y, rt, mask)
+    return nothing
+end
+
+update_basalstress!(::MechanicState, ::NoFrictionUpdate, ::Runtime, ::MomentumBalance3D,
+                    ::AbstractIceMask = NoMask()) = nothing
+
+"""
+$(TYPEDSIGNATURES)
+
+Evaluate the Blatter-Pattyn PT velocity rate: column velocity gradients
+([`velocitygradients!`](@ref)), viscosity continuation, membrane stress
+([`membranestress!`](@ref)), basal stress, then [`dotvel!`](@ref) — the same order as
+[`pseudo_rate!(..., ::MomentumBalance2D, ...)`](@ref), minus the DIVA-only
+`diva_update!` step BP has no counterpart for (`roadmaps/blatter-pattyn.md`, §2.2).
+"""
+function pseudo_rate!(mech::MechanicState, c::Constants, rt::Runtime,
+                      momentum::MomentumBalance3D,
+                      solver::PseudoTransientSolver, mask::AbstractIceMask = NoMask();
+                      gamma = 1)
+    (; velocity, material, stress, topography) = mech
+
+    velocitygradients!(velocity, topography.thickness, rt, mask)
+    _iterate_viscosity!(mech, momentum, solver, rt, mask)
+    membranestress!(stress, velocity, material, momentum, rt, mask)
+
+    update_basalstress!(mech, solver.friction_update, rt, momentum, mask)
+
+    dotvel!(solver.velocity_x_dt, solver.velocity_y_dt,
+           stress.xx, stress.xy, stress.xz, stress.yy, stress.yz,
+           stress.base_x, stress.base_y, stress.driving_x, stress.driving_y,
+           topography.thickness, c.density_ice, rt, momentum, mask;
+           gamma, resid_x = solver.residual_x, resid_y = solver.residual_y)
+    return nothing
+end
+
+function _tuning_init!(tu::FixedTuning, solver::PseudoTransientSolver, mech::MechanicState,
+                       c::Constants, rt::Runtime, momentum::MomentumBalance3D,
+                       mask::AbstractIceMask)
+    pseudo_dt!(solver, mech, c, rt, momentum, mask)
+    return _tuning_state(eltype(solver.dtau_x), tu.gamma, tu.theta_v, NaN)
+end
+
+function _tuning_init!(::AutotunedDynamicRelaxation, solver::PseudoTransientSolver,
+                       mech::MechanicState, c::Constants, rt::Runtime,
+                       momentum::MomentumBalance3D, mask::AbstractIceMask)
+    T = eltype(solver.dtau_x)
+    scale = T(solver.dtau_scaling)
+    gershgorin_dt!(solver, mech, c, rt, momentum, mask, scale)
+    return _tuning_state(T, 1, 1, scale)
+end
+
+_tune!(::FixedTuning, state, solver, mech, c, rt, ::MomentumBalance3D, mask, ux, uy) = state
+
+function _tune!(tu::AutotunedDynamicRelaxation, state, solver::PseudoTransientSolver,
+                mech::MechanicState, c::Constants, rt::Runtime, momentum::MomentumBalance3D,
+                mask::AbstractIceMask, ux, uy)
+    state.armed || return state
+    T = typeof(state.gamma)
+    numerator = abs(_sum_du_dot_r(solver, ux, uy) - state.rayleigh_ur)
+    denominator = state.scale * state.rayleigh_uu
+    (numerator > 0 && denominator > 0) || return merge(state, (; armed = false))
+    λ_min = min(T(numerator / denominator), one(T))
+    d = 2 * convert(T, tu.c_damp) * sqrt(λ_min)
+    cc = convert(T, solver.pseudo_timestep.cfl)^2
+    dtau = -cc * d + sqrt(cc^2 * d^2 + 4 * cc)
+    scale = dtau^2 * convert(T, solver.dtau_scaling)
+    gershgorin_dt!(solver, mech, c, rt, momentum, mask, scale)
+    return merge(state, (; gamma = d * dtau, scale, lambda_min = λ_min, armed = false))
+end
+
+# `VelocityIncrement` needs no field to normalize against on either grid, so the 3D method
+# just avoids the 2D one's (harmless but pointless) read of the degenerate `depthaverage_x`
+# for its `eltype`, reading a field BP actually owns instead.
+_convergence_scale(::VelocityIncrement, mech, c, solver::PseudoTransientSolver, rt,
+                   ::MomentumBalance3D, mask) =
+    one(eltype(asarray(solver.velocity_x_old)))
+
+# `ScaledResidual`'s 2D implementation launches `_driving_rate!` on `rt.grid2d` into
+# `solver.residual_x`/`residual_y` — for BP those are column-shaped (`ACX3`/`ACY3`), so a
+# `grid2d` launch would silently leave every layer past `k = 1` stale rather than error.
+# `_driving_rate_bp!` is the column-grid port: `driving_x` has no `z` dependence (broadcast
+# read at `k = 1`, the same convention `dotvel!` itself uses), so every layer of the 3D
+# scratch gets the identical `driving_x/ρ` value — wasteful relative to a genuinely 2D
+# reduction, but correct, and consistent with `solver.residual_x`/`residual_y` already being
+# column-shaped for BP regardless of what fills them.
+
+@kernel inbounds = true function _driving_rate_bp!(rate_x, rate_y, driving_x, driving_y, ρ,
+                                                    mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    Z = zero(eltype(rate_x))
+    rate_x[I...] = node_active(mask, NODE_ACX, i, j) ? driving_x[i, j, 1] / ρ : Z
+    rate_y[I...] = node_active(mask, NODE_ACY, i, j) ? driving_y[i, j, 1] / ρ : Z
+end
+
+function _convergence_scale(::ScaledResidual, mech::MechanicState, c::Constants,
+                            solver::PseudoTransientSolver, rt::Runtime,
+                            ::MomentumBalance3D, mask::AbstractIceMask)
+    T = eltype(solver.residual_x)
+    rt.launch(rt.arch, rt.grid,
+              _driving_rate_bp! => (solver.residual_x, solver.residual_y,
+                                    mech.stress.driving_x, mech.stress.driving_y,
+                                    convert(T, c.density_ice), mask, rt.grid))
+    scale = max(maximum(abs, asarray(solver.residual_x)),
+                maximum(abs, asarray(solver.residual_y)))
+    # A domain with no driving stress at all is already in balance; falling back to 1 makes
+    # `err` the raw residual rather than `Inf` — same fallback as the 2D method.
+    return scale > zero(scale) ? scale : one(scale)
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Iterate `mech.velocity.x`/`y` in pseudo-time until the Blatter-Pattyn momentum-balance
+residual vanishes — the [`MomentumBalance3D`](@ref) counterpart of
+[`pseudo_transient!(..., ::MomentumBalance2D, ...)`](@ref). Same return shape, same three
+solver-held strategies, same halo-filling contract; the differences are exactly what
+`roadmaps/blatter-pattyn.md` §1 lists:
+
+ - the unknown is `mech.velocity.x`/`y` (`ACX3`/`ACY3`), not the depth-averaged
+   `velocity.depthaverage_x`/`y` — BP resolves the full column, so there is nothing to
+   reconstruct afterward;
+ - the halo refresh ([`bc!`](@ref)) runs on `rt.grid`, the column grid;
+ - no DIVA-style depth-integrated-viscosity chain — BP has none to refresh
+   (`roadmaps/blatter-pattyn.md`, §2.2), so the loop body is one line shorter.
+
+Requires a column [`StaggeredGrid`](@ref) (`nz > 1`), checked by
+[`_check_momentum_grid`](@ref) — on `nz == 1` BP would silently degenerate to SSA with the
+wrong (3D, unaveraged) viscosity rather than raise a clear error.
+"""
+function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTransientSolver,
+                           rt::Runtime,
+                           momentum::MomentumBalance3D,
+                           mask::AbstractIceMask = NoMask())
+    _check_momentum_grid(momentum, rt)
+
+    (; velocity) = mech
+    (; abstol, maxiter, printout_every, ncheck, tuning) = solver
+
+    ux, uy = velocity.x, velocity.y
+    ux_old, uy_old = solver.velocity_x_old, solver.velocity_y_old
+    dvx, dvy = solver.velocity_x_dt, solver.velocity_y_dt
+    dtau_x, dtau_y = solver.dtau_x, solver.dtau_y
+    resid_x, resid_y = solver.residual_x, solver.residual_y
+
+    # Fields held fixed over the PT iteration.
+    drivingstress!(mech, c, rt, momentum, mask)
+    state = _tuning_init!(tuning, solver, mech, c, rt, momentum, mask)
+    # After `drivingstress!` (it reads the driving stress) and before the loop (it borrows
+    # `residual_x`/`residual_y` as scratch, which `dotvel!` overwrites on iteration 1).
+    scale = _convergence_scale(solver.convergence, mech, c, solver, rt, momentum, mask)
+
+    T = eltype(asarray(ux))
+    err  = typemax(T)
+    iter = 0
+    while err > abstol && iter < maxiter
+        iter += 1
+
+        pseudo_rate!(mech, c, rt, momentum, solver, mask; gamma = state.gamma)
+        state = _tune!(tuning, state, solver, mech, c, rt, momentum, mask, ux, uy)
+
+        # After `_tune!`, which needs the pre-copy `u_old` (see its docstring).
+        copyto!(asarray(ux_old), asarray(ux))
+        copyto!(asarray(uy_old), asarray(uy))
+
+        pseudo_vel!(asarray(ux), asarray(ux_old), asarray(dvx), asarray(dtau_x),
+                    state.theta_v)
+        pseudo_vel!(asarray(uy), asarray(uy_old), asarray(dvy), asarray(dtau_y),
+                    state.theta_v)
+
+        bc!(rt.arch, rt.grid, ux => Neumann())
+        bc!(rt.arch, rt.grid, uy => Neumann())
 
         state = _arm_tuning(tuning, state, solver, ux, uy, iter)
 

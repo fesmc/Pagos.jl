@@ -182,6 +182,37 @@ function DIVAViscosityContinuation(T::Type{<:AbstractFloat} = Float64;
     return DIVAViscosityContinuation{T}(T(n_glen), T(theta_mu), T(strainrate_reg))
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+[`BlatterPattynMomentumBalance`](@ref)'s viscosity continuation: the same per-layer Glen law
+as [`DIVAViscosityContinuation`](@ref), writing `material.viscosity` (`µ(z)`) on `rt.grid`
+from BP's effective strain rate ([`effective_strainrate_bp!`](@ref), Eq. 3), but from the
+**actual** `velocity.x_dz`/`y_dz` rather than DIVA's Eq. 21 diagnosis from `τ_b` — BP already
+carries a real 3D velocity, so there is nothing to diagnose.
+
+Unlike [`DIVAViscosityContinuation`](@ref), `material.viscosity_depthaveraged` is *not*
+derived here: nothing on the BP path reads it (`roadmaps/blatter-pattyn.md`, §1.3), so it is
+left as whatever degenerate allocation the state constructor gave it, mirroring
+`viscosity_integral_1`/`_2` and `rate_factor_depthaveraged` staying untouched on this path.
+
+Reads `material.rate_factor` (the column rate factor `A(z)`), not
+`rate_factor_depthaveraged` — the same choice as `DIVAViscosityContinuation`.
+
+Fields are as [`GlenViscosityContinuation`](@ref)'s: `n_glen`, `theta_mu`, `strainrate_reg`.
+"""
+struct BPViscosityContinuation{T<:AbstractFloat} <: AbstractViscosityContinuation
+    n_glen::T
+    theta_mu::T
+    strainrate_reg::T
+end
+
+function BPViscosityContinuation(T::Type{<:AbstractFloat} = Float64;
+    n_glen = 3, theta_mu = 0.1, strainrate_reg,
+)
+    return BPViscosityContinuation{T}(T(n_glen), T(theta_mu), T(strainrate_reg))
+end
+
 ###############################################################
 # DIVA depth-integrated-viscosity update
 ###############################################################
@@ -489,7 +520,7 @@ the `λ_min` mode the first quotient must see.
  - `c_damp`: safety factor on `c = 2√λ_min`, `[0.5, 1]` per Duretz (default `0.8`). A
    Rayleigh quotient over-estimates `λ_min`, so `c_damp = 1` errs toward over-damping;
    measured, `0.5` and `0.8` are within ~10% and both beat `1.0` and `0.3`.
- - `cadence`: re-estimate every `cadence` iterations (default `20`), each re-estimation also
+ - `cadence`: re-estimate every `cadence` iterations (default `50`), each re-estimation also
    refilling `Δτ` from a fresh Gershgorin bound. Duretz use ~100; tighter here because the
    first estimate is also what ends the warm-up. One re-estimation costs two reductions and
    a kernel — the cost of one `ncheck` check, which defaults to every iteration.
@@ -503,7 +534,7 @@ struct AutotunedDynamicRelaxation{T<:AbstractFloat} <: AbstractPTTuning
     cadence::Int
 end
 
-AutotunedDynamicRelaxation(T::Type{<:AbstractFloat} = Float64; c_damp = 0.8, cadence = 20) =
+AutotunedDynamicRelaxation(T::Type{<:AbstractFloat} = Float64; c_damp = 0.8, cadence = 50) =
     AutotunedDynamicRelaxation{T}(T(c_damp), Int(cadence))
 
 """
@@ -686,6 +717,51 @@ function PseudoTransientSolver(grid::StaggeredGrid;
     # `_check_momentum_grid` at the `pseudo_transient!` call that knows which balance it is.
     (; arch) = grid
     g = grid.grid2d
+    T = eltype(g)
+    acx() = _field(arch, g, NODE_ACX, T, halo)
+    acy() = _field(arch, g, NODE_ACY, T, halo)
+    return PseudoTransientSolver(
+        T(abstol), Int(maxiter), Int(ncheck), Int(printout_every), T(dtau_scaling),
+        acx(), acy(), acx(), acy(), acx(), acy(), acx(), acy(),
+        pseudo_timestep, convergence, viscosity_continuation, friction_update, tuning,
+        div_update,
+    )
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Build a [`PseudoTransientSolver`](@ref) for a [`MomentumBalance3D`](@ref) solve
+([`pseudo_transient!`](@ref)). All work arrays are Chmy `Field`s at `acx`/`acy` on
+`grid.grid` (`ACX3`/`ACY3`), matching the column velocity components they mirror
+(`mech.velocity.x`/`y`) — the only difference from the depth-averaged constructor above is
+which of `grid.grid2d`/`grid.grid` the work arrays are built on. A separate method rather
+than a keyword on the existing constructor (`roadmaps/blatter-pattyn.md`, Phase 1: "prefer
+dispatch — the balance already decides the grid via `_check_momentum_grid`, and a keyword
+lets the two disagree"), and kept as a fully independent method body so the depth-averaged
+constructor above is untouched by this one's existence.
+
+No `nz > 1` requirement here either, for the same reason as the 2D constructor: whether
+`momentum` tolerates the grid is [`_check_momentum_grid`](@ref)'s job, at the
+`pseudo_transient!` call that knows the `Runtime`.
+"""
+function PseudoTransientSolver(grid::StaggeredGrid, momentum::MomentumBalance3D;
+    abstol = 1e-8,
+    maxiter = 100,
+    ncheck = 1,
+    printout_every = typemax(Int),
+    dtau_scaling = 1,
+    halo = 1,
+    pseudo_timestep::AbstractPseudoTimeStep = GershgorinPseudoTimeStep(),
+    convergence::AbstractPTConvergence = VelocityIncrement(),
+    viscosity_continuation::AbstractViscosityContinuation = NoViscosityContinuation(),
+    friction_update::AbstractFrictionUpdate = ActiveFrictionUpdate(),
+    tuning::AbstractPTTuning = FixedTuning(),
+    div_update::AbstractDIVUpdate = NoDIVUpdate(),
+)
+    _check_tuning(tuning, pseudo_timestep)
+    (; arch) = grid
+    g = grid.grid
     T = eltype(g)
     acx() = _field(arch, g, NODE_ACX, T, halo)
     acy() = _field(arch, g, NODE_ACY, T, halo)
@@ -901,10 +977,6 @@ function populate_vectors!(
         ndrange = (nx, ny),
     )
     return nothing
-end
-
-function LinearSolve.LinearProblem(lsd::LinearMomentumSolver2D)
-    return LinearProblem(lsd.A, lsd.b; u0 = lsd.u)
 end
 
 function velocity!(lsd::LinearMomentumSolver2D)
