@@ -62,7 +62,7 @@ is computed by [`enhancement_factor`](@ref).
    projected onto ``\\hat{n}``). Typically ``E_c = 1``.
 """
 @kwdef struct CAFFEAnisotropy{T} <: AbstractAnisotropy
-    α::T  = 0.06
+    α::T = 0.06
     E_s::T = 10.0
     E_c::T = 1.0
 end

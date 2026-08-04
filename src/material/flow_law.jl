@@ -84,7 +84,7 @@ when the deformation kinematics differ from those that formed the crystallograph
 preferred orientation (for example, borehole closure, grounding-line flexure).
 """
 function FanLowStrainFlowLaw(d, T)
-    A_GSI  = rate_factor(T, FanLowStrainGSIRateFactor())
+    A_GSI = rate_factor(T, FanLowStrainGSIRateFactor())
     A_GSS1 = rate_factor(T, FanLowStrainGSS1RateFactor())
     A_GSS2 = rate_factor(T, FanLowStrainGSS2RateFactor())
     c = FanLowStrainCreep(; d, A_GSI, A_GSS1, A_GSS2)
@@ -116,27 +116,15 @@ $(TYPEDSIGNATURES)
 
 Get the viscosity `η` based on the rate factor `A`, creep function `f`, and flow law parameterization `law<:AbstractFlowLaw`.
 """
-function viscosity(
-    ::Number,
-    ::Number,
-    law::PrescribedViscosityFlowLaw,
-)
+function viscosity(::Number, ::Number, law::PrescribedViscosityFlowLaw)
     return law.η
 end
 
-function viscosity(
-    A::Number,
-    f::Number,
-    ::RateCreepFlowLaw,
-)
+function viscosity(A::Number, f::Number, ::RateCreepFlowLaw)
     return 0.5 / (A * f)
 end
 
-function viscosity(
-    A::M,
-    f::M,
-    law,
-) where {M<:AbstractArray}
+function viscosity(A::M, f::M, law) where {M<:AbstractArray}
     η = similar(A)
     viscosity!(η, A, f, law)
     return η

@@ -99,7 +99,12 @@ function pressure_melting_point!(Tm::AbstractArray, p, law)
     return nothing
 end
 
-function pressure_melting_point!(Tf::AbstractArray, p, S, law::LinearSalinityPressureMeltingPoint)
+function pressure_melting_point!(
+    Tf::AbstractArray,
+    p,
+    S,
+    law::LinearSalinityPressureMeltingPoint,
+)
     pointwise!(pressure_melting_point, Tf, (p, S), (law,))
     return nothing
 end
@@ -122,7 +127,12 @@ $(TYPEDSIGNATURES)
 
 Same as [`relative_temperature`](@ref) but operates in place.
 """
-function relative_temperature!(Tprime::AbstractArray, T, p, law::LinearPressureMeltingPoint)
+function relative_temperature!(
+    Tprime::AbstractArray,
+    T,
+    p,
+    law::LinearPressureMeltingPoint,
+)
     pointwise!(relative_temperature, Tprime, (T, p), (law,))
     return nothing
 end
@@ -143,7 +153,13 @@ $(TYPEDSIGNATURES)
 
 Same as [`thermal_forcing`](@ref) but operates in place.
 """
-function thermal_forcing!(ΔT::AbstractArray, T, p, S, law::LinearSalinityPressureMeltingPoint)
+function thermal_forcing!(
+    ΔT::AbstractArray,
+    T,
+    p,
+    S,
+    law::LinearSalinityPressureMeltingPoint,
+)
     pointwise!(thermal_forcing, ΔT, (T, p, S), (law,))
     return nothing
 end
@@ -157,7 +173,7 @@ end
 #     c::PhysicalConstants{T},
 #     idx::Matrix{CartesianIndex{2}},
 # ) where {T<:AbstractFloat}
-    
+
 #     β = pressure_melting_point.β
 #     (; ρ_ice, g) = c
 #     for i in idx

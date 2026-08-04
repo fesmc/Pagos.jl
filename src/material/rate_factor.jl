@@ -84,7 +84,7 @@ fig = plot_rate_factor(T_relative_kelvin .- 273.15, A)
     E_f::T = 1.0
     T_p1_p2::T = 263.15                          # breakpoint temperature, Cuffey & Paterson (2010)
     A_0_p1::T = 3.985e-13 * SECONDS_PER_YEAR     # Pa^-3 s^-1 published -> Pa^-3 yr^-1 internal
-    A_0_p2::T = 1.916e3   * SECONDS_PER_YEAR     # piecewise definition, Cuffey & Paterson (2010)
+    A_0_p2::T = 1.916e3 * SECONDS_PER_YEAR     # piecewise definition, Cuffey & Paterson (2010)
     Q_a_p1::T = 60e3                             # "J mol^-1" activation energy
     Q_a_p2::T = 139e3                            #  piecewise definition, Cuffey & Paterson (2010)
     R::T = 8.314                                 # "J K^-1 mol^-1" universal gas constant
@@ -199,7 +199,7 @@ spatially varying fields, call the scalar method pointwise.
     E_f::T = 1.0
     T_p1_p2::T = 263.15
     A_0_p1::T = 3.985e-13 * SECONDS_PER_YEAR   # Pa^-3 s^-1 published -> Pa^-3 yr^-1 internal
-    A_0_p2::T = 1.916e3   * SECONDS_PER_YEAR
+    A_0_p2::T = 1.916e3 * SECONDS_PER_YEAR
     Q_a_p1::T = 60e3
     Q_a_p2::T = 139e3
     R::T = 8.314
@@ -331,18 +331,18 @@ end
 # listed is time-free and passes through untouched. `SmithMorlandRateFactor` falls back to
 # the empty default because its coefficients are dimensionless — that law's time unit sits
 # in `SmithMorlandCreep`'s `D_0` instead.
-_prefactor_fields(::Type{<:AbstractRateFactor})         = ()
-_prefactor_fields(::Type{<:PrescribedRateFactor})       = (:A,)
-_prefactor_fields(::Type{<:ArrheniusRateFactor})        = (:A_0_p1, :A_0_p2)
-_prefactor_fields(::Type{<:LliboutryDuvalRateFactor})   = (:A_0_p1, :A_0_p2)
-_prefactor_fields(::Type{<:HookeRateFactor})            = (:A_0,)
-_prefactor_fields(::Type{<:FanLowStrainGSIRateFactor})  = (:A_0,)
+_prefactor_fields(::Type{<:AbstractRateFactor}) = ()
+_prefactor_fields(::Type{<:PrescribedRateFactor}) = (:A,)
+_prefactor_fields(::Type{<:ArrheniusRateFactor}) = (:A_0_p1, :A_0_p2)
+_prefactor_fields(::Type{<:LliboutryDuvalRateFactor}) = (:A_0_p1, :A_0_p2)
+_prefactor_fields(::Type{<:HookeRateFactor}) = (:A_0,)
+_prefactor_fields(::Type{<:FanLowStrainGSIRateFactor}) = (:A_0,)
 _prefactor_fields(::Type{<:FanLowStrainGSS1RateFactor}) = (:A_0,)
 _prefactor_fields(::Type{<:FanLowStrainGSS2RateFactor}) = (:A_0,)
 _prefactor_fields(::Type{<:FanHighStrainGSIRateFactor}) = (:A_0,)
 
 _time_unit_scale(u::Symbol) =
-    u === :year   ? 1.0 :
+    u === :year ? 1.0 :
     u === :second ? SECONDS_PER_YEAR :
     throw(ArgumentError("time_unit must be :year or :second, got :$u"))
 
@@ -370,10 +370,16 @@ end
 # a lone `Symbol` whatever the bound on `T`, making it ambiguous with the generic method
 # above; this more specific method resolves it. Aqua's ambiguity check guards the case.
 function (::Type{PrescribedRateFactor{T}})(time_unit::Symbol; kwargs...) where {T<:Real}
-    return PrescribedRateFactor{T}(; _rescaled_kwargs(PrescribedRateFactor, time_unit, kwargs)...)
+    return PrescribedRateFactor{T}(;
+        _rescaled_kwargs(PrescribedRateFactor, time_unit, kwargs)...,
+    )
 end
 
-function _rescaled_kwargs(::Type{RF}, time_unit::Symbol, kwargs) where {RF<:AbstractRateFactor}
+function _rescaled_kwargs(
+    ::Type{RF},
+    time_unit::Symbol,
+    kwargs,
+) where {RF<:AbstractRateFactor}
     scale = _time_unit_scale(time_unit)
     fields = _prefactor_fields(RF)
     return NamedTuple(k => (k in fields ? v * scale : v) for (k, v) in pairs(kwargs))
@@ -388,25 +394,16 @@ $(TYPEDSIGNATURES)
 
 Get the rate factor `A` based on the temperature relative to the pressure melt point `T_relative` and the rate factor parameterization `arf<:AbstractRateFactor`.
 """
-function rate_factor(
-    ::T,
-    crf::PrescribedRateFactor,
-) where {T<:Real}
+function rate_factor(::T, crf::PrescribedRateFactor) where {T<:Real}
     return crf.A
 end
 
-function rate_factor(
-    T_relative::T,
-    rf::F,
-) where {T<:Real, F<:AbstractRateFactor}
+function rate_factor(T_relative::T, rf::F) where {T<:Real,F<:AbstractRateFactor}
     (; A_0, Q, R) = rf
     return A_0 * exp(-Q / (R * T_relative))
 end
 
-function rate_factor(
-    T_relative::T,
-    arf::ArrheniusRateFactor,
-) where {T<:Real}
+function rate_factor(T_relative::T, arf::ArrheniusRateFactor) where {T<:Real}
 
     (; E_f, T_p1_p2, A_0_p1, A_0_p2, Q_a_p1, Q_a_p2, R) = arf
     if T_relative <= T_p1_p2
@@ -417,28 +414,19 @@ function rate_factor(
     return A
 end
 
-function rate_factor(
-    T_relative::T,
-    smr::SmithMorlandRateFactor,
-) where {T<:Real}
+function rate_factor(T_relative::T, smr::SmithMorlandRateFactor) where {T<:Real}
 
     (; p1, p2, e1, e2) = smr
     A = p1 * exp(e1 * T_relative) + p2 * exp(e2 * T_relative)
     return A
 end
 
-function rate_factor(
-    T_relative::T,
-    hrf::HookeRateFactor,
-) where {T<:Real}
+function rate_factor(T_relative::T, hrf::HookeRateFactor) where {T<:Real}
     (; E_f, A_0, Q_a, C, T_r, k, R) = hrf
     return E_f * A_0 * exp(-Q_a / (R * T_relative) + 3 * C / (T_r - T_relative)^k)
 end
 
-function rate_factor(
-    T_relative::T,
-    ldrf::LliboutryDuvalRateFactor,
-) where {T<:Real}
+function rate_factor(T_relative::T, ldrf::LliboutryDuvalRateFactor) where {T<:Real}
     (; ω, γ, water_fraction_max, E_f, T_p1_p2, A_0_p1, A_0_p2, Q_a_p1, Q_a_p2, R) = ldrf
     if T_relative <= T_p1_p2
         A_cold = E_f * A_0_p1 * exp(-Q_a_p1 / (R * T_relative))
@@ -451,7 +439,7 @@ end
 function rate_factor(
     T_relative::M,
     arf::ARF,
-) where {M<:AbstractArray, ARF<:AbstractRateFactor}
+) where {M<:AbstractArray,ARF<:AbstractRateFactor}
     A = similar(T_relative)
     rate_factor!(A, T_relative, arf)
     return A

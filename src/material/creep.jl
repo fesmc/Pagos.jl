@@ -308,46 +308,31 @@ $(TYPEDSIGNATURES)
 
 Compute the creep function value based on the effective stress `σ_e` and the creep function parameterization `law<:AbstractCreep`.
 """
-function creep(
-    σ_e::T,
-    law::SmithMorlandCreep,
-) where {T<:Real}
+function creep(σ_e::T, law::SmithMorlandCreep) where {T<:Real}
     (; p0, p2, p4, D_0, σ_0) = law
     return D_0 / σ_0 * (p0 + p2 * (σ_e / σ_0)^2 + p4 * (σ_e / σ_0)^4)
 end
 
-function creep(
-    σ_e::T,
-    law::GlenNyeCreep,
-) where {T<:Real}
+function creep(σ_e::T, law::GlenNyeCreep) where {T<:Real}
     (; n, σ_0) = law
     return σ_e^(n - 1) + σ_0^(n - 1)
 end
 
-function creep(
-    σ_e::T,
-    law::PettitWaddingtonCreep,
-) where {T<:Real}
+function creep(σ_e::T, law::PettitWaddingtonCreep) where {T<:Real}
     (; n, A_lin, A_nl) = law
     return A_lin + A_nl * σ_e^(n - 1)
 end
 
-function creep(
-    σ_e::T,
-    law::GoldsbyKohlstedtCreep,
-) where {T<:Real}
+function creep(σ_e::T, law::GoldsbyKohlstedtCreep) where {T<:Real}
     (; d, A_diff, A_gbs, A_basal, p_gbs, n_gbs, n_basal) = law
-    ε̇_diff  = A_diff * d^(-2) * σ_e
-    ε̇_gbs   = A_gbs * d^(-p_gbs) * σ_e^n_gbs
+    ε̇_diff = A_diff * d^(-2) * σ_e
+    ε̇_gbs = A_gbs * d^(-p_gbs) * σ_e^n_gbs
     ε̇_basal = A_basal * σ_e^n_basal
-    ε̇_eff   = ε̇_diff + inv(inv(ε̇_gbs) + inv(ε̇_basal))
+    ε̇_eff = ε̇_diff + inv(inv(ε̇_gbs) + inv(ε̇_basal))
     return ε̇_eff / σ_e
 end
 
-function creep(
-    σ_e::T,
-    law::GoldsbyKohlstedt4Creep,
-) where {T<:Real}
+function creep(σ_e::T, law::GoldsbyKohlstedt4Creep) where {T<:Real}
     (; temperature, pressure, d, R, V_act) = law
     RT = R * temperature
     pV = pressure * V_act
@@ -359,14 +344,16 @@ function creep(
     D_b = temperature > law.diff_T_crit ? D_b * law.diff_coble_factor : D_b
     f_diff = 42 * law.diff_V_m * (D_v + π * law.diff_delta * D_b / d) / (RT * d^2)
 
-    A_disl, Q_disl = temperature > law.disl_T_crit ?
-        (law.disl_A_warm, law.disl_Q_warm) : (law.disl_A_cold, law.disl_Q_cold)
+    A_disl, Q_disl =
+        temperature > law.disl_T_crit ? (law.disl_A_warm, law.disl_Q_warm) :
+        (law.disl_A_cold, law.disl_Q_cold)
     f_disl = A_disl * σ_e^(law.disl_n - 1) * exp(-(Q_disl + pV) / RT)
 
     f_basal = law.basal_A * σ_e^(law.basal_n - 1) * exp(-(law.basal_Q + pV) / RT)
 
-    A_gbs, Q_gbs = temperature > law.gbs_T_crit ?
-        (law.gbs_A_warm, law.gbs_Q_warm) : (law.gbs_A_cold, law.gbs_Q_cold)
+    A_gbs, Q_gbs =
+        temperature > law.gbs_T_crit ? (law.gbs_A_warm, law.gbs_Q_warm) :
+        (law.gbs_A_cold, law.gbs_Q_cold)
     f_gbs = A_gbs * σ_e^(law.gbs_n - 1) * d^(-law.gbs_p) * exp(-(Q_gbs + pV) / RT)
 
     # Series coupling as `inv(inv + inv)` rather than the algebraically equal
@@ -375,21 +362,15 @@ function creep(
     return f_diff + f_disl + inv(inv(f_basal) + inv(f_gbs))
 end
 
-function creep(
-    σ_e::T,
-    law::FanLowStrainCreep,
-) where {T<:Real}
+function creep(σ_e::T, law::FanLowStrainCreep) where {T<:Real}
     (; d, A_GSI, A_GSS1, A_GSS2, n_GSI, n_GSS1, n_GSS2, p_GSS1, p_GSS2) = law
-    ε̇_GSI  = A_GSI  * σ_e^n_GSI
+    ε̇_GSI = A_GSI * σ_e^n_GSI
     ε̇_GSS1 = A_GSS1 * σ_e^n_GSS1 * d^(-p_GSS1)
     ε̇_GSS2 = A_GSS2 * σ_e^n_GSS2 * d^(-p_GSS2)
     return (ε̇_GSI + ε̇_GSS1 + ε̇_GSS2) / σ_e
 end
 
-function creep(
-    σ_e::M,
-    law,
-) where {M<:AbstractArray}
+function creep(σ_e::M, law) where {M<:AbstractArray}
     cf = similar(σ_e)
     creep!(cf, σ_e, law)
     return cf
