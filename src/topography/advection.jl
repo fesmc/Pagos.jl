@@ -78,17 +78,30 @@ struct LevelSetAdvection <: AbstractAdvection end
 # compile-time constants at the call site, so the branch below is resolved by dispatch,
 # not at runtime, and the whole reconstruction inlines into the flux kernel.
 
-@inline _face_thickness(::CenteredAdvection, H, u_face, to, dim, grid,
-                        I::Vararg{Integer, 3}) = lerp(H, to, grid, I...)
+@inline _face_thickness(
+    ::CenteredAdvection,
+    H,
+    u_face,
+    to,
+    dim,
+    grid,
+    I::Vararg{Integer,3},
+) = lerp(H, to, grid, I...)
 
 # `left`/`right` on a Center field with a Vertex destination are Chmy's own names for
 # "the cell below / above this face": `left(H, Dim(1), i, j, k) == H[i-1, j, k]` and
 # `right(...) == H[i, j, k]`, because Chmy places vertex `i` between centres `i-1` and
 # `i`. Using them (rather than literal index arithmetic) keeps the staggering convention
 # in one place — Chmy's — instead of duplicating it here.
-@inline _face_thickness(::UpwindAdvection, H, u_face, to, dim, grid,
-                        I::Vararg{Integer, 3}) =
-    u_face > zero(u_face) ? left(H, dim, I...) : right(H, dim, I...)
+@inline _face_thickness(
+    ::UpwindAdvection,
+    H,
+    u_face,
+    to,
+    dim,
+    grid,
+    I::Vararg{Integer,3},
+) = u_face > zero(u_face) ? left(H, dim, I...) : right(H, dim, I...)
 
 ###############################################################
 # Kernels
@@ -102,14 +115,16 @@ struct LevelSetAdvection <: AbstractAdvection end
 
     if node_active(mask, NODE_ACX, i, j)
         u_face = u[I...]
-        q_x[I...] = _face_thickness(scheme, H, u_face, NODE_ACX, Dim(1), grid, I...) * u_face
+        q_x[I...] =
+            _face_thickness(scheme, H, u_face, NODE_ACX, Dim(1), grid, I...) * u_face
     else
         q_x[I...] = Z
     end
 
     if node_active(mask, NODE_ACY, i, j)
         v_face = v[I...]
-        q_y[I...] = _face_thickness(scheme, H, v_face, NODE_ACY, Dim(2), grid, I...) * v_face
+        q_y[I...] =
+            _face_thickness(scheme, H, v_face, NODE_ACY, Dim(2), grid, I...) * v_face
     else
         q_y[I...] = Z
     end
@@ -130,8 +145,8 @@ end
 
 # The mass balance is a field in a real run and a scalar in idealized ones; both resolve
 # at compile time, so neither costs a branch in the kernel.
-@inline _mass_balance(mb::Chmy.AbstractField, I::Vararg{Integer, 3}) = mb[I...]
-@inline _mass_balance(mb::Number, ::Vararg{Integer, 3}) = mb
+@inline _mass_balance(mb::Chmy.AbstractField, I::Vararg{Integer,3}) = mb[I...]
+@inline _mass_balance(mb::Number, ::Vararg{Integer,3}) = mb
 
 ###############################################################
 # Driver functions
@@ -160,15 +175,34 @@ never arrive, silently breaking conservation.
     (`allowed`), which uses the stricter "**all** adjoining cells permitted" rule — ice
     then piles up against the wall rather than being destroyed.
 """
-function mass_flux!(q_x, q_y, H, u, v, scheme::AbstractAdvection, rt::Runtime,
-                    mask::AbstractIceMask = NoMask())
-    rt.launch2d(rt.arch, rt.grid2d,
-                _mass_flux! => (q_x, q_y, H, u, v, scheme, mask, rt.grid2d))
+function mass_flux!(
+    q_x,
+    q_y,
+    H,
+    u,
+    v,
+    scheme::AbstractAdvection,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _mass_flux! => (q_x, q_y, H, u, v, scheme, mask, rt.grid2d),
+    )
     return nothing
 end
 
-function mass_flux!(q_x, q_y, H, u, v, ::NoAdvection, rt::Runtime,
-                    ::AbstractIceMask = NoMask())
+function mass_flux!(
+    q_x,
+    q_y,
+    H,
+    u,
+    v,
+    ::NoAdvection,
+    rt::Runtime,
+    ::AbstractIceMask = NoMask(),
+)
     rt.launch2d(rt.arch, rt.grid2d, _zero_flux! => (q_x, q_y))
     return nothing
 end
@@ -196,8 +230,12 @@ tendency's halo must fill it.
     of `roadmaps/chmy.md`.
 """
 function thickness_rate!(dHdt, q_x, q_y, mb, rt::Runtime; bc = nothing)
-    rt.launch2d(rt.arch, rt.grid2d,
-                _thickness_rate! => (dHdt, q_x, q_y, mb, rt.grid2d); bc)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _thickness_rate! => (dHdt, q_x, q_y, mb, rt.grid2d);
+        bc,
+    )
     return nothing
 end
 
@@ -212,8 +250,19 @@ Mass continuity in one call: reconstruct the face fluxes with `scheme`
 both to keep the scheme conservative and because a cell has to be allowed a tendency before
 it holds any ice, or the margin could never advance.
 """
-function advect!(dHdt, q_x, q_y, H, u, v, mb, scheme::AbstractAdvection, rt::Runtime,
-                 mask::AbstractIceMask = NoMask(); bc = nothing)
+function advect!(
+    dHdt,
+    q_x,
+    q_y,
+    H,
+    u,
+    v,
+    mb,
+    scheme::AbstractAdvection,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask();
+    bc = nothing,
+)
     mass_flux!(q_x, q_y, H, u, v, scheme, rt, mask)
     thickness_rate!(dHdt, q_x, q_y, mb, rt; bc)
     return nothing
@@ -226,9 +275,25 @@ State-level [`advect!`](@ref): takes the geometry and mass balance from `topo`, 
 depth-averaged velocity from `mech`, stores the fluxes in `mech.flux` and the tendency in
 `topo.thickness.ice_dt`.
 """
-function advect!(topo::TopographicState, mech::MechanicState, scheme::AbstractAdvection,
-                 rt::Runtime, mask::AbstractIceMask = NoMask(); bc = nothing)
-    return advect!(topo.thickness.ice_dt, mech.flux.x, mech.flux.y,
-                   topo.thickness.ice, mech.velocity.depthaverage_x, mech.velocity.depthaverage_y,
-                   topo.massbalance.net, scheme, rt, mask; bc)
+function advect!(
+    topo::TopographicState,
+    mech::MechanicState,
+    scheme::AbstractAdvection,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask();
+    bc = nothing,
+)
+    return advect!(
+        topo.thickness.ice_dt,
+        mech.flux.x,
+        mech.flux.y,
+        topo.thickness.ice,
+        mech.velocity.depthaverage_x,
+        mech.velocity.depthaverage_y,
+        topo.massbalance.net,
+        scheme,
+        rt,
+        mask;
+        bc,
+    )
 end

@@ -82,7 +82,7 @@ IceMask(topo.mask.is_ice, topo.mask.is_ice_neighbour)           # ...plus the gr
 IceMask(topo.mask.is_ice; allowed = topo.mask.is_ice_allowed)   # clipped to a fixed domain
 ```
 """
-struct IceMask{F <: Tuple, A} <: AbstractIceMask
+struct IceMask{F<:Tuple,A} <: AbstractIceMask
     active::F
     allowed::A
 end
@@ -109,12 +109,12 @@ IceMask(active::AbstractArray...; allowed = nothing) = IceMask(active, allowed)
 @inline _cell_set(fs::Tuple, c) = first(fs)[c..., 1] | _cell_set(Base.tail(fs), c)
 @inline _cell_set(::Tuple{}, c) = false
 
-@inline _any_cells_set(fs, cells::Tuple) = _cell_set(fs, first(cells)) |
-                                           _any_cells_set(fs, Base.tail(cells))
+@inline _any_cells_set(fs, cells::Tuple) =
+    _cell_set(fs, first(cells)) | _any_cells_set(fs, Base.tail(cells))
 @inline _any_cells_set(fs, ::Tuple{}) = false
 
-@inline _all_cells_set(fs, cells::Tuple) = _cell_set(fs, first(cells)) &
-                                           _all_cells_set(fs, Base.tail(cells))
+@inline _all_cells_set(fs, cells::Tuple) =
+    _cell_set(fs, first(cells)) & _all_cells_set(fs, Base.tail(cells))
 @inline _all_cells_set(fs, ::Tuple{}) = true
 
 # The recursion is a separate function from the `nothing` shortcut: sharing one name makes
@@ -123,7 +123,8 @@ IceMask(active::AbstractArray...; allowed = nothing) = IceMask(active, allowed)
 @inline _all_allowed(::Nothing, cells) = true
 @inline _all_allowed(f, cells) = _all_true(f, cells)
 
-@inline _all_true(f, cells::Tuple) = f[first(cells)..., 1] & _all_true(f, Base.tail(cells))
+@inline _all_true(f, cells::Tuple) =
+    f[first(cells)..., 1] & _all_true(f, Base.tail(cells))
 @inline _all_true(f, ::Tuple{}) = true
 
 """
@@ -182,9 +183,9 @@ end
     I = @index(Global, NTuple)
     I = I + O
     i, j, k = I
-    is_ice_neighbour[I...] = !is_ice[I...] &
-                             (is_ice[i - 1, j, k] | is_ice[i + 1, j, k] |
-                              is_ice[i, j - 1, k] | is_ice[i, j + 1, k])
+    is_ice_neighbour[I...] =
+        !is_ice[I...] &
+        (is_ice[i-1, j, k] | is_ice[i+1, j, k] | is_ice[i, j-1, k] | is_ice[i, j+1, k])
 end
 
 """
@@ -211,8 +212,11 @@ reads `is_ice` one cell further out than `is_ice`'s own sweep reached.
 function icemasks!(mask::TopographicMasks, H, rt::Runtime; H_min = 0)
     H_min = convert(eltype(H), H_min)
     rt.launch2d(rt.arch, rt.grid2d, _is_ice! => (mask.is_ice, H, H_min))
-    rt.launch2d(rt.arch, rt.grid2d,
-                _is_ice_neighbour! => (mask.is_ice_neighbour, mask.is_ice))
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _is_ice_neighbour! => (mask.is_ice_neighbour, mask.is_ice),
+    )
     return nothing
 end
 
@@ -267,7 +271,7 @@ icemasks!(topo::TopographicState, rt::Runtime; kwargs...) =
     I = I + O
     i, j, k = I
     if is_ice[I...] & !m[I...]
-        m[I...] = m[i - 1, j, k] | m[i + 1, j, k] | m[i, j - 1, k] | m[i, j + 1, k]
+        m[I...] = m[i-1, j, k] | m[i+1, j, k] | m[i, j-1, k] | m[i, j+1, k]
     end
 end
 
@@ -322,28 +326,42 @@ Throws if `maxsweeps` is exhausted rather than returning a partial mask: an unde
 does not fail loudly, it silently freezes real, connected shelf ice at zero velocity — the
 same class of quiet wrong answer that `is_momentum_solved` exists to eliminate.
 """
-function momentum_mask!(is_momentum_solved, is_ice, is_grounded, rt::Runtime;
-                        maxsweeps = 4 * sum(size(rt.grid2d, Center())))
-    rt.launch2d(rt.arch, rt.grid2d,
-                _seed_momentum_mask! => (is_momentum_solved, is_ice, is_grounded))
+function momentum_mask!(
+    is_momentum_solved,
+    is_ice,
+    is_grounded,
+    rt::Runtime;
+    maxsweeps = 4 * sum(size(rt.grid2d, Center())),
+)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _seed_momentum_mask! => (is_momentum_solved, is_ice, is_grounded),
+    )
 
     m = asarray(is_momentum_solved)
     count_prev = sum(m)
     quiet = 0
-    for _ in 1:maxsweeps
-        rt.launch2d(rt.arch, rt.grid2d,
-                    _grow_momentum_mask! => (is_momentum_solved, is_ice))
+    for _ = 1:maxsweeps
+        rt.launch2d(
+            rt.arch,
+            rt.grid2d,
+            _grow_momentum_mask! => (is_momentum_solved, is_ice),
+        )
         count_now = sum(m)
         quiet = count_now == count_prev ? quiet + 1 : 0
         quiet == 2 && return nothing
         count_prev = count_now
     end
-    throw(ErrorException(
-        "momentum_mask!: connectivity did not converge in maxsweeps = $maxsweeps sweeps. " *
-        "Raise `maxsweeps` — the count needed scales with the longest ice path across the " *
-        "domain, which a serpentine geometry can make much longer than its diameter. " *
-        "Returning the partial mask instead would silently freeze connected ice at zero " *
-        "velocity, so this throws."))
+    throw(
+        ErrorException(
+            "momentum_mask!: connectivity did not converge in maxsweeps = $maxsweeps sweeps. " *
+            "Raise `maxsweeps` — the count needed scales with the longest ice path across the " *
+            "domain, which a serpentine geometry can make much longer than its diameter. " *
+            "Returning the partial mask instead would silently freeze connected ice at zero " *
+            "velocity, so this throws.",
+        ),
+    )
 end
 
 """
@@ -353,6 +371,10 @@ State-level [`momentum_mask!`](@ref): writes `topo.mask.is_momentum_solved` from
 `topo.mask.is_ice` and `topo.mask.is_grounded`. Call after [`icemasks!`](@ref) (it reads
 `is_ice`) and after whatever sets `is_grounded`.
 """
-momentum_mask!(topo::TopographicState, rt::Runtime; kwargs...) =
-    momentum_mask!(topo.mask.is_momentum_solved, topo.mask.is_ice, topo.mask.is_grounded,
-                   rt; kwargs...)
+momentum_mask!(topo::TopographicState, rt::Runtime; kwargs...) = momentum_mask!(
+    topo.mask.is_momentum_solved,
+    topo.mask.is_ice,
+    topo.mask.is_grounded,
+    rt;
+    kwargs...,
+)

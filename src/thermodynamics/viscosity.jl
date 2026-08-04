@@ -1,13 +1,4 @@
-function calc_visc_eff_2D_aa(
-    ux,
-    uy,
-    ATT,
-    f_ice,
-    dx,
-    dy;
-    n_glen = 3,
-    eps_0 = 1e-6,
-)
+function calc_visc_eff_2D_aa(ux, uy, ATT, f_ice, dx, dy; n_glen = 3, eps_0 = 1e-6)
     # Calculate 3D effective viscosity following L19, Eq. 2
     # Use of eps_0 ensures non-zero positive viscosity value everywhere 
     # Note: viscosity is first calculated on ab-nodes, then 
@@ -86,16 +77,7 @@ Given ux on acx-nodes and uy on acy-nodes, get both quantities
 on node locations of choice [xn;yn]. Viscosity will be calculated
 at those locations and the desired weighting wtn will be applied to each node.
 """
-function calc_visc_eff_2D_nodes(
-    ux,
-    uy,
-    ATT,
-    f_ice,
-    dx,
-    dy;
-    n_glen = 3,
-    eps_0 = 1e-6,
-)
+function calc_visc_eff_2D_nodes(ux, uy, ATT, f_ice, dx, dy; n_glen = 3, eps_0 = 1e-6)
 
     visc_min = 1e5
     nx, ny = size(ux)

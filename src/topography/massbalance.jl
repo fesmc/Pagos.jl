@@ -11,21 +11,16 @@ function NoGroundingZoneMelt(; T = Float32)
 end
 
 # following leguy
-struct PartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt
-end
+struct PartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt end
 
 # following leguy
-struct FullGroundingZoneMelt{T} <: AbstractGroundingZoneMelt
-end
+struct FullGroundingZoneMelt{T} <: AbstractGroundingZoneMelt end
 
 # following Juarez-Martinez
-struct LinearTidePartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt
-end
+struct LinearTidePartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt end
 
 # TODO: following own implementation
-struct NonlinearTidePartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt
-end
+struct NonlinearTidePartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt end
 
 # TODO: try to include topography, hydrology, bed nature, porosity and velocity + something else?
-struct MultilinearTidePartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt
-end
+struct MultilinearTidePartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt end

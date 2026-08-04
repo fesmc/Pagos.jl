@@ -190,7 +190,7 @@ Calving law based on the formulation by [bassis_upper_2012](@citet):
  - `max_rate::T`: Maximum calving rate
 """
 @kwdef struct BassisCalving{T} <: AbstractCalving
-    C0::T = 1f6                 # Pa
+    C0::T = 1.0f6                 # Pa
     α::T = 0.0                  # 1
     r::T = 0.0                  # 1
     max_rate::T = Inf           # m yr-1
@@ -303,7 +303,9 @@ end
 # TODO: this needs a `seawater_depth` implementation, and the formula re-checked, before
 # it can be used (see roadmaps/todo.md).
 function calving_rate(H_eff, z_sl, z_bed, f_ice, c, calving::BassisCalving)
-    error("calving_rate(::BassisCalving) is not yet implemented: seawater_depth is undefined")
+    error(
+        "calving_rate(::BassisCalving) is not yet implemented: seawater_depth is undefined",
+    )
 
     # (; C0, α, r, max_rate) = calving
     # (; ρ_ice, ρ_seawater, g) = c

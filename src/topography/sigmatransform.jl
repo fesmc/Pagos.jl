@@ -80,8 +80,8 @@ Compute the sigma interface positions ``\\zeta_{\\mathrm{ac}}`` from the midpoin
 function get_ζ_ac(ζ_aa)
     n = length(ζ_aa)
     ζ_ac = zeros(eltype(ζ_aa), n + 1)
-    for i in 2:n
-        ζ_ac[i] = 0.5 * (ζ_aa[i - 1] + ζ_aa[i])
+    for i = 2:n
+        ζ_ac[i] = 0.5 * (ζ_aa[i-1] + ζ_aa[i])
     end
     ζ_ac[n+1] = 1
     return ζ_ac
@@ -104,7 +104,7 @@ means of adjacent midpoints, with ``\\zeta_{\\mathrm{ac},0} = 0`` and
 
 See also [`CorrectedVerticalLayering`](@ref) for the face-first variant.
 """
-struct VerticalLayering{T, S}
+struct VerticalLayering{T,S}
     transform::S
     ζ_aa::Vector{T}
     ζ_ac::Vector{T}
@@ -153,8 +153,8 @@ end
 function CorrectedVerticalLayering(T, transform)
     ζ_ac = range(0.0, stop = 1.0, length = transform.n + 1) .^ transform.exponent
     ζ_aa = zeros(T, transform.n)
-    for i in 1:transform.n
-        ζ_aa[i] = 0.5 * (ζ_ac[i] + ζ_ac[i + 1])
+    for i = 1:transform.n
+        ζ_aa[i] = 0.5 * (ζ_ac[i] + ζ_ac[i+1])
     end
     return CorrectedVerticalLayering(transform.n, ζ_aa, T.(ζ_ac))
 end

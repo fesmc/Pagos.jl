@@ -1,7 +1,6 @@
 abstract type AbstractGroundedFraction end
 
-struct GridGroundedFraction <: AbstractGroundedFraction
-end
+struct GridGroundedFraction <: AbstractGroundedFraction end
 
 struct SubgridGroundedFraction <: AbstractGroundedFraction
     H_ice_neighbours::V1        # Vector{Real}
@@ -14,7 +13,7 @@ function SubgridGroundedFraction(; dimsize = 2, T = Float32)
     return SubgridGroundedFraction(H_ice_neighbours, mask_ice_neighbours)
 end
 
-function ice_fraction(H_ice::T) where T<:Real
+function ice_fraction(H_ice::T) where {T<:Real}
     if H_ice > 0
         f_ice = 1
     else
