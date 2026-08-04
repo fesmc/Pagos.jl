@@ -100,6 +100,28 @@ Only a small 2D speed field (`nx × ny`, ~2 MB at Float32, not the ~2 GB `mech` 
 and a few scalars survive.
 =#
 
+#=
+`MomentumBalance3D` (Blatter-Pattyn) iterates the full column `velocity.x`/`y`, not
+`velocity.depthaverage_x`/`y` — depth-averaging it down to the same `(nx, ny)` speed field
+the SSA/DIVA runs produce is a diagnostic reduction the solve itself has no reason to do, so
+it lives here rather than in the library (`roadmaps/blatter-pattyn.md`, §1.3: `nothing on
+the BP path reads `depthaverage_x`/`y``). Weighted by the sigma-axis layer thickness `Δζ_k`
+— the same weights `depthaverage!` uses for `µ̄` — read at a single representative column
+since `CorrectedVerticalLayering`'s `ζ` layout does not depend on `(i, j)`.
+=#
+function column_depthaverage_speed(mech, rt)
+    (; x, y) = mech.velocity
+    nz = size(rt.grid, Center())[3]
+    wts = reshape([Δz(rt.grid, Center(), 1, 1, k) for k in 1:nz], 1, 1, nz)
+
+    ubar_x = dropdims(sum(interior(x) .* wts; dims = 3); dims = 3)
+    ubar_y = dropdims(sum(interior(y) .* wts; dims = 3); dims = 3)
+
+    return Float32.(sqrt.(
+        (@views (ubar_x[1:(end - 1), :] .+ ubar_x[2:end, :]) ./ 2) .^ 2 .+
+        (@views (ubar_y[:, 1:(end - 1)] .+ ubar_y[:, 2:end]) ./ 2) .^ 2))
+end
+
 function run_solve(momentum, grid, rt, mask; solver_kwargs...)
     T = eltype(grid.grid)
     mech = MechanicState(grid)
@@ -111,19 +133,29 @@ function run_solve(momentum, grid, rt, mask; solver_kwargs...)
     fill_from_grid!(mech.friction.beta_eff, T.(beta_eff))
     fill_from_grid!(mech.friction.beta, T.(beta))
     fill_from_grid3d!(mech.material.viscosity, T.(visc3d))
-    setdata!(mech.velocity.depthaverage_x, zero(T))
-    setdata!(mech.velocity.depthaverage_y, zero(T))
 
-    solver = PseudoTransientSolver(grid; solver_kwargs...)
-    momentum isa DIVAMomentumBalance && diva_update!(mech, solver, rt, mask)
+    if momentum isa MomentumBalance3D
+        setdata!(mech.velocity.x, zero(T))
+        setdata!(mech.velocity.y, zero(T))
+        solver = PseudoTransientSolver(grid, momentum; solver_kwargs...)
+    else
+        setdata!(mech.velocity.depthaverage_x, zero(T))
+        setdata!(mech.velocity.depthaverage_y, zero(T))
+        solver = PseudoTransientSolver(grid; solver_kwargs...)
+        momentum isa DIVAMomentumBalance && diva_update!(mech, solver, rt, mask)
+    end
 
     elapsed = @elapsed result = pseudo_transient!(mech, cst_T, solver, rt, momentum, mask)
 
-    speed = Float32.(sqrt.(
-        (@views (interior(mech.velocity.depthaverage_x)[1:(end - 1), :, 1] .+
-                 interior(mech.velocity.depthaverage_x)[2:end, :, 1]) ./ 2) .^ 2 .+
-        (@views (interior(mech.velocity.depthaverage_y)[:, 1:(end - 1), 1] .+
-                 interior(mech.velocity.depthaverage_y)[:, 2:end, 1]) ./ 2) .^ 2))
+    speed = if momentum isa MomentumBalance3D
+        column_depthaverage_speed(mech, rt)
+    else
+        Float32.(sqrt.(
+            (@views (interior(mech.velocity.depthaverage_x)[1:(end - 1), :, 1] .+
+                     interior(mech.velocity.depthaverage_x)[2:end, :, 1]) ./ 2) .^ 2 .+
+            (@views (interior(mech.velocity.depthaverage_y)[:, 1:(end - 1), 1] .+
+                     interior(mech.velocity.depthaverage_y)[:, 2:end, 1]) ./ 2) .^ 2))
+    end
 
     mech = nothing
     GC.gc()
