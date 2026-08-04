@@ -1,7 +1,7 @@
 struct OutputWriter
-    logging     # for progressmeter, timing etc.
-    netcdf      # for NetCDF output
-    restart     # for restart output (jld2)
+    logging::Any     # for progressmeter, timing etc.
+    netcdf::Any      # for NetCDF output
+    restart::Any     # for restart output (jld2)
 end
 
 """

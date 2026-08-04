@@ -58,8 +58,8 @@ julia> round(∂z_σ(f, grid.grid, 1, 1, grid.nz + 1); digits = 10)   # surface 
 3.0
 ```
 """
-@inline function ∂z_σ(f, grid, I::Vararg{Integer, 3})
-    loc  = location(f)
+@inline function ∂z_σ(f, grid, I::Vararg{Integer,3})
+    loc = location(f)
     from = (loc[1], loc[2], flip(loc[3]))
     return δ(f, loc, from, Dim(3), I...) * iΔ(grid, from, Dim(3), I...)
 end

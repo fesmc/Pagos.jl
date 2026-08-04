@@ -23,13 +23,13 @@
 # unique one consistent with the C-grid (and agrees with Chmy's own `TensorField{3}`
 # component locations).
 
-const NODE_AA      = (Center(), Center(), Center())
-const NODE_ACX     = (Vertex(), Center(), Center())
-const NODE_ACY     = (Center(), Vertex(), Center())
-const NODE_AB      = (Vertex(), Vertex(), Center())
-const NODE_AA_AC   = (Center(), Center(), Vertex())
-const NODE_ACX_AC  = (Vertex(), Center(), Vertex())
-const NODE_ACY_AC  = (Center(), Vertex(), Vertex())
+const NODE_AA = (Center(), Center(), Center())
+const NODE_ACX = (Vertex(), Center(), Center())
+const NODE_ACY = (Center(), Vertex(), Center())
+const NODE_AB = (Vertex(), Vertex(), Center())
+const NODE_AA_AC = (Center(), Center(), Vertex())
+const NODE_ACX_AC = (Vertex(), Center(), Vertex())
+const NODE_ACY_AC = (Center(), Vertex(), Vertex())
 
 """
 $(TYPEDSIGNATURES)
@@ -126,7 +126,7 @@ struct ThicknessState{AA}
 end
 Adapt.@adapt_structure ThicknessState
 
-struct ElevationState{AA, ACX, ACY}
+struct ElevationState{AA,ACX,ACY}
     base::AA
     bed::AA
     bed_ref::AA
@@ -152,29 +152,29 @@ gradients on the `acx`/`acy` faces. With plain arrays ([`RegularGrid`](@ref)) `M
 and `ACY` are the same type; with `Field`s they differ, because the location is part of
 the type.
 """
-struct TopographicState{B, M, ACX, ACY}
+struct TopographicState{B,M,ACX,ACY}
     mask::TopographicMasks{B}
     distance::DistanceState{M}
     fraction::FractionState{M}
     thickness::ThicknessState{M}
     massbalance::MassBalanceState{M}
-    elevation::ElevationState{M, ACX, ACY}
+    elevation::ElevationState{M,ACX,ACY}
 end
 Adapt.@adapt_structure TopographicState
 
 function TopographicState(grid::RegularGrid)
     backend = KernelAbstractions.get_backend(grid.x)
-    T       = eltype(grid.x)
+    T = eltype(grid.x)
     (; nx, ny) = grid
     b = KernelAbstractions.zeros(backend, Bool, nx, ny)
     m = KernelAbstractions.zeros(backend, T, nx, ny)
     return TopographicState(
-        TopographicMasks([copy(b) for _ in 1:7]...),
-        DistanceState([copy(m) for _ in 1:2]...),
-        FractionState([copy(m) for _ in 1:1]...),
-        ThicknessState([copy(m) for _ in 1:6]...),
-        MassBalanceState([copy(m) for _ in 1:10]...),
-        ElevationState([copy(m) for _ in 1:9]...),
+        TopographicMasks([copy(b) for _ = 1:7]...),
+        DistanceState([copy(m) for _ = 1:2]...),
+        FractionState([copy(m) for _ = 1:1]...),
+        ThicknessState([copy(m) for _ = 1:6]...),
+        MassBalanceState([copy(m) for _ = 1:10]...),
+        ElevationState([copy(m) for _ = 1:9]...),
     )
 end
 
@@ -190,8 +190,8 @@ function TopographicState(grid::StaggeredGrid; halo = 1)
     (; arch) = grid
     g = grid.grid2d
     T = eltype(g)
-    b()   = _field(arch, g, NODE_AA, Bool, halo)
-    aa()  = _field(arch, g, NODE_AA, T, halo)
+    b() = _field(arch, g, NODE_AA, Bool, halo)
+    aa() = _field(arch, g, NODE_AA, T, halo)
     acx() = _field(arch, g, NODE_ACX, T, halo)
     acy() = _field(arch, g, NODE_ACY, T, halo)
     return TopographicState(
@@ -222,7 +222,7 @@ pseudo-transient solver's Glen-law viscosity continuation
 ([`GlenViscosityContinuation`](@ref)) has a rate factor to read; solvers that never enable
 continuation (the default) never read it.
 """
-struct MechanicMaterialState{AA2, AA3}
+struct MechanicMaterialState{AA2,AA3}
     viscosity_depthaveraged::AA2
     viscosity::AA3
     rate_factor_depthaveraged::AA2
@@ -262,14 +262,14 @@ Adapt.@adapt_structure FrictionState
 # inside the divergence, which is exactly the half-cell shift the C-grid exists to avoid.
 # `grline` is a grounding-line diagnostic, not a term in the continuity equation, so it
 # stays a cell-centred scalar at `aa`.
-struct FluxState{ACX2, ACY2, AA2}
+struct FluxState{ACX2,ACY2,AA2}
     x::ACX2
     y::ACY2
     grline::AA2
 end
 Adapt.@adapt_structure FluxState
 
-struct StressState{ACX2, ACY2, AA2, AB2, AA3, AB3, ACXZ3, ACYZ3}
+struct StressState{ACX2,ACY2,AA2,AB2,AA3,AB3,ACXZ3,ACYZ3}
     driving_x::ACX2
     driving_y::ACY2
     base_x::ACX2
@@ -307,7 +307,7 @@ struct StressState{ACX2, ACY2, AA2, AB2, AA3, AB3, ACXZ3, ACYZ3}
 end
 Adapt.@adapt_structure StressState
 
-struct StrainRateState{AA2, AA3, AB3, ACXZ3, ACYZ3}
+struct StrainRateState{AA2,AA3,AB3,ACXZ3,ACYZ3}
     xx::AA3
     xy::AB3
     xz::ACXZ3
@@ -334,7 +334,7 @@ struct StrainRateState{AA2, AA3, AB3, ACXZ3, ACYZ3}
 end
 Adapt.@adapt_structure StrainRateState
 
-struct VelocityState{ACX2, ACY2, AA2, AB2, ACX3, ACY3, AA3, AB3, AAZ3, ACXZ3, ACYZ3}
+struct VelocityState{ACX2,ACY2,AA2,AB2,ACX3,ACY3,AA3,AB3,AAZ3,ACXZ3,ACYZ3}
     depthaverage_x::ACX2
     depthaverage_y::ACY2
     depthaverage_x_dx::AA2
@@ -385,21 +385,21 @@ Column fields carry the vertical dimension even for depth-averaged momentum bala
 (SIA, SSA), which simply use `nz == 1`, so tensor and stress computations stay
 dynamics-independent (no 2D/3D special-casing).
 """
-struct MechanicState{ACX2, ACY2, AA2, AB2, ACX3, ACY3, AA3, AB3, AAZ3, ACXZ3, ACYZ3}
+struct MechanicState{ACX2,ACY2,AA2,AB2,ACX3,ACY3,AA3,AB3,AAZ3,ACXZ3,ACYZ3}
     friction::FrictionState{AA2}
-    flux::FluxState{ACX2, ACY2, AA2}
+    flux::FluxState{ACX2,ACY2,AA2}
 
     topography::MechanicTopographyState{AA2}
-    material::MechanicMaterialState{AA2, AA3}
-    strainrate::StrainRateState{AA2, AA3, AB3, ACXZ3, ACYZ3}
-    stress::StressState{ACX2, ACY2, AA2, AB2, AA3, AB3, ACXZ3, ACYZ3}
-    velocity::VelocityState{ACX2, ACY2, AA2, AB2, ACX3, ACY3, AA3, AB3, AAZ3, ACXZ3, ACYZ3}
+    material::MechanicMaterialState{AA2,AA3}
+    strainrate::StrainRateState{AA2,AA3,AB3,ACXZ3,ACYZ3}
+    stress::StressState{ACX2,ACY2,AA2,AB2,AA3,AB3,ACXZ3,ACYZ3}
+    velocity::VelocityState{ACX2,ACY2,AA2,AB2,ACX3,ACY3,AA3,AB3,AAZ3,ACXZ3,ACYZ3}
 end
 Adapt.@adapt_structure MechanicState
 
 function MechanicState(grid::RegularGrid)
     backend = KernelAbstractions.get_backend(grid.x)
-    T       = eltype(grid.x)
+    T = eltype(grid.x)
     (; nx, ny, nz) = grid
     m2() = KernelAbstractions.zeros(backend, T, nx, ny)
     m3() = KernelAbstractions.zeros(backend, T, nx, ny, nz)
@@ -427,15 +427,15 @@ function MechanicState(grid::StaggeredGrid; halo = 1)
     (; arch) = grid
     g2, g3 = grid.grid2d, grid.grid
     T = eltype(g3)
-    aa2()  = _field(arch, g2, NODE_AA, T, halo)
+    aa2() = _field(arch, g2, NODE_AA, T, halo)
     acx2() = _field(arch, g2, NODE_ACX, T, halo)
     acy2() = _field(arch, g2, NODE_ACY, T, halo)
-    ab2()  = _field(arch, g2, NODE_AB, T, halo)
-    aa3()  = _field(arch, g3, NODE_AA, T, halo)
+    ab2() = _field(arch, g2, NODE_AB, T, halo)
+    aa3() = _field(arch, g3, NODE_AA, T, halo)
     acx3() = _field(arch, g3, NODE_ACX, T, halo)
     acy3() = _field(arch, g3, NODE_ACY, T, halo)
-    ab3()  = _field(arch, g3, NODE_AB, T, halo)
-    aaz3()  = _field(arch, g3, NODE_AA_AC, T, halo)
+    ab3() = _field(arch, g3, NODE_AB, T, halo)
+    aaz3() = _field(arch, g3, NODE_AA_AC, T, halo)
     acxz3() = _field(arch, g3, NODE_ACX_AC, T, halo)
     acyz3() = _field(arch, g3, NODE_ACY_AC, T, halo)
     return MechanicState(
@@ -445,33 +445,76 @@ function MechanicState(grid::StaggeredGrid; halo = 1)
         # viscosity_depthaveraged, viscosity, rate_factor_depthaveraged, rate_factor, F₁, F₂
         MechanicMaterialState(aa2(), aa3(), aa2(), aa3(), aa2(), aa2()),
         StrainRateState(
-            aa3(), ab3(), acxz3(), ab3(), aa3(),         # xx, xy, xz, yx, yy
-            acyz3(), acxz3(), acyz3(), aa3(),            # yz, zx, zy, zz
-            aa3(), aa2(),                                # effective, effective_depthaveraged
+            aa3(),
+            ab3(),
+            acxz3(),
+            ab3(),
+            aa3(),         # xx, xy, xz, yx, yy
+            acyz3(),
+            acxz3(),
+            acyz3(),
+            aa3(),            # yz, zx, zy, zz
+            aa3(),
+            aa2(),                                # effective, effective_depthaveraged
         ),
         StressState(
-            acx2(), acy2(), acx2(), acy2(), aa2(),       # driving_x/y, base_x/y, base_vertical
-            aa2(), ab2(), aa2(),                         # membrane_xx, membrane_xy, membrane_yy
-            aa3(), ab3(), acxz3(), ab3(), aa3(),         # xx, xy, xz, yx, yy
-            acyz3(), acxz3(), acyz3(), aa3(),            # yz, zx, zy, zz
-            aa3(), aa3(), aa3(), aa3(),                  # effective, lateral, eigenvalue_1/2
+            acx2(),
+            acy2(),
+            acx2(),
+            acy2(),
+            aa2(),       # driving_x/y, base_x/y, base_vertical
+            aa2(),
+            ab2(),
+            aa2(),                         # membrane_xx, membrane_xy, membrane_yy
+            aa3(),
+            ab3(),
+            acxz3(),
+            ab3(),
+            aa3(),         # xx, xy, xz, yx, yy
+            acyz3(),
+            acxz3(),
+            acyz3(),
+            aa3(),            # yz, zx, zy, zz
+            aa3(),
+            aa3(),
+            aa3(),
+            aa3(),                  # effective, lateral, eigenvalue_1/2
         ),
         VelocityState(
-            acx2(), acy2(), aa2(), ab2(), acx2(),        # depthaverage_x, depthaverage_y, depthaverage_x_dx/dy/dz
-            ab2(), aa2(), acy2(),                        # depthaverage_y_dx/dy/dz
-            acx2(), acy2(), aa2(),                       # base_x, base_y, base_norm
-            acx2(), acy2(), aa2(),                       # surface_x, surface_y, surface_norm
-            acx3(), acy3(), aaz3(),                      # x, y, z
-            aa3(), ab3(), acxz3(),                       # x_dx, x_dy, x_dz
-            ab3(), aa3(), acyz3(),                       # y_dx, y_dy, y_dz
-            acxz3(), acyz3(), aa3(), aa3(),              # z_dx, z_dy, z_dz, norm
+            acx2(),
+            acy2(),
+            aa2(),
+            ab2(),
+            acx2(),        # depthaverage_x, depthaverage_y, depthaverage_x_dx/dy/dz
+            ab2(),
+            aa2(),
+            acy2(),                        # depthaverage_y_dx/dy/dz
+            acx2(),
+            acy2(),
+            aa2(),                       # base_x, base_y, base_norm
+            acx2(),
+            acy2(),
+            aa2(),                       # surface_x, surface_y, surface_norm
+            acx3(),
+            acy3(),
+            aaz3(),                      # x, y, z
+            aa3(),
+            ab3(),
+            acxz3(),                       # x_dx, x_dy, x_dz
+            ab3(),
+            aa3(),
+            acyz3(),                       # y_dx, y_dy, y_dz
+            acxz3(),
+            acyz3(),
+            aa3(),
+            aa3(),              # z_dx, z_dy, z_dz, norm
         ),
     )
 end
 
 ###############################################################
 
-struct TemperatureState{AA3, AA2}
+struct TemperatureState{AA3,AA2}
     ice::AA3
     ice_surface::AA2
     ice_homologous::AA3
@@ -499,15 +542,15 @@ On a [`RegularGrid`](@ref) both parameters collapse to a single array type. On a
 [`StaggeredGrid`](@ref) the `AA3` fields are built on `grid.grid` and the `AA2` fields on
 `grid.grid2d`.
 """
-struct ThermodynamicState{AA3, AA2}
-    temperature::TemperatureState{AA3, AA2}
+struct ThermodynamicState{AA3,AA2}
+    temperature::TemperatureState{AA3,AA2}
     enthalpy::EnthalpyState{AA3}
     ice_water_content::AA3
 
     heat_strain_internal::AA3
     heat_strain_internal_dt::AA3
     heat_base_friction::AA2
-    
+
     heatflux_base_ice::AA2
     heatflux_bedrock::AA2
     heatflux_geothermal::AA2
@@ -521,10 +564,10 @@ Adapt.@adapt_structure ThermodynamicState
 
 function ThermodynamicState(grid::RegularGrid)
     backend = KernelAbstractions.get_backend(grid.x)
-    T       = eltype(grid.x)
+    T = eltype(grid.x)
     (; nx, ny, nz) = grid
-    m() = nz > 1 ?
-        KernelAbstractions.zeros(backend, T, nx, ny, nz) :
+    m() =
+        nz > 1 ? KernelAbstractions.zeros(backend, T, nx, ny, nz) :
         KernelAbstractions.zeros(backend, T, nx, ny)
     return ThermodynamicState(
         TemperatureState(ntuple(_ -> m(), 5)...),  # ice, ice_surface, ice_homologous, rock, pressure_melting_point
@@ -550,10 +593,18 @@ function ThermodynamicState(grid::StaggeredGrid; halo = 1)
     return ThermodynamicState(
         TemperatureState(aa3(), aa2(), aa3(), aa3(), aa3()),
         EnthalpyState(aa3(), aa3()),
-        aa3(), aa3(), aa3(),                       # ice_water_content, heat_strain_internal(_dt)
-        aa2(), aa2(), aa2(), aa2(),                # heat_base_friction, heatflux_base_ice/bedrock/geothermal
-        aa2(), aa2(), aa2(),                       # thickness_waterlayer(_dt), thickness_coldtemperate_interface
-        aa3(), aa3(),                              # specific_heat_capacity_ice, heat_conductivity_ice
+        aa3(),
+        aa3(),
+        aa3(),                       # ice_water_content, heat_strain_internal(_dt)
+        aa2(),
+        aa2(),
+        aa2(),
+        aa2(),                # heat_base_friction, heatflux_base_ice/bedrock/geothermal
+        aa2(),
+        aa2(),
+        aa2(),                       # thickness_waterlayer(_dt), thickness_coldtemperate_interface
+        aa3(),
+        aa3(),                              # specific_heat_capacity_ice, heat_conductivity_ice
     )
 end
 
@@ -565,7 +616,7 @@ $(TYPEDSIGNATURES)
 State variables for the material component, all at the `aa` node: `AA2` are the
 depth-averaged and depth-integrated viscosities, `AA3` the viscosity of the ice column.
 """
-struct MaterialState{AA2, AA3}
+struct MaterialState{AA2,AA3}
     eta_depth_averaged::AA2
     eta_depth_integrated::AA2
     eta_ice::AA3
@@ -574,7 +625,7 @@ Adapt.@adapt_structure MaterialState
 
 function MaterialState(grid::RegularGrid)
     backend = KernelAbstractions.get_backend(grid.x)
-    T       = eltype(grid.x)
+    T = eltype(grid.x)
     (; nx, ny, nz) = grid
     m2 = KernelAbstractions.zeros(backend, T, nx, ny)
     m3 = KernelAbstractions.zeros(backend, T, nx, ny, nz)

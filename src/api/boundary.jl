@@ -64,14 +64,17 @@ end
 
 function _check_data_shape(dst_size, src_size)
     _data_size(dst_size) == _data_size(src_size) && return nothing
-    throw(DimensionMismatch(
-        "cannot write data of size $src_size into a destination of size $dst_size. " *
-        "Trailing singleton dimensions are ignored, so e.g. an (nx, ny) matrix is " *
-        "accepted for an (nx, ny, 1) depth-integrated field, but the leading " *
-        "dimensions must agree exactly. If the source was dimensioned against a " *
-        "`RegularGrid`, note that `StaggeredGrid` is one cell smaller per horizontal " *
-        "axis by construction (see the `StaggeredGrid` docstring) — re-dimension the " *
-        "data rather than padding it."))
+    throw(
+        DimensionMismatch(
+            "cannot write data of size $src_size into a destination of size $dst_size. " *
+            "Trailing singleton dimensions are ignored, so e.g. an (nx, ny) matrix is " *
+            "accepted for an (nx, ny, 1) depth-integrated field, but the leading " *
+            "dimensions must agree exactly. If the source was dimensioned against a " *
+            "`RegularGrid`, note that `StaggeredGrid` is one cell smaller per horizontal " *
+            "axis by construction (see the `StaggeredGrid` docstring) — re-dimension the " *
+            "data rather than padding it.",
+        ),
+    )
 end
 
 """

@@ -38,7 +38,7 @@ grid = RegularGrid(Float64, 6000e3, 6000e3, 16e3, 16e3)                       # 
 grid = RegularGrid(CUDABackend(), Float32, 6000e3, 6000e3, 16e3, 16e3)        # GPU
 ```
 """
-struct RegularGrid{I, T, V, M, MI} <: AbstractGrid
+struct RegularGrid{I,T,V,M,MI} <: AbstractGrid
     nx::I
     ny::I
     nz::I
@@ -63,17 +63,33 @@ end
 function RegularGrid(backend::Backend, T::Type{<:AbstractFloat}, lx, ly, dx, dy)
     x_cpu = collect(range(T(0), step = T(dx), stop = T(lx))) .- T(lx) / 2
     y_cpu = collect(range(T(0), step = T(dy), stop = T(ly))) .- T(ly) / 2
-    nx    = length(x_cpu)
-    ny    = length(y_cpu)
-    nz    = 1
-    x     = KernelAbstractions.adapt(backend, x_cpu)
-    y     = KernelAbstractions.adapt(backend, y_cpu)
-    z     = KernelAbstractions.adapt(backend, [T(0)])
-    Lon   = KernelAbstractions.zeros(backend, T, nx, ny)
-    Lat   = KernelAbstractions.zeros(backend, T, nx, ny)
-    area  = KernelAbstractions.adapt(backend, fill(T(dx * dy), nx, ny))
-    dist  = KernelAbstractions.adapt(backend, ones(T, nx, ny))
-    bas   = KernelAbstractions.zeros(backend, Int, nx, ny)
-    reg   = KernelAbstractions.zeros(backend, Int, nx, ny)
-    return RegularGrid(nx, ny, nz, x, y, z, T(dx), T(dy), T(1), Lon, Lat, area, dist, bas, reg)
+    nx = length(x_cpu)
+    ny = length(y_cpu)
+    nz = 1
+    x = KernelAbstractions.adapt(backend, x_cpu)
+    y = KernelAbstractions.adapt(backend, y_cpu)
+    z = KernelAbstractions.adapt(backend, [T(0)])
+    Lon = KernelAbstractions.zeros(backend, T, nx, ny)
+    Lat = KernelAbstractions.zeros(backend, T, nx, ny)
+    area = KernelAbstractions.adapt(backend, fill(T(dx * dy), nx, ny))
+    dist = KernelAbstractions.adapt(backend, ones(T, nx, ny))
+    bas = KernelAbstractions.zeros(backend, Int, nx, ny)
+    reg = KernelAbstractions.zeros(backend, Int, nx, ny)
+    return RegularGrid(
+        nx,
+        ny,
+        nz,
+        x,
+        y,
+        z,
+        T(dx),
+        T(dy),
+        T(1),
+        Lon,
+        Lat,
+        area,
+        dist,
+        bas,
+        reg,
+    )
 end

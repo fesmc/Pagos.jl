@@ -66,7 +66,7 @@ the launcher splits the sweep into an interior part and boundary slabs run on as
 Enzyme-differentiated region — keep `outer_width = nothing` there (see
 `roadmaps/chmy.md`, Phase 5).
 """
-struct Runtime{A, G, G2, L, L2}
+struct Runtime{A,G,G2,L,L2}
     arch::A
     grid::G
     grid2d::G2
@@ -87,9 +87,9 @@ second one built: with `outer_width` set, a `Launcher` owns async `Worker` Tasks
 duplicate would spawn a second set of them for no benefit.
 """
 function Runtime(grid::StaggeredGrid; outer_width = nothing)
-    arch     = grid.arch
-    g3, g2   = grid.grid, grid.grid2d
-    launch   = Launcher(arch, g3; outer_width)
+    arch = grid.arch
+    g3, g2 = grid.grid, grid.grid2d
+    launch = Launcher(arch, g3; outer_width)
     launch2d = g2 === g3 ? launch : Launcher(arch, g2; outer_width)
     return Runtime(arch, g3, g2, launch, launch2d)
 end

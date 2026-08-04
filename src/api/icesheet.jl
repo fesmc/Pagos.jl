@@ -15,7 +15,7 @@ sim = Simulation(ais)
 step!(sim, Δt_sync)
 ```
 """
-struct IceSheet{TP, DN, TD, MT, C, CG, BE, PR}
+struct IceSheet{TP,DN,TD,MT,C,CG,BE,PR}
     topography::TP      # <: Topography
     dynamics::DN        # <: Dynamics
     thermodynamics::TD  # <: Thermodynamics
@@ -38,7 +38,7 @@ $(TYPEDSIGNATURES)
  - `calving`: the calving model for the topography component
  - `sigma_transform`: the sigma transform for the topography component
 """
-struct Topography{S, G, TS, MB, SL, C, ST}
+struct Topography{S,G,TS,MB,SL,C,ST}
     state::S            # <: TopographicState
     grid::G             # can be Grid or CommonGrid. If CommonGrid, then the grid is not defined and the grid of the IceSheet is used instead.
     time_stepper::TS    # can be Tsit54(), some other similar method, or CommonTimeStepper() that uses the time stepper of the IceSheet (prevents unnecessary pre-allocation)
@@ -60,7 +60,7 @@ This should go into Ichnos
  - `age`: the age model for the tracers component
  - `isotopes`: the isotopic composition for the tracers component
 """
-struct Tracers{S, G, TS, A, I, FR}
+struct Tracers{S,G,TS,A,I,FR}
     state::S            # <: TracersState
     grid::G             # <: Grid or CommonGrid
     time_stepper::TS    # <: Tsit54() or CommonTimeStepper()
@@ -81,7 +81,7 @@ $(TYPEDSIGNATURES)
  - `effective_pressure`: the effective pressure model for the dynamics component
  - `friction`: the basal friction model for the dynamics component
 """
-struct Mechanics{S, G, TS, M, SL, EP, F}
+struct Mechanics{S,G,TS,M,SL,EP,F}
     state::S            # <: MechanicState
     grid::G             # <: Grid or CommonGrid
     time_stepper::TS    # <: Tsit54() or CommonTimeStepper()
@@ -95,7 +95,7 @@ end
 $(TYPEDSIGNATURES)
 
 """
-struct Thermodynamics{S, G, TS, E, SL}
+struct Thermodynamics{S,G,TS,E,SL}
     state::S            # <: ThermodynamicsState
     grid::G             # <: Grid or CommonGrid
     time_stepper::TS    # <: Tsit54() or CommonTimeStepper()
@@ -107,7 +107,7 @@ end
 $(TYPEDSIGNATURES)
 
 """
-struct Material{S, G, TS, A, FL, PMP}
+struct Material{S,G,TS,A,FL,PMP}
     state::S            # <: MaterialState
     grid::G             # <: Grid or CommonGrid
     time_stepper::TS    # <: Tsit54() or CommonTimeStepper()

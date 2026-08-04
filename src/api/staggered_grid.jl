@@ -91,7 +91,7 @@ it is always `Bounded()`, including for the size-1 depth-integrated placeholder.
     size-1 `Bounded` z-axis. It is still a 3-dimensional grid — its fields are indexed
     `f[i, j, 1]`, never `f[i, j]`.
 """
-struct StaggeredGrid{A, G, G2, M, MI} <: AbstractGrid
+struct StaggeredGrid{A,G,G2,M,MI} <: AbstractGrid
     arch::A
     grid::G
     grid2d::G2
@@ -119,18 +119,28 @@ function Base.getproperty(g::StaggeredGrid, s::Symbol)
     s === :dx && return Δx(grid, Center(), 1, 1, 1)
     s === :dy && return Δy(grid, Center(), 1, 1, 1)
     if s === :dz
-        size(grid, Center())[3] == 1 ||
-            error("`dz` is not a single scalar for a column StaggeredGrid (the sigma " *
-                  "z-axis is non-uniform) — use the `ζ_aa`/`ζ_ac` vectors of the " *
-                  "`CorrectedVerticalLayering` it was built from instead.")
+        size(grid, Center())[3] == 1 || error(
+            "`dz` is not a single scalar for a column StaggeredGrid (the sigma " *
+            "z-axis is non-uniform) — use the `ζ_aa`/`ζ_ac` vectors of the " *
+            "`CorrectedVerticalLayering` it was built from instead.",
+        )
         return Δz(grid, Center(), 1, 1, 1)
     end
     error("StaggeredGrid has no property $s")
 end
 
-Base.propertynames(::StaggeredGrid) = (:arch, :grid, :grid2d, :Lon, :Lat, :area,
-                                        :distortion, :basins, :regions,
-                                        _StaggeredGridProperties...)
+Base.propertynames(::StaggeredGrid) = (
+    :arch,
+    :grid,
+    :grid2d,
+    :Lon,
+    :Lat,
+    :area,
+    :distortion,
+    :basins,
+    :regions,
+    _StaggeredGridProperties...,
+)
 
 # A `Connectivity` that Chmy declares but never dispatches on is not inert — it falls
 # through dispatch instead of short-circuiting it. `BoundaryConditions.batch_impl` has
@@ -138,17 +148,18 @@ Base.propertynames(::StaggeredGrid) = (:arch, :grid, :grid2d, :Lon, :Lat, :area,
 # single `Periodic` (or `Flat`) axis turns `bc!` into a `MethodError` for every field on
 # the grid, the `Bounded` axes included. Rejecting it here trades a silent failure at the
 # first boundary condition for a loud one at construction.
-_check_connectivity(::Bounded, ::AbstractString)   = nothing
+_check_connectivity(::Bounded, ::AbstractString) = nothing
 _check_connectivity(::Connected, ::AbstractString) = nothing
-_check_connectivity(conn::Connectivity, dim::AbstractString) =
-    error("`$(nameof(typeof(conn)))()` is not a usable topology for the $dim-axis of a " *
-          "StaggeredGrid. Chmy $(pkgversion(Chmy)) declares and exports it but defines " *
-          "no methods for it — in particular `BoundaryConditions.batch_impl` covers only " *
-          "`Bounded` and `Connected`, and `bc!` batches over every axis, so one such axis " *
-          "makes `bc!` a MethodError for every field on the grid (the `Bounded` axes " *
-          "included). Use `Bounded()`, or `Connected()` for an MPI-exchanged axis.")
+_check_connectivity(conn::Connectivity, dim::AbstractString) = error(
+    "`$(nameof(typeof(conn)))()` is not a usable topology for the $dim-axis of a " *
+    "StaggeredGrid. Chmy $(pkgversion(Chmy)) declares and exports it but defines " *
+    "no methods for it — in particular `BoundaryConditions.batch_impl` covers only " *
+    "`Bounded` and `Connected`, and `bc!` batches over every axis, so one such axis " *
+    "makes `bc!` a MethodError for every field on the grid (the `Bounded` axes " *
+    "included). Use `Bounded()`, or `Connected()` for an MPI-exchanged axis.",
+)
 
-function _expand_topology(topology::NTuple{2, Connectivity})
+function _expand_topology(topology::NTuple{2,Connectivity})
     _check_connectivity(topology[1], "x")
     _check_connectivity(topology[2], "y")
     return (topology[1], topology[1]), (topology[2], topology[2])
@@ -191,21 +202,23 @@ function _sigma_axis(T, layering::CorrectedVerticalLayering)
     n = layering.n
     ζ = ntuple(i -> T(layering.ζ_ac[i]), n + 1)
     Δlo = ζ[2] - ζ[1]
-    Δhi = ζ[n + 1] - ζ[n]
+    Δhi = ζ[n+1] - ζ[n]
     # Branch-free: every arm is evaluated, so the index is always in range.
-    zvertex(i) = ifelse(i < 1, ζ[1] + (i - 1) * Δlo,
-                 ifelse(i > n + 1, ζ[n + 1] + (i - n - 1) * Δhi,
-                        ζ[clamp(i, 1, n + 1)]))
+    zvertex(i) = ifelse(
+        i < 1,
+        ζ[1] + (i - 1) * Δlo,
+        ifelse(i > n + 1, ζ[n+1] + (i - n - 1) * Δhi, ζ[clamp(i, 1, n + 1)]),
+    )
     return FunctionAxis(zvertex, n)
 end
 
 function _geo_metadata(arch, T, nx, ny)
     backend = get_backend(arch)
-    Lon  = KernelAbstractions.zeros(backend, T, nx, ny)
-    Lat  = KernelAbstractions.zeros(backend, T, nx, ny)
+    Lon = KernelAbstractions.zeros(backend, T, nx, ny)
+    Lat = KernelAbstractions.zeros(backend, T, nx, ny)
     dist = KernelAbstractions.ones(backend, T, nx, ny)
-    bas  = KernelAbstractions.zeros(backend, Int, nx, ny)
-    reg  = KernelAbstractions.zeros(backend, Int, nx, ny)
+    bas = KernelAbstractions.zeros(backend, Int, nx, ny)
+    reg = KernelAbstractions.zeros(backend, Int, nx, ny)
     return Lon, Lat, dist, bas, reg
 end
 
@@ -216,13 +229,20 @@ Build a depth-integrated (`nz == 1`) `StaggeredGrid` on `arch`, spanning `(lx, l
 uniform spacing `(dx, dy)`, centred on the origin. `grid2d === grid` here: there is only
 one vertical layer, so depth-integrated and column fields live on the same grid.
 """
-function StaggeredGrid(arch::Architecture, T::Type{<:AbstractFloat}, lx, ly, dx, dy;
-                       topology::NTuple{2, Connectivity} = (Bounded(), Bounded()))
+function StaggeredGrid(
+    arch::Architecture,
+    T::Type{<:AbstractFloat},
+    lx,
+    ly,
+    dx,
+    dy;
+    topology::NTuple{2,Connectivity} = (Bounded(), Bounded()),
+)
     nx = round(Int, lx / dx)
     ny = round(Int, ly / dy)
     xytopo = _expand_topology(topology)
     # `Bounded`, not the `Flat` that would describe this axis — see `_check_connectivity`.
-    ztopo  = (Bounded(), Bounded())
+    ztopo = (Bounded(), Bounded())
 
     xax = UniformAxis(T(-lx / 2), T(lx), nx)
     yax = UniformAxis(T(-ly / 2), T(ly), ny)
@@ -237,8 +257,15 @@ end
 StaggeredGrid(T::Type{<:AbstractFloat}, lx, ly, dx, dy; kwargs...) =
     StaggeredGrid(Arch(KernelAbstractions.CPU()), T, lx, ly, dx, dy; kwargs...)
 
-StaggeredGrid(backend::KernelAbstractions.Backend, T::Type{<:AbstractFloat}, lx, ly, dx, dy; kwargs...) =
-    StaggeredGrid(Arch(backend), T, lx, ly, dx, dy; kwargs...)
+StaggeredGrid(
+    backend::KernelAbstractions.Backend,
+    T::Type{<:AbstractFloat},
+    lx,
+    ly,
+    dx,
+    dy;
+    kwargs...,
+) = StaggeredGrid(Arch(backend), T, lx, ly, dx, dy; kwargs...)
 
 """
 $(TYPEDSIGNATURES)
@@ -248,20 +275,27 @@ axes plus a sigma-level vertical axis (`Chmy.FunctionAxis`) built from `layering
 (see the note on [`CorrectedVerticalLayering`](@ref) vs [`VerticalLayering`](@ref)
 above — only the former round-trips through Chmy's axis).
 """
-function StaggeredGrid(arch::Architecture, T::Type{<:AbstractFloat}, lx, ly, dx, dy,
-                       layering::CorrectedVerticalLayering;
-                       topology::NTuple{2, Connectivity} = (Bounded(), Bounded()))
+function StaggeredGrid(
+    arch::Architecture,
+    T::Type{<:AbstractFloat},
+    lx,
+    ly,
+    dx,
+    dy,
+    layering::CorrectedVerticalLayering;
+    topology::NTuple{2,Connectivity} = (Bounded(), Bounded()),
+)
     nx = round(Int, lx / dx)
     ny = round(Int, ly / dy)
     xytopo = _expand_topology(topology)
-    ztopo  = (Bounded(), Bounded())
+    ztopo = (Bounded(), Bounded())
 
     xax = UniformAxis(T(-lx / 2), T(lx), nx)
     yax = UniformAxis(T(-ly / 2), T(ly), ny)
     zax = _sigma_axis(T, layering)
 
-    topo   = typeof((xytopo..., ztopo))
-    grid   = StructuredGrid{topo}(arch, xax, yax, zax)
+    topo = typeof((xytopo..., ztopo))
+    grid = StructuredGrid{topo}(arch, xax, yax, zax)
     # Same horizontal axes, single vertical layer: the grid that carries the
     # depth-integrated fields of the state structs (see the `grid2d` note above).
     grid2d = StructuredGrid{topo}(arch, xax, yax, UniformAxis(T(0), T(1), 1))
@@ -270,12 +304,35 @@ function StaggeredGrid(arch::Architecture, T::Type{<:AbstractFloat}, lx, ly, dx,
     return StaggeredGrid(arch, grid, grid2d, Lon, Lat, area, dist, bas, reg)
 end
 
-StaggeredGrid(T::Type{<:AbstractFloat}, lx, ly, dx, dy, layering::CorrectedVerticalLayering; kwargs...) =
-    StaggeredGrid(Arch(KernelAbstractions.CPU()), T, lx, ly, dx, dy, layering; kwargs...)
+StaggeredGrid(
+    T::Type{<:AbstractFloat},
+    lx,
+    ly,
+    dx,
+    dy,
+    layering::CorrectedVerticalLayering;
+    kwargs...,
+) = StaggeredGrid(
+    Arch(KernelAbstractions.CPU()),
+    T,
+    lx,
+    ly,
+    dx,
+    dy,
+    layering;
+    kwargs...,
+)
 
-StaggeredGrid(backend::KernelAbstractions.Backend, T::Type{<:AbstractFloat}, lx, ly, dx, dy,
-             layering::CorrectedVerticalLayering; kwargs...) =
-    StaggeredGrid(Arch(backend), T, lx, ly, dx, dy, layering; kwargs...)
+StaggeredGrid(
+    backend::KernelAbstractions.Backend,
+    T::Type{<:AbstractFloat},
+    lx,
+    ly,
+    dx,
+    dy,
+    layering::CorrectedVerticalLayering;
+    kwargs...,
+) = StaggeredGrid(Arch(backend), T, lx, ly, dx, dy, layering; kwargs...)
 
 """
 $(TYPEDSIGNATURES)
@@ -311,7 +368,7 @@ julia> interior(f)[1, 1, 1] ≈ sg.x[1] + sg.y[1]
 true
 ```
 """
-function Chmy.set!(f::Field{T, 3}, sg::StaggeredGrid, fun; kwargs...) where {T}
+function Chmy.set!(f::Field{T,3}, sg::StaggeredGrid, fun; kwargs...) where {T}
     grid = size(interior(f), 3) == 1 ? sg.grid2d : sg.grid
     return Chmy.set!(f, grid, fun; kwargs...)
 end

@@ -10,7 +10,7 @@ sim  = Simulation(ais)
 sim2 = Simulation(ais; io = OutputWriter("restart.jld2"))
 ```
 """
-struct Simulation{IS, IO, TM}
+struct Simulation{IS,IO,TM}
     ice_sheet::IS   # <: IceSheet
     io::IO          # <: AbstractOutputWriter
     timer::TM       # <: AbstractTimer
