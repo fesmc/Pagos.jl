@@ -587,6 +587,124 @@ basal stress rather than one derived from a friction law and the current velocit
 """
 struct NoFrictionUpdate <: AbstractFrictionUpdate end
 
+###############################################################
+# Vertical treatment (Blatter-Pattyn only)
+###############################################################
+
+"""
+$(TYPEDSIGNATURES)
+
+An abstract type to multiple-dispatch how a [`MomentumBalance3D`](@ref) solve advances the
+vertical-shear divergence `∂z(µ ∂z u)` — explicitly, like every other term, or implicitly
+down each column — following the same "dispatch, not `if`/`else`" convention as
+[`AbstractPseudoTimeStep`](@ref). [`ExplicitVertical`](@ref) (the default) is the whole of
+`roadmaps/blatter-pattyn.md` Phase 1; [`ImplicitVertical`](@ref) is Phase 2.
+
+Read **only** on the [`MomentumBalance3D`](@ref) path: SSA and DIVA have no vertical operator
+to treat (DIVA integrates it out analytically through `F₁`/`F₂`), so the depth-averaged
+[`PseudoTransientSolver`](@ref) constructor rejects anything but `ExplicitVertical()` rather
+than accepting a setting it would silently ignore.
+"""
+abstract type AbstractVerticalTreatment end
+
+"""
+$(TYPEDSIGNATURES)
+
+Advance `∂z(µ ∂z u)` explicitly, together with the membrane terms: the velocity update is the
+plain [`pseudo_vel!`](@ref) step `u ← u + θ_v Δτ dv`, and `Δτ` is bounded by the **full**
+Gershgorin row sum, vertical term and bed-drag term included. The default, and the only
+behaviour prior to [`AbstractVerticalTreatment`](@ref) existing.
+
+The cost is the aspect-ratio penalty of `roadmaps/blatter-pattyn.md` §2: `Λ_vert/Λ_horiz` has
+a median of ~400 and a 99th percentile of ~2e5 on 8 km Antarctic geometry, so `Δτ` is set by
+the vertical operator almost everywhere and by the thinnest columns in particular
+(`Λ_vert ∝ 1/H²`). [`ImplicitVertical`](@ref) removes exactly that penalty; this stays as the
+reference it is verified against.
+"""
+struct ExplicitVertical <: AbstractVerticalTreatment end
+
+"""
+$(TYPEDSIGNATURES)
+
+Advance `∂z(µ ∂z u)` **implicitly** down each column — vertical line relaxation,
+`roadmaps/blatter-pattyn.md` Phase 2 — while the membrane terms stay explicit. `Δτ` is then
+bounded by the horizontal operator alone, i.e. by the same row sum SSA and DIVA use, and the
+aspect-ratio penalty of [`ExplicitVertical`](@ref) disappears rather than being square-rooted
+by the damping.
+
+Read as a preconditioner, which is what makes it a drop-in: the residual
+[`dotvel!`](@ref) writes is unchanged (still the true, fully explicit `r̃(u^k)`), and only the
+*step* changes, from `Δu = θ_v Δτ dv` to
+
+```
+(diag(Λ_horiz/ρ̃) + Ã_v) Δu = θ_v · scale · dv
+```
+
+with `Ã_v` the exact discrete vertical operator — the tridiagonal built from the same `R±`,
+`δ±`, `Δ_k` coefficients the Gershgorin bound uses, so the two cannot drift apart. Solved
+per column by the Thomas algorithm, one work-item per horizontal face, embarrassingly
+parallel over `(i, j)` and GPU-friendly. Non-uniform sigma spacing is coefficients only —
+[`CorrectedVerticalLayering`](@ref) needs no special path.
+
+Two wins, not one. The vertical diffusion leaves the explicit spectrum, and so does the
+**bed drag**: `β` enters the bottom row of the tridiagonal exactly, rather than the `β/Δζ₁`
+term the explicit bound has to carry. On 8 km Antarctic geometry 87 % of the residual left
+after 600 explicit iterations sits at `k = 1`, so that second win is the larger one.
+
+# Fields
+ - `thomas_x`, `thomas_y`: the Thomas back-substitution coefficients `c'`, one column field
+   per velocity component. The forward sweep's `b'` and `d'` never outlive one layer (`d'` is
+   written into the velocity field itself), so these two arrays are the entire extra
+   footprint — allocated here rather than on [`PseudoTransientSolver`](@ref) so that an
+   [`ExplicitVertical`](@ref) solve pays nothing for a strategy it does not use.
+
+Construct from the same [`StaggeredGrid`](@ref) the solver is built on:
+
+```julia
+solver = PseudoTransientSolver(grid, BlatterPattynMomentumBalance();
+                               vertical_treatment = ImplicitVertical(grid))
+```
+
+!!! note "The autotuner stays valid, with the implicit factor folded into `M`"
+    [`AutotunedDynamicRelaxation`](@ref) needs `λ_max(M⁻¹Ã) ≤ 1`, which under
+    [`ExplicitVertical`](@ref) holds because `M = diag(Λ)` is the full Gershgorin diagonal.
+    Here `M = diag(Λ_horiz/ρ̃) + Ã_v` — the preconditioner the line solve actually applies —
+    and `M - Ã = diag(Λ_horiz/ρ̃) - Ã_h` is exactly the horizontal Gershgorin defect, so the
+    bound survives verbatim. Folding it in costs nothing: `Δuᵀ M Δu = scale · Δuᵀ dv` by
+    construction of the step, so the `M`-inner product is a reduction over two fields the loop
+    already holds, and no vertical operator is applied a second time.
+"""
+struct ImplicitVertical{MX, MY} <: AbstractVerticalTreatment
+    thomas_x::MX
+    thomas_y::MY
+end
+Adapt.@adapt_structure ImplicitVertical
+
+function ImplicitVertical(grid::StaggeredGrid; halo = 1)
+    (; arch) = grid
+    g = grid.grid
+    T = eltype(g)
+    return ImplicitVertical(_field(arch, g, NODE_ACX, T, halo),
+                            _field(arch, g, NODE_ACY, T, halo))
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Reject a vertical treatment the grid the solver is being built on cannot serve, at
+construction rather than as a silently ignored setting at solve time. Only the
+depth-averaged [`PseudoTransientSolver`](@ref) constructor constrains this.
+"""
+_check_vertical_treatment(::ExplicitVertical) = nothing
+
+_check_vertical_treatment(::ImplicitVertical) = throw(ArgumentError(
+    "ImplicitVertical() is a MomentumBalance3D strategy and the depth-averaged " *
+    "PseudoTransientSolver(grid) would never read it. SSA has no vertical operator at all " *
+    "and DIVA integrates its own out analytically (the F₁/F₂ closure), so there is nothing " *
+    "here to treat implicitly. Build the solver with " *
+    "`PseudoTransientSolver(grid, BlatterPattynMomentumBalance(); " *
+    "vertical_treatment = ImplicitVertical(grid))` instead."))
+
 """
 $(TYPEDSIGNATURES)
 
@@ -655,6 +773,10 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
    [`ActiveFrictionUpdate`](@ref). Set to [`NoFrictionUpdate`](@ref) to bypass the basal
    friction law and hold `stress.base_x`/`base_y` fixed at whatever was written there
    before the solve (e.g. a prescribed basal stress field).
+ - `vertical_treatment`: an [`AbstractVerticalTreatment`](@ref), default
+   [`ExplicitVertical`](@ref). Read only on the [`MomentumBalance3D`](@ref) path; selects
+   whether `∂z(µ ∂z u)` is advanced explicitly with everything else or by a per-column
+   implicit line solve ([`ImplicitVertical`](@ref)).
 
 !!! note "Two type parameters for the work arrays, not one"
     On a [`StaggeredGrid`](@ref) the x- and y-velocity work arrays are Chmy `Field`s at
@@ -662,7 +784,7 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
     part of a `Field`'s type), so a single `M` shared by all four work arrays would reject
     that combination outright — hence the `MX`/`MY` split below.
 """
-struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeStep, CV<:AbstractPTConvergence, VC<:AbstractViscosityContinuation, FU<:AbstractFrictionUpdate, TU<:AbstractPTTuning, DU<:AbstractDIVUpdate} <: AbstractMomentumSolver
+struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeStep, CV<:AbstractPTConvergence, VC<:AbstractViscosityContinuation, FU<:AbstractFrictionUpdate, TU<:AbstractPTTuning, DU<:AbstractDIVUpdate, VT<:AbstractVerticalTreatment} <: AbstractMomentumSolver
     abstol::T
     maxiter::Int
     ncheck::Int
@@ -682,6 +804,7 @@ struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeSte
     friction_update::FU
     tuning::TU
     div_update::DU
+    vertical_treatment::VT
 end
 Adapt.@adapt_structure PseudoTransientSolver
 
@@ -709,8 +832,10 @@ function PseudoTransientSolver(grid::StaggeredGrid;
     friction_update::AbstractFrictionUpdate = ActiveFrictionUpdate(),
     tuning::AbstractPTTuning = FixedTuning(),
     div_update::AbstractDIVUpdate = NoDIVUpdate(),
+    vertical_treatment::AbstractVerticalTreatment = ExplicitVertical(),
 )
     _check_tuning(tuning, pseudo_timestep)
+    _check_vertical_treatment(vertical_treatment)
     # No `nz == 1` requirement: every work array below is built on `grid.grid2d`, and the
     # unknown the solver iterates (`velocity.depthaverage_x`/`y`) is depth-integrated for
     # SSA and DIVA alike. Whether a given momentum balance tolerates the grid is checked by
@@ -724,7 +849,7 @@ function PseudoTransientSolver(grid::StaggeredGrid;
         T(abstol), Int(maxiter), Int(ncheck), Int(printout_every), T(dtau_scaling),
         acx(), acy(), acx(), acy(), acx(), acy(), acx(), acy(),
         pseudo_timestep, convergence, viscosity_continuation, friction_update, tuning,
-        div_update,
+        div_update, vertical_treatment,
     )
 end
 
@@ -758,6 +883,7 @@ function PseudoTransientSolver(grid::StaggeredGrid, momentum::MomentumBalance3D;
     friction_update::AbstractFrictionUpdate = ActiveFrictionUpdate(),
     tuning::AbstractPTTuning = FixedTuning(),
     div_update::AbstractDIVUpdate = NoDIVUpdate(),
+    vertical_treatment::AbstractVerticalTreatment = ExplicitVertical(),
 )
     _check_tuning(tuning, pseudo_timestep)
     (; arch) = grid
@@ -765,12 +891,31 @@ function PseudoTransientSolver(grid::StaggeredGrid, momentum::MomentumBalance3D;
     T = eltype(g)
     acx() = _field(arch, g, NODE_ACX, T, halo)
     acy() = _field(arch, g, NODE_ACY, T, halo)
+    _check_vertical_scratch(vertical_treatment, acx(), acy())
     return PseudoTransientSolver(
         T(abstol), Int(maxiter), Int(ncheck), Int(printout_every), T(dtau_scaling),
         acx(), acy(), acx(), acy(), acx(), acy(), acx(), acy(),
         pseudo_timestep, convergence, viscosity_continuation, friction_update, tuning,
-        div_update,
+        div_update, vertical_treatment,
     )
+end
+
+# `ImplicitVertical` carries its own scratch, so it is the one strategy that can be built
+# against a *different* grid than the solver it is handed to — which would not error, it
+# would silently write the Thomas coefficients into the wrong shape. Checked here, where both
+# are in hand, rather than left to a bounds error deep inside a kernel.
+_check_vertical_scratch(::ExplicitVertical, acx, acy) = nothing
+
+function _check_vertical_scratch(vt::ImplicitVertical, acx, acy)
+    (size(vt.thomas_x) == size(acx) && size(vt.thomas_y) == size(acy)) || throw(ArgumentError(
+        "ImplicitVertical's scratch fields are $(size(vt.thomas_x))/$(size(vt.thomas_y)), " *
+        "but this solver's work arrays are $(size(acx))/$(size(acy)). Build the strategy " *
+        "from the same grid (and `halo`) as the solver: " *
+        "`ImplicitVertical(grid)`."))
+    eltype(vt.thomas_x) === eltype(acx) || throw(ArgumentError(
+        "ImplicitVertical's scratch is $(eltype(vt.thomas_x)) but this solver is " *
+        "$(eltype(acx)). Build the strategy from the same grid as the solver."))
+    return nothing
 end
 
 """

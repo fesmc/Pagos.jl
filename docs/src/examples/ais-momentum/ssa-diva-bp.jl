@@ -20,6 +20,14 @@ momentum balance resolves vertical shear, and how. Each call to [`run_solve`](@r
 at most one `MechanicState` alive at a time; Blatter-Pattyn's is by far the largest (nine
 column tensor fields against SSA/DIVA's handful of 2D ones), so this script never holds two
 solves' `MechanicState`s at once.
+
+The BP run uses [`ImplicitVertical`](@ref) (`roadmaps/blatter-pattyn.md`, Phase 2): the
+vertical-shear divergence is solved per column by a tridiagonal line relaxation, so `Δτ` is
+bounded by the membrane operator alone and the aspect-ratio penalty that dominated the
+explicit run on exactly this geometry is gone. It is the *same fixed point* as
+[`ExplicitVertical`](@ref) — the difference is iteration count and how much of the domain
+reaches the tolerance within `maxiter`, not what the converged velocity is. Swap it back to
+`ExplicitVertical()` (the default, i.e. drop the keyword) to reproduce the Phase 1 numbers.
 =#
 include(joinpath(@__DIR__, "helpers.jl"))
 
@@ -29,7 +37,8 @@ println("SSA:  ", (; ssa.converged, ssa.iterations, ssa.elapsed, ssa.residual))
 diva = run_solve(DIVAMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...)
 println("DIVA: ", (; diva.converged, diva.iterations, diva.elapsed, diva.residual))
 
-bp   = run_solve(BlatterPattynMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...)
+bp   = run_solve(BlatterPattynMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...,
+                 vertical_treatment = ImplicitVertical(grid))
 println("BP:   ", (; bp.converged, bp.iterations, bp.elapsed, bp.residual))
 
 #=
@@ -70,7 +79,7 @@ crange_top = (0, quantile(filter(!isnan, on_ice(bp.speed)), 0.995))
 for (col, (data, title, result)) in enumerate((
     (on_ice(ssa.speed),  "Pagos SSA",           ssa),
     (on_ice(diva.speed), "Pagos DIVA",          diva),
-    (on_ice(bp.speed),   "Pagos Blatter-Pattyn", bp),
+    (on_ice(bp.speed),   "Pagos Blatter-Pattyn (vertical-implicit)", bp),
 ))
     ax = Axis(fig1[1, col], xlabel = "x (km)", ylabel = col == 1 ? "y (km)" : "",
         aspect = DataAspect(), title = title, subtitle = perf_label(result))
