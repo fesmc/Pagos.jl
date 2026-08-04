@@ -159,7 +159,9 @@ end
         grid = StaggeredGrid(Float64, 8.0, 8.0, 1.0, 1.0)
         rt   = Runtime(grid)
         mech = MechanicState(grid)
-        A0, n, ε̇0, μ_old0 = 1e-16, 3.0, 1e-12, 3e14
+        # µ_old0 in Pa yr, matching the ~1e5-1e6 scale every other viscosity here uses;
+        # it is the relaxation seed, so it only has to be a plausible previous iterate.
+        A0, n, ε̇0, μ_old0 = 1e-16, 3.0, 1e-12, 3e5
         a, b, c, d = 2e-3, -1e-3, 5e-4, 3e-3   # same linear velocity as the test above
 
         fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> a * x + b * y)

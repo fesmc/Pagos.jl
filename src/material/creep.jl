@@ -58,14 +58,17 @@ via [`SmithMorlandFlowLaw`](@ref); see that docstring for units and caveats.
  - `p0::T=0.3336`: zeroth-order polynomial coefficient.
  - `p2::T=0.3200`: second-order polynomial coefficient.
  - `p4::T=0.02963`: fourth-order polynomial coefficient.
- - `D_0::T=3.169e-8`: strain-rate pre-factor (``\\mathrm{Pa}^{-1}\\,\\mathrm{s}^{-1}``).
+ - `D_0`: strain-rate pre-factor (``\\mathrm{Pa}^{-1}\\,\\mathrm{yr}^{-1}``), defaulting to the
+   published ``3.169 \\times 10^{-8}\\,\\mathrm{Pa}^{-1}\\,\\mathrm{s}^{-1}``. That figure is
+   ``1/(\\mathrm{s}\\,\\mathrm{yr}^{-1})`` to four digits, i.e. the original calibration was
+   itself per-year and had been divided by it — so the internal value comes back to `1.0`.
  - `σ_0::T=1e5`: reference stress (``\\mathrm{Pa}``).
 """
 @kwdef struct SmithMorlandCreep{T} <: AbstractCreep
     p0::T = 0.3336
     p2::T = 0.3200
     p4::T = 0.02963
-    D_0::T = 3.169e-8
+    D_0::T = 3.169e-8 * SECONDS_PER_YEAR   # Pa^-1 s^-1 published -> Pa^-1 yr^-1 (= 1.0)
     σ_0::T = 1e5
 end
 
@@ -117,13 +120,15 @@ with GBS and basal slip coupled in series:
 The creep function returned is ``f(\\sigma_e) = \\dot{\\varepsilon}_{\\mathrm{tot}} / \\sigma_e``.
 The pre-factors ``A_{\\mathrm{diff}}``, ``A_{\\mathrm{gbs}}``, ``A_{\\mathrm{basal}}``
 carry their own Arrhenius temperature dependence and must be evaluated at the local
-temperature before constructing this struct.
+temperature before constructing this struct. They are caller-supplied, so the caller also
+owns the conversion: pass them in ``\\mathrm{yr}^{-1}``, not the ``\\mathrm{s}^{-1}`` of
+the source literature (see [`AbstractRateFactor`](@ref)).
 
 # Fields
  - `d::T`: mean grain size (``\\mathrm{m}``).
- - `A_diff::T`: diffusion creep pre-factor (``\\mathrm{Pa}^{-1}\\,\\mathrm{m}^2\\,\\mathrm{s}^{-1}``).
- - `A_gbs::T`: GBS pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{gbs}}}\\,\\mathrm{m}^{p_{\\mathrm{gbs}}}\\,\\mathrm{s}^{-1}``).
- - `A_basal::T`: basal slip pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{basal}}}\\,\\mathrm{s}^{-1}``).
+ - `A_diff::T`: diffusion creep pre-factor (``\\mathrm{Pa}^{-1}\\,\\mathrm{m}^2\\,\\mathrm{yr}^{-1}``).
+ - `A_gbs::T`: GBS pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{gbs}}}\\,\\mathrm{m}^{p_{\\mathrm{gbs}}}\\,\\mathrm{yr}^{-1}``).
+ - `A_basal::T`: basal slip pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{basal}}}\\,\\mathrm{yr}^{-1}``).
  - `p_gbs::T=1.4`: grain-size exponent for GBS.
  - `n_gbs::T=1.8`: stress exponent for GBS.
  - `n_basal::T=2.4`: stress exponent for basal slip.
@@ -168,9 +173,9 @@ convenience constructor that handles this step automatically.
 
 # Fields
  - `d::T`: mean grain size (``\\mathrm{m}``).
- - `A_GSI::T`: temperature-evaluated GSI pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{GSI}}}\\,\\mathrm{s}^{-1}``).
- - `A_GSS1::T`: temperature-evaluated GSS1 pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{GSS1}}}\\,\\mathrm{m}^{p_{\\mathrm{GSS1}}}\\,\\mathrm{s}^{-1}``).
- - `A_GSS2::T`: temperature-evaluated GSS2 pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{GSS2}}}\\,\\mathrm{m}^{p_{\\mathrm{GSS2}}}\\,\\mathrm{s}^{-1}``).
+ - `A_GSI::T`: temperature-evaluated GSI pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{GSI}}}\\,\\mathrm{yr}^{-1}``).
+ - `A_GSS1::T`: temperature-evaluated GSS1 pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{GSS1}}}\\,\\mathrm{m}^{p_{\\mathrm{GSS1}}}\\,\\mathrm{yr}^{-1}``).
+ - `A_GSS2::T`: temperature-evaluated GSS2 pre-factor (``\\mathrm{Pa}^{-n_{\\mathrm{GSS2}}}\\,\\mathrm{m}^{p_{\\mathrm{GSS2}}}\\,\\mathrm{yr}^{-1}``).
  - `n_GSI::T=3.6`: stress exponent for the GSI component.
  - `n_GSS1::T=1.9`: stress exponent for the GSS1 component.
  - `n_GSS2::T=2.5`: stress exponent for the GSS2 component.

@@ -1,8 +1,32 @@
 """
+Seconds per Julian year (365.25 d), the conversion between the published SI convention
+and Pagos's internal one. See [`Constants`](@ref) for what "internal" means here.
+"""
+const SECONDS_PER_YEAR = 31_557_600.0
+
+"""
 $(TYPEDSIGNATURES)
 
 Physical constants that do not depend on any modelling choice.
-All values are in SI units. Override selectively via keyword arguments:
+
+!!! note "Base units are metre, **year**, pascal"
+    Pagos computes in `(m, yr, Pa)`, not full SI: velocities are `m yr⁻¹`, strain rates
+    `yr⁻¹`, viscosities `Pa yr`, rate factors `Pa⁻ⁿ yr⁻¹`, and timesteps `yr`.
+
+    Taking `Pa` as a base unit rather than deriving it from `kg` is what keeps this
+    cheap: stress is then unaffected by the time unit, so `density_*` and `gravity`
+    below keep their ordinary SI values. They are only ever used as the product `ρg`
+    (a specific weight, `Pa m⁻¹`, which carries no time) or as dimensionless density
+    ratios in the flotation criterion — never separately in a way that would expose
+    `kg m⁻¹ yr⁻²`. The same applies to every other field here: activation energies,
+    heat capacities and conductivities are per-kelvin/per-kilogram/per-mole quantities
+    with no time dimension.
+
+    What *does* carry the time unit lives in the rheology — see
+    [`AbstractRateFactor`](@ref) and the `time_unit` constructor argument for passing
+    values published in `s⁻¹`.
+
+Override selectively via keyword arguments:
 
 ```julia
 cst = Constants{Float64}()                          # standard defaults
@@ -31,5 +55,5 @@ cst = Constants{Float32}(density_ice = Float32(910))
     clausius_clapeyron_slope::T         = 9.8e-8   # pressure-melting slope (K Pa⁻¹)
 
     # Unit conversion
-    seconds_per_year::T                 = 31_557_600.0   # (s yr⁻¹)
+    seconds_per_year::T                 = SECONDS_PER_YEAR   # (s yr⁻¹)
 end

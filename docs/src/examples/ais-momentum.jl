@@ -2,98 +2,29 @@
 
 # [Antarctic momentum-balance comparisons](@id ais_momentum)
 
-The merged successor to the earlier `ais-pt.jl` (SSA only) and `ais-diva.jl` (DIVA only,
-never run — no data was available when it was written). One real 761×761, 8 km Antarctic
-Ice Sheet geometry, one Yelmo restart file supplying *both* the 2D fields the SSA limit
-needs and the genuinely 3D viscosity/velocity DIVA needs, and five comparisons built on top
-of the same converged state:
+We here compare the results of:
+1. SSA vs. DIVA
+2. DIVA: Float64 vs. Float32
+3. [`FixedTuning`](@ref) vs. [`AutotunedDynamicRelaxation`](@ref)
+4. DIVA: CPU vs. GPU
+5. DIVA: Yelmo vs. Pagos
+6. DIVA: LinearSolve vs. PseudoTransientSolver, on CPU
+7. DIVA: LinearSolve vs. PseudoTransientSolver, on GPU
 
- 1. SSA vs. DIVA, both run in Pagos, on identical geometry/friction/viscosity.
- 2. Pagos DIVA vs. Yelmo's own DIVA solve (surface speed only, RMSE — not the full 3D
-    profile: Yelmo's own vertical grid does not need to match Pagos' for this).
- 3. `FixedTuning()` (untried defaults) vs. [`AutotunedDynamicRelaxation`](@ref), for DIVA —
-    the SSA version of this comparison is already the headline result of
-    `roadmaps/PT-autotune.md` Phase 2 (6.3× on this exact geometry); this is its DIVA
-    counterpart, which nobody has run before.
- 4. CPU vs. GPU wall-clock, same solve.
- 5. Float64 vs. Float32 wall-clock and accuracy.
-
-None of the five is a validated simulation — see `ais-pt.jl`'s own framing, which still
+None of the six is a validated simulation — see `ais-pt.jl`'s own framing, which still
 applies: this is a code-state check on real geometry, not a benchmark paper.
 
-!!! warning "Comparison 1 is not quite apples-to-apples on friction"
-    The SSA run uses Yelmo's own `beta_eff` directly (as [`ais-pt.jl`](@ref ais_pt) always
-    did) — but that field is *already* Yelmo's own DIVA vertical-shear correction, not a
-    bare SSA friction coefficient. The DIVA run instead starts from the bare `beta` and
-    derives its own `β_eff` via [`diva_update!`](@ref), from Pagos' own 3D viscosity and
-    geometry — which will not exactly reproduce Yelmo's `beta_eff`, not least because of the
-    layering mismatch noted below. So comparison 1 is "SSA fed Yelmo's DIVA-corrected
-    friction" vs. "DIVA deriving its own correction from the same raw inputs" — informative
-    about whether Pagos' DIVA path does something structurally different from SSA at all,
-    but not a controlled ablation of the friction law alone.
-
-!!! note "Vertical layering: index-matched to Yelmo, not value-matched"
-    Yelmo's `zeta`/`zeta_ac` do not correspond to [`QuadraticSigmaTransform`](@ref)'s own
-    derivation (checked numerically — different values at every interior level), and
-    reproducing them exactly would mean bypassing the parametric transform for a
-    `CorrectedVerticalLayering` built straight from Yelmo's arrays. Not worth it here: this
-    script uses a plain `QuadraticSigmaTransform` grid with Yelmo's own layer *count*
-    (`nz = 11`) and copies Yelmo's per-layer viscosity in by index, not by matching sigma
-    value. That is why comparison 2 below is surface-only (a quantity insensitive to the
-    exact interior discretization) rather than a profile comparison.
-
-!!! warning "Memory budget: written for a 16 GB machine, not a cluster node"
-    A single [`MechanicState`](@ref) on this grid (761×761×11) is on the order of **2 GB**
-    — `StressState`, `VelocityState` and `StrainRateState` between them hold ~35 column
-    (`AA3`/`AB3`/…) fields at `(761, 761, 11)` Float64, ~51 MB each. The first version of
-    this script kept *two* of them (`mech_ssa`, `mech_diva`) alive simultaneously, plus every
-    raw NetCDF array at Float64 (including the full 3D `ux`/`uy`, never actually needed at
-    more than their surface layer) — comfortably enough to exhaust 16 GB and get the whole
-    process killed with no Julia-level error at all (confirmed: the run that triggered this
-    rewrite left no completion record, and `dmesg`/`free -h` are consistent with an OOM
-    kill, not a Pagos bug). Three changes fix this, applied throughout below:
-
-     1. **Every solve lives inside [`run_solve`](@ref)**, which returns only a small 2D
-        speed field and a handful of scalars — never the `MechanicState` itself. `mech` is
-        local to that function and becomes collectible the moment it returns; an explicit
-        `GC.gc()` right after each call forces that to happen *before* the next multi-GB
-        allocation, rather than trusting Julia's lazy GC heuristic to keep up.
-     2. **Loaded fields use the narrowest safe type**, not a blanket cast. Checked against
-        the file's own value ranges first (`visc` peaks at `9.6e9`, `beta` at `1.3e9` — both
-        would silently become `Inf` under Float16, whose max magnitude is `65504`): bounded
-        2D fields (`H_ice`, `z_srf`, `z_bed`, `f_grnd`, Yelmo's surface speed) are safe at
-        Float16; viscosity and friction, which are not, stay Float32 — still half the
-        memory of the Float64 this script started with.
-     3. **`ux`/`uy` are read as a 2D surface slice directly from the file**
-        (`ds["ux"][:, :, end, 1]`), not the full `(761, 761, 11)` column — comparison 2 only
-        ever needed the surface, so the other 10 layers are never brought into memory at
-        all, and the read happens where that comparison is built, not upfront.
-
-    `ram()` below prints free/total system memory (not just Julia's own heap) at every
-    section boundary, so the effect of each of these is visible while the script runs
-    rather than asserted.
-
-=#
-
-using Pagos, NCDatasets, CairoMakie, Statistics, Printf
-
-restart_file = "/home/jan/pCloudSync/PhD/Projects/Ice-Sheet-Modelling/ice-data-pagos/yelmo_restart_ais_8km.nc"
-
-ram() = @printf("  free RAM: %s / %s\n",
-               Base.format_bytes(Sys.free_memory()), Base.format_bytes(Sys.total_memory()))
-
-println("Before loading anything:"); ram()
-
-#=
-## Load geometry, at the narrowest type each field's own value range allows
+## Initialisation
 
 `load2d`/`load3d` read one variable, drop the trailing size-1 `time` dimension, and cast
 directly to `T` in a single pass — no Float64 intermediate that then gets thrown away.
-Value ranges checked against the file beforehand (see the memory note above): `H_ice`,
-`z_srf`, `z_bed`, `f_grnd` and Yelmo's own depth-averaged/surface speeds all stay
-comfortably under Float16's `65504` magnitude cap; `visc_bar`/`visc`/`beta`/`beta_eff` do
-not (up to `9.6e9`), so those load as Float32.
 =#
+using Pkg
+Pkg.activate(joinpath(@__DIR__, "../.."))
+using Pagos, NCDatasets, CairoMakie, Statistics, Printf
+
+restart_file = "/home/jan/pCloudSync/PhD/Projects/Ice-Sheet-Modelling/ice-data-pagos/yelmo_restart_ais_8km.nc"
+figdir = joinpath(@__DIR__, "../assets/figs")
 
 load2d(ds, name, T) = T.(dropdims(ds[name][:, :, :]; dims = 3))
 load3d(ds, name, T) = T.(dropdims(ds[name][:, :, :, :]; dims = 4))
@@ -114,18 +45,13 @@ dx = (xc[2] - xc[1]) * 1e3
 dy = (yc[2] - yc[1]) * 1e3
 lx, ly = nx * dx, ny * dy
 
-println("After loading NetCDF fields (Float16/Float32, ux/uy surface deferred to §2):")
-ram()
-
 #=
 ## Build the grid, topography state, and ice mask
 
-One [`StaggeredGrid`](@ref) with a real column (`nz = 11`, [`QuadraticSigmaTransform`](@ref)
-— see the layering note above), shared by every comparison below: [`TopographicState`](@ref)
-and the mask are built once, since nothing about them depends on which momentum balance or
-element type a given solve uses. The mask follows [`ais-pt.jl`](@ref ais_pt)'s own reasoning
-exactly — [`momentum_mask!`](@ref)'s `is_momentum_solved`, not `is_ice`, to exclude the ~48
-detached iceberg cells a force balance cannot be posed on.
+One [`StaggeredGrid`](@ref) with a real column (`nz = 11`, [`QuadraticSigmaTransform`](@ref)),
+shared by every comparison below: [`TopographicState`](@ref) and the mask are built once, since
+nothing about them depends on which momentum balance or element type a given solve uses. The
+`is_momentum_solved` mask excludes the ~48 detached iceberg cells a force balance cannot be posed on.
 =#
 
 layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, nz))
@@ -143,8 +69,6 @@ function fill_from_grid!(f, data)
     return f
 end
 
-# As `fill_from_grid!`, but `data` is genuinely 3D (`nx, ny, nz`) and each layer `k` of `f`
-# reads the matching layer of `data` — not a 2D field broadcast down every layer.
 function fill_from_grid3d!(f, data)
     ni, nj, nk = size(data)
     for k in 1:nk, j in -1:(nj + 2), i in -1:(ni + 2)
@@ -164,45 +88,26 @@ n_detached = count(asarray(topo.mask.is_ice) .& .!asarray(topo.mask.is_momentum_
 @show n_detached
 
 #=
-## Unit conversion, in place
+## Units
 
-`Constants` is SI throughout; Yelmo's viscosity/friction are Pa yr / Pa yr m⁻¹.
-`@.`-fused broadcasts write back into the same array (`ifelse` reads every element before
-any of them are overwritten, so this is safe despite LHS and RHS naming the same binding),
-so converting and off-ice-flooring these never allocates a second full-size copy — the
-narrow-type load above would otherwise be undone immediately by a same-sized Float64-scale
-transient.
+No conversion needed. Pagos computes in `(m, yr, Pa)` — see [`Constants`](@ref) — and
+Yelmo's restart fields are already `Pa yr` / `Pa yr m⁻¹`, so viscosity, friction and
+velocity all line up as read. This block used to multiply through by `seconds_per_year`
+to reach an SI-internal convention that no longer exists.
 =#
 
-spy = cst.seconds_per_year
-@. visc_bar *= spy
-@. visc3d   *= spy
-@. beta     *= spy
-@. beta_eff *= spy
 visc_off_ice   = maximum(visc_bar)
 visc3d_off_ice = maximum(visc3d)
 @. visc_bar = ifelse(H_ice > 0, visc_bar, visc_off_ice)
 @. visc3d   = ifelse(H_ice > 0, visc3d, visc3d_off_ice)
 
-on_ice(a) = ifelse.(H_ice .> 0, a, NaN)
-
-println("After unit conversion (in place, no new full-size arrays):"); ram()
+on_ice(a) = ifelse.(H_ice .> 0, a, NaN);
 
 #=
-## `run_solve`: the one place every comparison below drives a solve
+## Extract bare minimum from solution
 
-Builds a [`MechanicState`](@ref) **locally** — it is never returned, so it becomes eligible
-for garbage collection the instant this function returns, rather than accumulating at the
-caller's top level the way `mech_ssa`/`mech_diva` did in the first version of this script.
 Only a small 2D speed field (`nx × ny`, ~2 MB at Float32, not the ~2 GB `mech` it came from)
 and a few scalars survive.
-
-`T` is **derived from `grid` itself** (`eltype(grid.grid)`), not taken as a separate
-argument: `MechanicState(grid)` would silently keep allocating Float64 fields regardless of
-any `T` passed in independently, since it reads the element type off `grid`, not off a
-caller's say-so — a real trap for §5's Float64-vs-Float32 comparison, caught before it was
-ever run. §5 gets a genuine Float32 grid by building one, not by passing `T = Float32` to a
-Float64 grid. §4 will do the analogous thing for CPU vs. GPU via `Arch`.
 =#
 
 function run_solve(momentum, grid, rt, mask; solver_kwargs...)
@@ -224,7 +129,7 @@ function run_solve(momentum, grid, rt, mask; solver_kwargs...)
 
     elapsed = @elapsed result = pseudo_transient!(mech, cst_T, solver, rt, momentum, mask)
 
-    speed = Float32.(spy .* sqrt.(
+    speed = Float32.(sqrt.(
         (@views (interior(mech.velocity.depthaverage_x)[1:(end - 1), :, 1] .+
                  interior(mech.velocity.depthaverage_x)[2:end, :, 1]) ./ 2) .^ 2 .+
         (@views (interior(mech.velocity.depthaverage_y)[:, 1:(end - 1), 1] .+
@@ -247,34 +152,34 @@ const SOLVER_KWARGS = (
 #=
 ## 1. SSA vs. DIVA, both in Pagos
 
+!!! warning "Not quite apples-to-apples on friction"
+    The SSA run uses Yelmo's own `beta_eff` directly  but that field
+    is *already* Yelmo's own DIVA vertical-shear correction, not a
+    bare SSA friction coefficient. The DIVA run instead starts from the bare `beta` and
+    derives its own `β_eff` via [`diva_update!`](@ref), from Pagos' own 3D viscosity and
+    geometry — which will not exactly reproduce Yelmo's `beta_eff`, not least because of the
+    layering mismatch noted below. So comparison 1 is "SSA fed Yelmo's DIVA-corrected
+    friction" vs. "DIVA deriving its own correction from the same raw inputs" — informative
+    about whether Pagos' DIVA path does something structurally different from SSA at all,
+    but not a controlled ablation of the friction law alone.
+
 Same geometry, same friction, same viscosity magnitude — the only difference is whether the
 momentum balance resolves vertical shear. Each call to [`run_solve`](@ref) leaves at most
 one `MechanicState` alive at a time.
 =#
 
 ssa  = run_solve(SSAMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...)
-println("SSA:  ", (; ssa.converged, ssa.iterations, ssa.elapsed, ssa.residual)); ram()
+println("SSA:  ", (; ssa.converged, ssa.iterations, ssa.elapsed, ssa.residual))
 
 diva = run_solve(DIVAMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...)
-println("DIVA: ", (; diva.converged, diva.iterations, diva.elapsed, diva.residual)); ram()
-
-#=
-A shared 0–900 m/yr colour scale can hide a real difference between two panels that "look
-the same" — the two-panel comparison alone found SSA and DIVA visually near-identical here,
-which needed a number, not an impression, before trusting it. `on_ice_mask` excludes ice-free
-cells from the statistics (`on_ice` alone just turns them `NaN`, which `filter(!isnan, ...)`
-below still has to strip).
-=#
+println("DIVA: ", (; diva.converged, diva.iterations, diva.elapsed, diva.residual))
 
 on_ice_mask = H_ice .> 0
 diff = on_ice(diva.speed .- ssa.speed)
 diff_vals = filter(!isnan, diff)
 rmse = sqrt(mean(abs2, diff_vals))
 rel  = diff_vals ./ max.(filter(!isnan, on_ice(ssa.speed)), 1.0)   # avoid /0 on stagnant ice
-# `@printf`'s format string must be a single literal — it is parsed into the generated
-# call at macro-expansion time, before a `*`-concatenated string could ever be evaluated.
-# `median`, unlike `mean`, has no `f, itr` two-argument method — needs the mapped
-# collection built first.
+
 @printf("SSA vs DIVA (on-ice, %d cells): RMSE = %.4g m/yr, mean|Δ| = %.4g m/yr, median rel. diff = %.4g%%, max|Δ| = %.4g m/yr\n",
        length(diff_vals), rmse, mean(abs, diff_vals), 100 * median(abs.(rel)), maximum(abs, diff_vals))
 
@@ -292,11 +197,11 @@ drange = maximum(abs, diff_vals)
 ax3 = Axis(fig1[1, 4], xlabel = "x (km)", aspect = DataAspect(), title = "DIVA - SSA")
 hm3 = heatmap!(ax3, xc, yc, diff; colorrange = (-drange, drange), colormap = :RdBu)
 Colorbar(fig1[1, 5], hm3, label = "Δ speed (m/yr)")
-save("ais-momentum-ssa-vs-diva.png", fig1)
+save("$figdir/ais-momentum-ssa-vs-diva.png", fig1)
 fig1
 
 #=
-## 5. Float64 vs. Float32
+## 2. Float64 vs. Float32
 
 A genuinely Float32 [`StaggeredGrid`](@ref) — passing `T = Float32` to [`run_solve`](@ref)
 alone would *not* do this (see its docstring note); `MechanicState`'s field types come from
@@ -333,7 +238,7 @@ for (col, (data, title)) in enumerate(((on_ice(diva.speed), "DIVA, Float64"),
     hm = heatmap!(ax, xc, yc, data; colorrange = crange2)
     col == 2 && Colorbar(fig2[1, 3], hm, label = "speed (m/yr)")
 end
-save("ais-momentum-f64-vs-f32.png", fig2)
+save("$figdir/ais-momentum-f64-vs-f32.png", fig2)
 fig2
 
 #=
@@ -349,7 +254,7 @@ rather than simulating a hand search. `diva` (§1) already *is* the
 =#
 
 diva_fixed = run_solve(DIVAMomentumBalance(), grid, rt, mask;
-                       (; SOLVER_KWARGS..., tuning = FixedTuning(), maxiter = 5000)...)
+                       (; SOLVER_KWARGS..., tuning = FixedTuning(), maxiter = 1000)...)
 println("DIVA, FixedTuning() default: ",
        (; diva_fixed.converged, diva_fixed.iterations, diva_fixed.elapsed, diva_fixed.residual))
 ram()
@@ -374,7 +279,7 @@ Label(fig3[2, 1:3],
     "converged = $(diva.converged), residual = $(round(diva.residual, sigdigits = 3))" *
     "   |   speedup = $(round(diva_fixed.elapsed / diva.elapsed, sigdigits = 3))x",
     fontsize = 12)
-save("ais-momentum-fixed-vs-autotune.png", fig3)
+save("$figdir/ais-momentum-fixed-vs-autotune.png", fig3)
 fig3
 
 #=
@@ -404,6 +309,19 @@ long until this GPU is warm", not "how fast does it run once warm", which is the
 interesting number here. §2's Float64-vs-Float32 timing did **not** get this treatment (that
 confound was flagged instead of fixed) because CPU JIT compilation is a much smaller fraction
 of a ~20 s CPU solve than GPU kernel compilation is of a GPU one.
+
+The warm-up runs **in place on the same `mech_gpu`**, not on a second throwaway state: an
+8 GB card holds one adapted `MechanicState` (~3.3 GB) plus its solver comfortably, but not
+two at once — a first version of this section built a separate `mech_warmup`, and
+`mech_warmup = nothing; GC.gc(); CUDA.reclaim()` afterwards did *not* actually return its
+~3.3 GB to the pool before the real solve tried to allocate its own copy (confirmed via
+`CUDA.pool_status()` printed at each step — the pool usage after the "freed" warm-up state
+was indistinguishable from before), so the two states' peak overlap alone exceeded 7.6 GB and
+the real solve's `PseudoTransientSolver` construction failed with an out-of-memory error.
+Compiled kernels are specialized on argument *type*, not identity, so warming up on `mech_gpu`
+itself and resetting its velocity to zero before the timed solve gets the same benefit without
+ever holding two full states at once — and sidesteps the GC-timing question entirely rather
+than trying to force it.
 =#
 
 using CUDA
@@ -431,7 +349,7 @@ if CUDA.functional()
         diva_update!(mech, solver, rt, mask)
         elapsed = @elapsed result = pseudo_transient!(mech, cst, solver, rt,
                                                        DIVAMomentumBalance(), mask)
-        speed = Array(Float32.(spy .* sqrt.(
+        speed = Array(Float32.(sqrt.(
             (@views (interior(mech.velocity.depthaverage_x)[1:(end - 1), :, 1] .+
                      interior(mech.velocity.depthaverage_x)[2:end, :, 1]) ./ 2) .^ 2 .+
             (@views (interior(mech.velocity.depthaverage_y)[:, 1:(end - 1), 1] .+
@@ -440,18 +358,20 @@ if CUDA.functional()
                residual = result.residual)
     end
 
-    # Warm-up: a cheap, throwaway solve (loose `abstol`, `maxiter` capped low) whose only
-    # purpose is to force every kernel this solve path touches through GPUCompiler once,
-    # off the clock.
-    mech_warmup = Pagos.Adapt.adapt(CuArray, mech_cpu_for_gpu)
-    solve_on!(mech_warmup, grid_gpu, rt_gpu, mask_gpu; SOLVER_KWARGS..., maxiter = 5, abstol = 0.0)
-    mech_warmup = nothing
-    GC.gc()
-    println("GPU warm-up done (kernels compiled, not timed)."); ram()
-
     mech_gpu = Pagos.Adapt.adapt(CuArray, mech_cpu_for_gpu)
     mech_cpu_for_gpu = nothing
     GC.gc()
+    CUDA.reclaim()
+
+    # Warm-up: a cheap, throwaway solve (loose `abstol`, `maxiter` capped low) whose only
+    # purpose is to force every kernel this solve path touches through GPUCompiler once, off
+    # the clock — run in place on `mech_gpu` itself (see the note above), then the velocity
+    # it leaves behind is reset to zero before the real, timed solve reuses the same state.
+    solve_on!(mech_gpu, grid_gpu, rt_gpu, mask_gpu; SOLVER_KWARGS..., maxiter = 5, abstol = 0.0)
+    setdata!(mech_gpu.velocity.depthaverage_x, 0.0)
+    setdata!(mech_gpu.velocity.depthaverage_y, 0.0)
+    println("GPU warm-up done (kernels compiled, not timed)."); ram()
+
     diva_gpu = solve_on!(mech_gpu, grid_gpu, rt_gpu, mask_gpu; SOLVER_KWARGS...)
     mech_gpu = nothing
     GC.gc()
@@ -479,14 +399,24 @@ if CUDA.functional()
         "speedup = $(round(diva.elapsed / diva_gpu.elapsed, sigdigits = 3))x   |   " *
         "RMSE = $(round(sqrt(mean(abs2, diff_gpu_vals)), sigdigits = 3)) m/yr",
         fontsize = 12)
-    save("ais-momentum-cpu-vs-gpu.png", fig4)
+    save("$figdir/ais-momentum-cpu-vs-gpu.png", fig4)
     fig4
 else
     println("CUDA.functional() == false — skipping the CPU vs GPU comparison.")
 end
 
 #=
-## 2. Pagos DIVA vs. Yelmo's own DIVA solve — surface speed, RMSE only
+## 5. Pagos DIVA vs. Yelmo's own DIVA solve — surface speed, RMSE only
+
+!!! note "Vertical layering: index-matched to Yelmo, not value-matched"
+    Yelmo's `zeta`/`zeta_ac` do not correspond to [`QuadraticSigmaTransform`](@ref)'s own
+    derivation (checked numerically — different values at every interior level), and
+    reproducing them exactly would mean bypassing the parametric transform for a
+    `CorrectedVerticalLayering` built straight from Yelmo's arrays. Not worth it here: this
+    script uses a plain `QuadraticSigmaTransform` grid with Yelmo's own layer *count*
+    (`nz = 11`) and copies Yelmo's per-layer viscosity in by index, not by matching sigma
+    value. That is why comparison 2 below is surface-only (a quantity insensitive to the
+    exact interior discretization) rather than a profile comparison.
 
 `ux`/`uy` are read here, not in the loading section at the top, as a **2D surface slice
 straight from the file** (`ds["ux"][:, :, end, 1]`) — `zeta[end] == 1.0` is the surface (the
@@ -529,7 +459,7 @@ velocities3D!(mech_srf, rt, DIVAMomentumBalance(), mask)
 # the exact pattern `run_solve` already uses for `depthaverage_x`/`y`. `surface_x` is
 # `ACX2` (`nx+1, ny`), `surface_y` is `ACY2` (`nx, ny+1`); averaging each along its own
 # Vertex axis gives both the same `(nx, ny)` cell-centred shape.
-speed_pagos_srf = on_ice(Float32.(spy .* sqrt.(
+speed_pagos_srf = on_ice(Float32.(sqrt.(
     (@views (interior(mech_srf.velocity.surface_x)[1:(end - 1), :, 1] .+
              interior(mech_srf.velocity.surface_x)[2:end, :, 1]) ./ 2) .^ 2 .+
     (@views (interior(mech_srf.velocity.surface_y)[:, 1:(end - 1), 1] .+
@@ -558,5 +488,16 @@ Label(fig5[2, 1:3],
     "max|Δ| = $(round(maximum(abs, diff_srf_vals), sigdigits = 3)) m/yr   |   " *
     "n = $(length(diff_srf_vals)) cells",
     fontsize = 12)
-save("ais-momentum-pagos-vs-yelmo.png", fig5)
+save("$figdir/ais-momentum-pagos-vs-yelmo.png", fig5)
 fig5
+
+#=
+## 6. DIVA: LinearSolve vs. PseudoTransientSolver on CPU
+
+=#
+
+
+#=
+## 7. DIVA: LinearSolve vs. PseudoTransientSolver on GPU
+
+=#

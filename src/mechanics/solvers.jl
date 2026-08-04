@@ -105,10 +105,15 @@ the nonlinear viscosity has had time to relax, `θ_μ` controlling how much time
  - `n_glen`: Glen's flow-law exponent (default `3`, matching [`GlenNyeCreep`](@ref)'s).
  - `theta_mu`: log-space relaxation weight, `0 < theta_mu ≤ 1` (`1` disables relaxation:
    `η_new` is `η_raw` outright, no memory of `η_old`).
- - `strainrate_reg`: strain-rate floor `ε̇₀` preventing the `ε̇_e = 0` singularity
+ - `strainrate_reg`: strain-rate floor `ε̇₀` (yr⁻¹) preventing the `ε̇_e = 0` singularity
    (`η → ∞` as `ε̇_e → 0` in Glen's law); must be chosen relative to the problem's own
    strain-rate scale, there is no unit-independent default that means the same thing
    everywhere — the constructor requires it rather than guessing.
+
+   Being an absolute-scale floor rather than a ratio, this is one of the few numbers that
+   a change of time unit silently reinterprets: a value picked when the code ran in
+   seconds regularizes ~3.16e7 times more weakly read as yr⁻¹. Ice deforms at order
+   `1e-4`–`1e-2` yr⁻¹, so a floor well below that leaves Glen's law in charge.
 
 Reads `material.rate_factor_depthaveraged` as the (prescribed, not thermally coupled) rate
 factor `A` — see that field's docstring.
@@ -393,7 +398,7 @@ the membrane and basal terms dropped — i.e. the rate the driving stress alone 
 as a velocity.
 
 !!! warning "`abstol` changes units when you select this"
-    With [`VelocityIncrement`](@ref) `abstol` is in m s⁻¹; here it is dimensionless. This is
+    With [`VelocityIncrement`](@ref) `abstol` is in m yr⁻¹; here it is dimensionless. This is
     exactly the semantic change `roadmaps/PT-autotune.md` Phase 1 deferred rather than force
     on every existing test — hence a dispatch type rather than a change of meaning in place.
 
@@ -583,7 +588,7 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
    [`FixedTuning`](@ref), where a good value needs the same manual scan as `theta_v`;
    [`AutotunedDynamicRelaxation`](@ref) derives it instead.
  - `abstol`: convergence tolerance on whatever `convergence` measures — a velocity change
-   per iteration (m s⁻¹) for [`VelocityIncrement`](@ref), a dimensionless residual for
+   per iteration (m yr⁻¹) for [`VelocityIncrement`](@ref), a dimensionless residual for
    [`ScaledResidual`](@ref).
  - `maxiter`: maximum number of PT iterations.
  - `ncheck`: check convergence every `ncheck` iterations. The check is the only

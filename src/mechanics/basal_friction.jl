@@ -104,6 +104,13 @@ end
 $(TYPEDSIGNATURES)
 
 An abstract type to multiple dispatch the basal friction coefficient computation via [`basal_beta`](@ref).
+
+!!! note "Reference velocities are `m yr⁻¹`, matching the solver's own velocities"
+    The sliding laws below compare `|v_b|` against a reference velocity `v_0`, so the two
+    have to share a time unit for the ratio to mean anything. Both are `m yr⁻¹` under
+    Pagos's `(m, yr, Pa)` convention (see [`Constants`](@ref)), which also makes `β` come
+    out in `Pa yr m⁻¹` — the unit `β F₂` needs to be dimensionless in
+    [`beta_eff_diva!`](@ref).
 """
 abstract type AbstractBasalBeta end
 

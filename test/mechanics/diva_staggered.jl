@@ -132,7 +132,11 @@ const _DIVA_PAPER = "Robinson et al. (2022), The Cryosphere 16, 689-709"
         rt   = Runtime(grid)
         mech = MechanicState(grid)
 
-        A0, n, ε̇0, μ_old0 = 1e-16, 3.0, 1e-12, 3e14
+        # µ_old0 is Pa yr, like every other viscosity here. It used to be `3e14`, a Pa s
+        # value, which made the shear term τ_b(1-ζ)/µ ~ 1e-12 against a horizontal strain
+        # rate of ~4e-3 — so every layer came out with the same µ and the per-layer
+        # ζ-dependence this testset exists to check was never actually exercised.
+        A0, n, ε̇0, μ_old0 = 1e-16, 3.0, 1e-12, 3e5
         a, b, c, d = 2e-3, -1e-3, 5e-4, 3e-3
         τbx0, τby0 = 500.0, -200.0
 
@@ -157,6 +161,11 @@ const _DIVA_PAPER = "Robinson et al. (2022), The Cryosphere 16, 689-709"
             @test all(≈(μ_raw_at(zcenter(rt.grid, k)), rtol = 1e-10),
                      interior(mech.material.viscosity)[:, :, k])
         end
+
+        # The shear term must actually move µ from layer to layer, or the loop above is
+        # just checking one number nz times (which is what the old Pa s seed did).
+        μ_z = interior(mech.material.viscosity)
+        @test !(μ_z[4, 4, 1] ≈ μ_z[4, 4, grid.nz])
 
         setdata!(mech.material.viscosity, μ_old0)
         vc2 = DIVAViscosityContinuation(; n_glen = n, theta_mu = 0.2, strainrate_reg = ε̇0)
@@ -257,6 +266,118 @@ const _DIVA_PAPER = "Robinson et al. (2022), The Cryosphere 16, 689-709"
             end
         end
         @test all(>(1.7), convergence_rates(errs))   # ~2nd order, matching F₂'s quadrature
+    end
+
+    # The time-unit anchor. Every other slab test here prescribes µ̄ directly, which makes
+    # them blind to the convention: µ and β scale together under a change of time unit,
+    # τ_d is unaffected (Pa carries no time), and ū comes out right in *either* system.
+    # This one starts from the rate factor instead, so `A`'s time unit and the velocity's
+    # are forced to agree — a half-applied seconds/years conversion in the viscosity chain
+    # shows up as a factor of ~3.16e7, not a rounding error.
+    #
+    # Pure vertical shear in a uniform slab (no membrane stress under periodic BCs) has a
+    # closed form: τ_xz(z) = ρgα(H-z) and du/dz = 2A τ_xz^n integrate to
+    #   ū = u_b + (2A/(n+2))·(ρgα)^n·H^(n+1),   u_b = τ_d/β.
+    # β is deliberately stiff so the deformational term dominates sliding ~30×: the point
+    # is to measure `A`, not to re-test τ_d/β, which the tests above already cover.
+    #
+    # The absolute number is what pins the convention for a human reader: A = 1e-16 is
+    # Cuffey & Paterson's Pa⁻³ **yr⁻¹** value, and ~3 cm/yr is a sane interior-ice-sheet
+    # speed for a 1 km slab on a 0.1% slope. Read as Pa⁻³s⁻¹ it would be ~9e5 m/yr.
+    @testset "Glen-law slab from the rate factor pins the time unit" begin
+        cst = Constants{Float64}()
+        H0, β0, α = 1000.0, 1e7, 1e-3
+        A0, n = 1e-16, 3.0
+        dx = 5e3
+
+        ρg = cst.density_ice * cst.gravity
+        τd = ρg * H0 * α
+        ū_exact = τd / β0 + (2A0 / (n + 2)) * (ρg * α)^n * H0^(n + 1)
+
+        # `A` sets the viscosity scale, so seed µ with the value it implies at the bed
+        # rather than an unrelated constant — a wildly wrong start just costs iterations.
+        μ_seed = 1 / (2 * A0 * τd^(n - 1))
+
+        function setup(nz)
+            lay  = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, nz))
+            grid = StaggeredGrid(Float64, 10dx, 3dx, dx, dx, lay)
+            rt   = Runtime(grid)
+            mech = MechanicState(grid)
+            fill_analytic!(mech.topography.thickness, rt.grid2d, (x, y) -> H0)
+            fill_analytic!(mech.topography.surface, rt.grid2d, (x, y) -> H0 - α * x)
+            fill_analytic!(mech.material.viscosity_depthaveraged, rt.grid2d, (x, y) -> μ_seed)
+            fill_analytic3d!(mech.material.viscosity, rt.grid, (x, y, ζ) -> μ_seed)
+            fill_analytic3d!(mech.material.rate_factor, rt.grid, (x, y, ζ) -> A0)
+            fill_analytic!(mech.friction.beta, rt.grid2d, (x, y) -> β0)
+            return grid, rt, mech
+        end
+
+        for nz in (32, 64)
+            grid, rt, mech = setup(nz)
+            # ε̇₀ must sit well below the slab's own strain rate (~1.4e-4 yr⁻¹ at the bed)
+            # or the floor, not Glen's law, would set the viscosity.
+            vc = DIVAViscosityContinuation(; n_glen = n, theta_mu = 1.0,
+                                             strainrate_reg = 1e-10)
+            solver = PseudoTransientSolver(grid; maxiter = 20_000, abstol = 1e-12,
+                                           viscosity_continuation = vc,
+                                           div_update = PeriodicDIVUpdate(1))
+            diva_update!(mech, solver, rt)
+            res = pseudo_transient!(mech, cst, solver, rt, DIVAMomentumBalance())
+
+            @test res.converged
+            # Domain centre only. The closed form is for an unbounded slab, and `surface`
+            # here is a linear ramp, which cannot be periodic — so the wrap leaves the end
+            # x-columns with a wrong surface gradient. With a *fixed* viscosity (every
+            # other slab test above) that error cannot feed back and the field stays
+            # uniform right to the edge; under a nonlinear viscosity the bad edge strain
+            # rate sets a bad edge viscosity, and the error diffuses inward over ~3 cells
+            # (halved at the edge itself, ~7% one cell in, under 1% by the centre). That
+            # boundary layer belongs to the ramp, not to the rheology being measured.
+            ū = interior(mech.velocity.depthaverage_x)[4:8, :, :]
+            @test all(≈(ū_exact, rtol = 3e-2), ū)
+        end
+    end
+
+    # The rate factors must agree with each other on what a second is. `A(T) = A₀exp(-Q/RT)`
+    # has Q, R and T all time-free, so A₀ alone carries the unit — which makes the
+    # temperature-dependent laws directly comparable against `PrescribedRateFactor`'s
+    # constant with no free scale to hide a conversion error. Before the seconds→years
+    # migration these disagreed by ~2e8, i.e. exactly `SECONDS_PER_YEAR`, and swapping one
+    # for the other through the shared `AbstractRateFactor` interface froze the ice solid.
+    @testset "rate factors agree on the time unit" begin
+        A_ref = PrescribedRateFactor().A          # 1e-16 Pa⁻³ yr⁻¹, Cuffey & Paterson
+
+        # Near the melting point the piecewise-Arrhenius law should land within a small
+        # factor of the constant everyone quotes. A unit slip is eight orders, not two.
+        for rf in (ArrheniusRateFactor(), LliboutryDuvalRateFactor())
+            A = rate_factor(272.15, rf)
+            @test 0.1 < A / A_ref < 10
+        end
+
+        # Hooke gets a looser band: it runs ~250x above Arrhenius at *every* temperature,
+        # not just near melting, so the offset is in `A_0` rather than the
+        # proximity-to-melting term. That is a pre-existing calibration question — the
+        # ratio was identical when both prefactors were still in seconds — and this test
+        # is only here to catch unit slips, which are five orders larger than the gap.
+        @test 1 < rate_factor(272.15, HookeRateFactor()) / A_ref < 1e4
+
+        # Colder ice is stiffer, and monotonically so.
+        A_cold = rate_factor(253.15, ArrheniusRateFactor())
+        A_warm = rate_factor(272.15, ArrheniusRateFactor())
+        @test A_cold < A_warm
+
+        # `time_unit = :second` must undo exactly the conversion baked into the defaults.
+        @test ArrheniusRateFactor(:second; A_0_p1 = 3.985e-13, A_0_p2 = 1.916e3) ==
+              ArrheniusRateFactor()
+        @test HookeRateFactor(:second; A_0 = 9.302e-7) == HookeRateFactor()
+        @test PrescribedRateFactor(:second; A = 3.2e-24).A ≈ A_ref rtol = 0.02
+        @test PrescribedRateFactor(:year; A = 1e-16) == PrescribedRateFactor()
+
+        # Time-free fields must pass through untouched, and partial overrides must leave
+        # the other prefactors at their (already internal) defaults.
+        @test ArrheniusRateFactor(:second; Q_a_p1 = 60e3).Q_a_p1 == 60e3
+        @test ArrheniusRateFactor(:second; A_0_p1 = 3.985e-13) == ArrheniusRateFactor()
+        @test_throws ArgumentError ArrheniusRateFactor(:fortnight)
     end
 
     # PeriodicDIVUpdate must actually reach `pseudo_dt!`, not just `diva_update!` — decision

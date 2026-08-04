@@ -38,6 +38,13 @@ throttles `Δτ` everywhere else and no global reduction is needed. Only `mu`'s 
 read (`lerp` needs its halo only at the two domain-boundary `ab`-style corners the membrane
 stress itself needs — see [`pseudo_transient!`](@ref)'s halo warning), so this call has the
 same halo requirement as the rest of the solve.
+
+!!! note "`ρ` here is a numerical pseudo-density, not ice"
+    Callers pass `c.density_ice`, but this `Δτ` governs an artificial dynamic relaxation,
+    not physical inertia — `ρ` only sets a scale that `dtau_scaling` is free to absorb. So
+    it is *not* something the `(m, yr, Pa)` convention (see [`Constants`](@ref)) obliges
+    you to rescale: the viscosities this has always been tuned against were already
+    `Pa yr`, and the value works as-is. Retune via `dtau_scaling` if a problem needs it.
 """
 function pseudo_dt!(dtau_x, dtau_y, ρ, dx, dy, mu, muB, ndim, dtau_scaling, rt::Runtime)
     scaling = convert(eltype(dtau_x), dtau_scaling * ρ * dx * dy / (4 * (1 + muB) * ndim))

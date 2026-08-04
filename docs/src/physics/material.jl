@@ -114,7 +114,7 @@ high stresses; the two curves illustrate how the transition stress ``\sigma_t \a
     [`SmithMorlandCreep`](@ref) and [`SmithMorlandRateFactor`](@ref) use a different
     convention: the rate factor is dimensionless (input is a normalized temperature
     ``\bar{T} = (T - T_0)/\Delta T``) and the creep function carries units
-    ``\mathrm{Pa^{-1}\,s^{-1}}``, unlike the ``\mathrm{Pa^{n-1}}`` units of the Glen-Nye
+    ``\mathrm{Pa^{-1}\,yr^{-1}}``, unlike the ``\mathrm{Pa^{n-1}}`` units of the Glen-Nye
     family. They are designed to pair together via [`SmithMorlandFlowLaw`](@ref) and
     cannot be compared directly on the axes above.
     [`GoldsbyKohlstedtCreep`](@ref) requires temperature-dependent pre-factors

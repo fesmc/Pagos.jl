@@ -132,9 +132,9 @@ heatmap(mask)
 
 state.H .= H .* (mask .== 2)
 state.z_b .= zb
-state.mu .= 1e5     # / SEC_PER_YEAR
-state.beta .= 1e3
-dt = 1.0
+state.mu .= 1e5     # Pa yr
+state.beta .= 1e3   # Pa yr m⁻¹
+dt = 1.0            # yr
 
 pseudo_transient!(icesheet)
 logvel1 = copy(logvel.(state.ux, state.uy))
