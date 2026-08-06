@@ -651,6 +651,15 @@ Two wins, not one. The vertical diffusion leaves the explicit spectrum, and so d
 term the explicit bound has to carry. On 8 km Antarctic geometry 87 % of the residual left
 after 600 explicit iterations sits at `k = 1`, so that second win is the larger one.
 
+!!! warning "Verified on clean geometry; does not yet converge on real Antarctic geometry"
+    Same fixed point as [`ExplicitVertical`](@ref) and an iteration count flat in `nz` (1100 →
+    1420 over `nz ∈ {4…32}`, against 1720 → 25 380 explicit) — on uniform slabs and on
+    synthetically masked, laterally varying cases. On the real 8 km Antarctic restart the
+    solve instead *cycles*: down to `err ~ 3e-2`, a burst to `1e6`–`1e7`, recovery, repeat.
+    The cause is open and tracked in `roadmaps/blatter-pattyn.md`, Phase 2 ("recurring
+    bursts"), which also records what has already been ruled out (the `cfl`/`λ_max` margin,
+    and the `λ_min = 1` clamp). Prefer [`ExplicitVertical`](@ref) on real geometry.
+
 # Fields
  - `thomas_x`, `thomas_y`: the Thomas back-substitution coefficients `c'`, one column field
    per velocity component. The forward sweep's `b'` and `d'` never outlive one layer (`d'` is

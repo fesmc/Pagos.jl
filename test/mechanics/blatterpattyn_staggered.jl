@@ -34,6 +34,28 @@ function bp_slab_analytical(; H0, μ0, β0, α, ρ = 910.0, g = 9.81)
     return (; ub, ubar, profile)
 end
 
+# How wide the slab domain has to be for the closed form to be the answer in the middle.
+#
+# The membrane terms vanish in the *continuous* slab problem, but not in the discrete one:
+# the domain edges carry the `Neumann(0)` halo placeholder (`roadmaps/chmy.md` Phase 4)
+# rather than a real per-equation boundary condition, so a small membrane residual is seeded
+# at x = 0 and x = L. This used to be invisible because `σxx` was identically zero on a
+# slab; with the terrain-following metric correction in `velocitygradients!`
+# (`terrain_metric_correction!`, `roadmaps/blatter-pattyn-equations.md` A1) the surface slope
+# makes `σxx = 4µ α ∂u/∂z ≠ 0`, and the edge artifact becomes visible.
+#
+# It decays away from the edges on the membrane (SSA coupling) length scale
+#
+#   L_m = sqrt(4 µ H / β) = sqrt(4 · 1e8 · 1e3 / 1e3) = 20 km = 20 cells at Δx = 1 km,
+#
+# so the original 8-cell domain was *entirely* boundary layer and the closed form was never
+# recovered anywhere in it. At 128 cells the midpoint sits 3.2 L_m from either edge and the
+# midcolumn error drops to 9.7e-5 — an order of magnitude under the 1e-3 tolerance, and at
+# the ~8e-5 floor set by the vertical discretization itself (measured: 1.1e-3 at nx = 8,
+# 1.7e-4 at 64, 9.7e-5 at 128, 7.9e-5 at 256). Do not shrink this back without also giving
+# the momentum solver real domain-edge boundary conditions.
+const SLAB_NX = 128
+
 @testset "Blatter-Pattyn pseudo-transient momentum solver (C-grid staggered)" begin
     cst = Constants{Float64}()
     layering(T = Float64; nz = 4) = CorrectedVerticalLayering(T, QuadraticSigmaTransform(T, nz))
@@ -182,7 +204,7 @@ end
         an = bp_slab_analytical(; const_case...)
 
         dx = 1e3
-        nx = 8
+        nx = SLAB_NX
         nz = 8
         grid = StaggeredGrid(Float64, nx * dx, 3 * dx, dx, dx, layering(; nz))
         rt = Runtime(grid)
@@ -202,9 +224,8 @@ end
         @test res.converged
         @test res.residual < 1e-6
 
-        # Pointwise column profile against the closed form, at an interior (i, j) away from
-        # the domain edge (the `Neumann(0)` halo placeholder, `roadmaps/chmy.md` Phase 4, is
-        # exact here anyway since the true solution has zero horizontal gradient).
+        # Pointwise column profile against the closed form, at the column furthest from both
+        # domain edges — see `SLAB_NX` for why that distance matters.
         i, j = nx ÷ 2, 2
         for k in 1:nz
             ζ = zcenter(rt.grid, k)
@@ -220,7 +241,7 @@ end
         const_case = (H0 = 1000.0, μ0 = 1e8, β0 = 1e3, α = 1e-2)
         an = bp_slab_analytical(; const_case...)
         dx = 1e3
-        grid = StaggeredGrid(Float64, 8dx, 3dx, dx, dx, layering(; nz = 8))
+        grid = StaggeredGrid(Float64, SLAB_NX * dx, 3dx, dx, dx, layering(; nz = 8))
         rt = Runtime(grid)
         mech = MechanicState(grid)
         fill_analytic!(mech.topography.thickness, rt.grid2d, (x, y) -> const_case.H0)
@@ -235,7 +256,7 @@ end
 
         res = pseudo_transient!(mech, cst, solver, rt, momentum)
         @test res.converged
-        i, j = 4, 2
+        i, j = SLAB_NX ÷ 2, 2
         @test mech.velocity.x[i, j, 1] ≈ an.profile(zcenter(rt.grid, 1)) rtol=1e-3
     end
 

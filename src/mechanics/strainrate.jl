@@ -260,17 +260,150 @@ Distinguished from the collocated method by taking a [`Runtime`](@ref) instead o
     On the sigma `Chmy.FunctionAxis` Chmy's own `∂z` scales by the wrong spacing (see
     [`∂z_σ`](@ref)). The horizontal axes are uniform, so `∂x`/`∂y` are unaffected.
 
-!!! warning "No sigma correction on the horizontal derivatives"
-    `∂u/∂x` here is taken at constant ζ, not at constant z — the terrain-following
-    correction `-(∂z/∂x)/(∂z/∂ζ) · ∂u/∂ζ` is *not* applied. This matches the collocated
-    implementation it replaces (which uses plain `∂x!`), so the two are comparable, but it
-    is an approximation both share: it is accurate where the surface and bed slopes are
-    small, which is the shallow-ice regime these balances assume anyway.
+!!! warning "Horizontal derivatives are at constant ζ until [`terrain_metric_correction!`](@ref) runs"
+    `∂u/∂x` here is taken at constant ζ, not at constant z. On the
+    [`MomentumBalance3D`](@ref) path [`pseudo_rate!`](@ref) applies the terrain-following
+    correction immediately afterwards, in a second pass (it cannot be fused — see that
+    function's docstring). SSA/DIVA never call it: their gradients are depth-averaged and
+    carry no `ζ` dependence to correct.
 """
 function velocitygradients!(velocity::VelocityState, H, rt::Runtime,
                             mask::AbstractIceMask = NoMask())
     rt.launch(rt.arch, rt.grid,
               _velocity_gradients! => (velocity, H, mask, rt.grid, rt.grid2d))
+    return nothing
+end
+
+###############################################################
+# Terrain-following (sigma) metric correction on the horizontal gradients
+###############################################################
+#
+# `roadmaps/blatter-pattyn-equations.md`, item A1. `_velocity_gradients!` above differences
+# at constant ζ; every balance actually wants the derivative at constant *z*. For the
+# terrain-following map `z = b + ζH = s - (1-ζ)H` the two differ by one term,
+#
+#   ∂f/∂x|_z = ∂f/∂x|_ζ - c_x ∂f/∂z,     c_x ≡ ∂z/∂x|_ζ = ∂s/∂x - (1-ζ) ∂H/∂x
+#
+# and the mirror image in y. `c_x` is the local slope of the ζ-surface the difference was
+# taken along: zero only where the surface *and* the thickness are both flat.
+#
+# **This is not a small correction on the geometries BP exists for.** On ISMIP-HOM B at
+# `L = 10 km` the bed amplitude gives `∂H/∂x` up to 0.31, so `c_x ∂u/∂z` exceeds the
+# uncorrected `∂u/∂x|_ζ` it corrects. Dropping it is defensible for SSA/DIVA, which are
+# shallow by construction; it is not defensible for the balance whose whole purpose is steep
+# beds and margins.
+#
+# Two structural notes.
+#
+#  1. **It cannot be fused into `_velocity_gradients!`.** The correction to `∂u/∂x` at `aa`
+#     reads `∂u/∂z` at the four surrounding `acx_ac` nodes, which that kernel is writing in
+#     the same sweep — the neighbour may not exist yet. Same argument as
+#     `raw_strainrate_effective!` needing its own launch, and the same fix: a second pass,
+#     after the first has completed.
+#  2. **`c_x` is evaluated from `s` and `H`, not from a bed field**, because those are the
+#     two the state carries (`MechanicTopographyState`), and `b = s - H` makes the identity
+#     exact rather than approximate. `∂s/∂x` lands at `acx` natively, so the value at `aa` is
+#     the average of the two faces — which is exactly the centred difference
+#     `(s[i+1] - s[i-1])/2Δx`, not an extra approximation.
+#
+# What is corrected here is the *inner* gradient. The **outer** divergence
+# `∂σxx/∂x|_z = ∂x(σxx)|_ζ - c_x ∂σxx/∂z` carries the same term and is **not** corrected yet
+# (`_dotvel_staggered_bp!` still differences at constant ζ). In conservative form the whole
+# membrane+vertical divergence is
+#
+#   r_x = (1/H)[ ∂(H σxx)/∂x|_ζ + ∂(H σxy)/∂y|_ζ + ∂(σxz - σxx c_x - σxy c_y)/∂ζ ]
+#
+# — i.e. the outer correction folds exactly into the *vertical flux*, which also makes the
+# stress-free surface condition the true `τ·n = 0` rather than its small-slope reduction
+# (equations doc, item A2). That form needs `σxx`/`σxy` at the layer interfaces and a
+# matching Gershgorin row sum, so it is deliberately left for its own change rather than
+# bolted on here: an unbounded new coupling in the operator is exactly what the explicit
+# iteration cannot absorb.
+
+@kernel inbounds = true function _terrain_metric_correction!(velocity, H, s, mask,
+                                                              grid, grid2d, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, k = I
+    T = eltype(velocity.x_dx)
+    w = one(T) - T(zcenter(grid, k))          # (1 - ζ) at the layer midpoint
+
+    ## The four `∂/∂z` averages are written out rather than delegated to `lerp`. `x_dz` and
+    ## `y_dz` are staggered in *two* axes at once relative to their targets (`x_dz` sits at
+    ## `acx_ac`, i.e. Vertex in both `x` and `ζ`), and Chmy's `itp` does not unroll that case
+    ## under `GPUCompiler` — the tuple index inside its `ntuple` stays dynamic, which is an
+    ## `InvalidIRError` on a `CuArray`. Each is the plain 4-point average over the two
+    ## staggered axes, which is exactly what `lerp` computes here; the uniform-slab and
+    ## staggered-gradient tests pin the stencil.
+    q4(f, a, b, c, d) = (f[a...] + f[b...] + f[c...] + f[d...]) / 4
+
+    ## This kernel reads one node further out than `velocitygradients!` writes (`i-1`, `j-1`
+    ## at `ab`; `i+1`, `j+1`, `k+1` at `aa`), so on the outermost launched ring it folds in
+    ## entries nothing ever wrote — a deterministic allocation zero, which halves the
+    ## correction there. Measured consequence: contamination stays in the halo (0 of the
+    ## interior cells are affected). **Do not "fix" this by clamping or skipping** — both were
+    ## tried and both are worse, because that ghost ring feeds the interior residual through
+    ## `membranestress!`. Clamping reads back into the written ring imports `NaN` under a mask
+    ## (`_dz_over_H` divides by a degenerate off-ice `H`) and broke the masked
+    ## `ImplicitVertical` fixed-point test; skipping the ring outright broke the uniform-slab
+    ## test. The real fix is a proper halo/BC treatment for the gradient fields
+    ## (`roadmaps/blatter-pattyn-equations.md`, A1 and A6), not a stencil patch here.
+
+    if node_active(mask, NODE_AA, i, j)
+        ## `∂x` of an `aa` field lands at `acx`; averaging the two faces of the cell is the
+        ## centred difference at `aa`.
+        cx = (∂x(s, grid2d, i, j, 1) + ∂x(s, grid2d, i + 1, j, 1)) / 2 -
+             w * (∂x(H, grid2d, i, j, 1) + ∂x(H, grid2d, i + 1, j, 1)) / 2
+        cy = (∂y(s, grid2d, i, j, 1) + ∂y(s, grid2d, i, j + 1, 1)) / 2 -
+             w * (∂y(H, grid2d, i, j, 1) + ∂y(H, grid2d, i, j + 1, 1)) / 2
+        ## acx_ac → aa: average the two `x` faces and the two `ζ` interfaces of the cell.
+        uz = q4(velocity.x_dz, (i, j, k), (i + 1, j, k), (i, j, k + 1), (i + 1, j, k + 1))
+        ## acy_ac → aa: the same in `y`.
+        vz = q4(velocity.y_dz, (i, j, k), (i, j + 1, k), (i, j, k + 1), (i, j + 1, k + 1))
+        velocity.x_dx[I...] -= cx * uz
+        velocity.y_dy[I...] -= cy * vz
+    end
+
+    if node_active(mask, NODE_AB, i, j)
+        ## At `ab` the same two gradients are needed one node over: `∂x(s)` is at `acx`, so
+        ## it is averaged in *y*; `∂y(s)` is at `acy`, so it is averaged in *x*.
+        cx = (∂x(s, grid2d, i, j - 1, 1) + ∂x(s, grid2d, i, j, 1)) / 2 -
+             w * (∂x(H, grid2d, i, j - 1, 1) + ∂x(H, grid2d, i, j, 1)) / 2
+        cy = (∂y(s, grid2d, i - 1, j, 1) + ∂y(s, grid2d, i, j, 1)) / 2 -
+             w * (∂y(H, grid2d, i - 1, j, 1) + ∂y(H, grid2d, i, j, 1)) / 2
+        ## acx_ac → ab: `x` already sits on the vertex, so only `y` and `ζ` are averaged.
+        uz = q4(velocity.x_dz, (i, j - 1, k), (i, j, k), (i, j - 1, k + 1), (i, j, k + 1))
+        ## acy_ac → ab: `y` already on the vertex; average `x` and `ζ`.
+        vz = q4(velocity.y_dz, (i - 1, j, k), (i, j, k), (i - 1, j, k + 1), (i, j, k + 1))
+        velocity.x_dy[I...] -= cy * uz
+        velocity.y_dx[I...] -= cx * vz
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Convert the four horizontal velocity gradients from constant-ζ to constant-`z` derivatives,
+in place — the terrain-following metric correction
+`∂f/∂x|_z = ∂f/∂x|_ζ - (∂s/∂x - (1-ζ)∂H/∂x)·∂f/∂z` and its `y` mirror
+(`roadmaps/blatter-pattyn-equations.md`, item A1).
+
+Corrects `x_dx`/`y_dy` (at `aa`) and `x_dy`/`y_dx` (at `ab`); `x_dz`/`y_dz` are already
+physical `∂/∂z` and are read, not written. Must run **after** [`velocitygradients!`](@ref)
+and before anything reading the gradients — it is a separate launch because it reads
+`x_dz`/`y_dz` at neighbouring nodes that the gradient kernel is still writing.
+
+Identically zero wherever the surface and thickness are both laterally uniform, so it does
+not move a uniform-slab result.
+
+!!! note "The inner gradients only"
+    The matching correction to the *outer* stress divergence is not applied — see the source
+    note above for the conservative form it takes and why it is a separate change.
+"""
+function terrain_metric_correction!(velocity::VelocityState, H, s, rt::Runtime,
+                                    mask::AbstractIceMask = NoMask())
+    rt.launch(rt.arch, rt.grid,
+              _terrain_metric_correction! => (velocity, H, s, mask, rt.grid, rt.grid2d))
     return nothing
 end
 

@@ -1,6 +1,6 @@
 using Pagos
 using Test
-using LinearAlgebra: Tridiagonal
+using LinearAlgebra: Tridiagonal, Diagonal, Symmetric, eigvals
 
 include("../test_helpers/chmy.jl")
 
@@ -184,6 +184,80 @@ end
             rhs = [θ * solver.dtau_x[i, j, k] * solver.velocity_x_dt[i, j, k] for k in 1:nz]
             expected = [solver.velocity_x_old[i, j, k] for k in 1:nz] .+ (M \ rhs)
             @test [mech.velocity.x[i, j, k] for k in 1:nz] ≈ expected rtol = 1e-12
+        end
+    end
+
+    @testset "the autotuner's inner product needs the layer-volume weight" begin
+        # Why `_arm_tuning` under `ImplicitVertical` weights both Rayleigh sums by `Δζ_k`.
+        # The preconditioner `M` is *not* symmetric on a non-uniform sigma axis: row `k`'s
+        # sub-diagonal divides the shared interface coefficient by `Δζ_k` while row `k-1`'s
+        # super-diagonal divides it by `Δζ_{k-1}`. `sym(M)` is then indefinite, so
+        # `Δuᵀ M Δu` — which is what the unweighted `Σ Δu·dv` measures — is not a signed
+        # quantity, and a direction that drives it toward zero sends `λ_min` to the clamp,
+        # i.e. to maximum damping at minimum Δτ. Found as recurring `err ~ 1e5`–`1e8` bursts
+        # on 8 km AIS, each carrying `γ ≈ 1.08` (exactly `λ_min = 1`).
+        #
+        # `D = diag(Δζ_k)` is the finite-volume symmetrizer: `D·M` carries
+        # `R_k/(ρ δζ_k H²)` on *both* sides of the diagonal, and `D` commutes with the
+        # horizontal operator because that one is layer-local. So `sym(D·M)` is positive
+        # definite and the weighted quotient is a genuine Rayleigh quotient.
+        #
+        # Assembled here from the documented coefficients, not from the implementation —
+        # this pins the *reason* for the weight, so removing it fails loudly.
+        function column_operator(nz; H = 60.0, μ0 = 3e8, β0 = 1e4, dx = 8e3, ρ = 910.0)
+            lay = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, nz))
+            g = StaggeredGrid(Float64, 8dx, 8dx, dx, dx, lay).grid
+            Δζ(k) = Δz(g, Center(), 1, 1, k)
+            δζ(k) = Δz(g, Vertex(), 1, 1, k)
+            Dh = 32μ0 / dx^2 / ρ
+            rint(k) = μ0 / δζ(k) / H^2 / ρ          # shared interface coefficient
+            A(k) = k > 1  ? rint(k) / Δζ(k)     : 0.0
+            C(k) = k < nz ? rint(k + 1) / Δζ(k) : 0.0
+            Dg(k) = k == 1 ? β0 / Δζ(1) / H / ρ : 0.0
+            M = zeros(nz, nz)
+            for k in 1:nz
+                M[k, k] = Dh + A(k) + C(k) + Dg(k)
+                k > 1  && (M[k, k - 1] = -A(k))
+                k < nz && (M[k, k + 1] = -C(k))
+            end
+            return M, Diagonal([Δζ(k) for k in 1:nz])
+        end
+
+        for nz in (6, 11, 24)
+            M, D = column_operator(nz)
+            @test minimum(eigvals(Symmetric((M + M') / 2))) < 0        # indefinite
+            @test minimum(eigvals(Symmetric((D * M + (D * M)') / 2))) > 0   # and repaired
+        end
+
+        # The weighted sum the solver actually forms is non-negative on the same geometry.
+        nx, ny, nz = 6, 6, 11
+        dx = 8e3
+        grid = StaggeredGrid(Float64, nx * dx, ny * dx, dx, dx, layering(; nz))
+        rt = Runtime(grid)
+        mech = MechanicState(grid)
+        fill_analytic!(mech.topography.thickness, rt.grid2d, (x, y) -> 60.0)
+        fill_analytic!(mech.friction.beta_eff, rt.grid2d, (x, y) -> 1e4)
+        for k in 1:nz, j in -1:(ny + 2), i in -1:(nx + 2)
+            mech.material.viscosity[i, j, k] = 3e8 * (0.01 + zcenter(rt.grid, k))
+        end
+        momentum = BlatterPattynMomentumBalance()
+        solver = PseudoTransientSolver(grid, momentum;
+                                       vertical_treatment = ImplicitVertical(grid))
+        pseudo_dt!(solver, mech, cst, rt, momentum)
+        for trial in 1:50
+            for k in 1:nz, j in -1:(ny + 2), i in -1:(nx + 2)
+                solver.velocity_x_dt[i, j, k] = sinpi(0.37 * trial * k) * cospi(0.11 * i)
+                solver.velocity_y_dt[i, j, k] = cospi(0.23 * trial * k)
+                solver.velocity_x_old[i, j, k] = 0.0
+                solver.velocity_y_old[i, j, k] = 0.0
+                mech.velocity.x[i, j, k] = 0.0
+                mech.velocity.y[i, j, k] = 0.0
+            end
+            Pagos._velocity_update!(solver.vertical_treatment, solver, mech, cst, rt,
+                                    NoMask(), mech.velocity.x, mech.velocity.y,
+                                    solver.velocity_x_old, solver.velocity_y_old, 1.0)
+            @test Pagos._sum_du_dot_dv_weighted(solver, mech.velocity.x, mech.velocity.y,
+                                                rt) >= 0
         end
     end
 

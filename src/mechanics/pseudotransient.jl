@@ -1287,6 +1287,10 @@ function pseudo_rate!(mech::MechanicState, c::Constants, rt::Runtime,
     (; velocity, material, stress, topography) = mech
 
     velocitygradients!(velocity, topography.thickness, rt, mask)
+    ## Constant-ζ → constant-z on the four horizontal gradients (equations doc, A1). Its own
+    ## launch, not fused: it reads `x_dz`/`y_dz` at neighbouring nodes the gradient kernel is
+    ## still writing. Before the clamp, so `strainrate_cap` bounds what is actually used.
+    terrain_metric_correction!(velocity, topography.thickness, topography.surface, rt, mask)
     clamp_velocity_gradients!(velocity, strainrate_cap, rt)
     _iterate_viscosity!(mech, momentum, solver, rt, mask)
     membranestress!(stress, velocity, material, momentum, rt, mask)
@@ -1317,18 +1321,51 @@ function _tuning_init!(::AutotunedDynamicRelaxation, solver::PseudoTransientSolv
     return _tuning_state(T, 1, 1, scale)
 end
 
-_tune!(::FixedTuning, state, solver, mech, c, rt, ::MomentumBalance3D, mask, ux, uy;
-      dtau_cap = Inf) = state
+_tune!(::FixedTuning, ::AbstractVerticalTreatment, state, solver, mech, c, rt,
+       ::MomentumBalance3D, mask, ux, uy; dtau_cap = Inf) = state
 
-function _tune!(tu::AutotunedDynamicRelaxation, state, solver::PseudoTransientSolver,
-                mech::MechanicState, c::Constants, rt::Runtime, momentum::MomentumBalance3D,
-                mask::AbstractIceMask, ux, uy; dtau_cap = Inf)
-    state.armed || return state
-    T = typeof(state.gamma)
+"""
+$(TYPEDSIGNATURES)
+
+Close the armed Rayleigh quotient and return `λ_min`, or `NaN` to say "discard this sample
+and keep the parameters in force".
+
+[`ExplicitVertical`](@ref) is the depth-averaged rule verbatim: unweighted sums, and a
+quotient above `1` clamped to `1`, since with `M = diag(Λ)` the bound `λ_max ≤ 1` is exact
+and an excess can only be the roundoff a converged `Δu` degenerates into.
+
+[`ImplicitVertical`](@ref) differs twice. The sums are layer-volume weighted (see the source
+note above `_weighted_sum` — without it the denominator is neither cancellation-free nor
+signed). And an excess is **rejected rather than clamped**: `λ_min = 1` is not a conservative
+reading, it is the *most aggressive* setting the tuner has (maximum `γ` at minimum `Δτ`), so
+clamping converts one bad sample into a step that can blow the solve up. Keeping the previous
+parameters is the conservative reading, and the next sample re-measures anyway.
+"""
+function _rayleigh_lambda_min(::ExplicitVertical, ::Type{T}, state,
+                              solver::PseudoTransientSolver, rt::Runtime, ux, uy) where {T}
     numerator = abs(_sum_du_dot_r(solver, ux, uy) - state.rayleigh_ur)
     denominator = state.scale * state.rayleigh_uu
-    (numerator > 0 && denominator > 0) || return merge(state, (; armed = false))
-    λ_min = min(T(numerator / denominator), one(T))
+    (numerator > 0 && denominator > 0) || return T(NaN)
+    return min(T(numerator / denominator), one(T))
+end
+
+function _rayleigh_lambda_min(::ImplicitVertical, ::Type{T}, state,
+                              solver::PseudoTransientSolver, rt::Runtime, ux, uy) where {T}
+    numerator = abs(_sum_du_dot_r_weighted(solver, ux, uy, rt) - state.rayleigh_ur)
+    denominator = state.scale * state.rayleigh_uu
+    (numerator > 0 && denominator > 0) || return T(NaN)
+    λ_min = T(numerator / denominator)
+    return λ_min > one(T) ? T(NaN) : λ_min
+end
+
+function _tune!(tu::AutotunedDynamicRelaxation, vertical::AbstractVerticalTreatment, state,
+                solver::PseudoTransientSolver, mech::MechanicState, c::Constants,
+                rt::Runtime, momentum::MomentumBalance3D, mask::AbstractIceMask, ux, uy;
+                dtau_cap = Inf)
+    state.armed || return state
+    T = typeof(state.gamma)
+    λ_min = _rayleigh_lambda_min(vertical, T, state, solver, rt, ux, uy)
+    isnan(λ_min) && return merge(state, (; armed = false))
     d = 2 * convert(T, tu.c_damp) * sqrt(λ_min)
     cc = convert(T, solver.pseudo_timestep.cfl)^2
     dtau = -cc * d + sqrt(cc^2 * d^2 + 4 * cc)
@@ -1552,39 +1589,84 @@ function _velocity_update!(vt::ImplicitVertical, solver::PseudoTransientSolver,
     return nothing
 end
 
-# The `M`-inner product `Δuᵀ M Δu`, up to the factor `scale`, for a preconditioner that is no
-# longer diagonal. `_sum_du2_over_dtau` evaluates it as `Σ Δu²/Δτ`, which is `Δuᵀ diag(Λ) Δu`
-# only because the explicit step *is* `Δu = Δτ dv`. The implicit step is `M Δu = scale·dv` by
-# construction (see the source note above), so the same quantity is `Σ Δu·dv` — no vertical
-# operator applied a second time, no extra field, and identical to the explicit expression
-# wherever both are defined (`θ_v = 1` under `AutotunedDynamicRelaxation`, so
-# `Δu·dv = Δu²/Δτ` there). It also needs no `dtau > 0` guard: off-mask both factors are
-# exactly zero rather than forming a `0/0`.
+###############################################################
+# The autotuner's inner product under a non-diagonal preconditioner
+###############################################################
+#
+# The `M`-inner product `Δuᵀ M Δu` (up to `scale`) is `Σ Δu²/Δτ` under `ExplicitVertical`,
+# which is `Δuᵀ diag(Λ) Δu` only because the explicit step *is* `Δu = θ_v Δτ dv` pointwise.
+# Two properties of that expression are load-bearing and both are lost when `M` stops being
+# diagonal:
+#
+#  1. **It cannot cancel.** `Δu_i = θ_v Δτ_i dv_i`, so every term of `Σ Δu·dv` is
+#     `θ_v Δτ_i dv_i² ≥ 0`. Under `ImplicitVertical`, `M⁻¹` couples the column: `Δu_k` and
+#     `dv_k` may have opposite signs, the sum cancels, and a denominator near zero sends
+#     `λ_min` to the clamp — i.e. to *maximum* damping at *minimum* `Δτ`, the most aggressive
+#     setting the tuner has. Measured on 8 km AIS: bursts of `err ~ 1e5`–`1e8` recurring every
+#     ~80–100 iterations, each one carrying `γ ≈ 1.08`, which is exactly `λ_min = 1`.
+#  2. **`M` is symmetric.** The BP tridiagonal is *not*: row `k`'s sub-diagonal carries
+#     `Δζ_k` while row `k-1`'s super-diagonal carries `Δζ_{k-1}` for the very same interface,
+#     so on a non-uniform sigma axis (`QuadraticSigmaTransform` at `nz = 11` steps 18× between
+#     the two bottom layers) `sym(M)` can be indefinite and `Δuᵀ M Δu` is not even signed.
+#
+# Both are repaired by the *same* one-line change: weight the quotient by the layer volume
+# `Δζ_k`. `D = diag(Δζ_k)` is exactly the symmetrizer of a finite-volume diffusion operator —
+# `D Ã_v` has `R_k/(ρ̃ δζ_k H²)` on both sides of the diagonal — and `D` commutes with the
+# horizontal operator, which is layer-local. So `D M` is symmetric positive definite, the
+# denominator `Δuᵀ D M Δu` is a genuine energy (a sum of `Λ_h Δu²`, `β Δu₁²` and
+# `R(Δu_k - Δu_{k-1})²` terms, all non-negative), and the numerator `Δuᵀ D Ã Δu` is the
+# matching energy of the same weighting. The quotient is then a Rayleigh quotient of a
+# symmetric pencil, which is what Duretz's `λ_min` was ever meant to be.
+#
+# `Δζ_k` is `(i, j)`-independent on every layering in `src/topography/sigmatransform.jl`
+# (`CorrectedVerticalLayering` builds one `FunctionAxis` for the whole grid), so the weights
+# are `nz` scalars and the reduction is one per layer rather than one per component — nz small
+# enough that this costs less than the kernel launch it saves.
+
 @inline _du_dot_dv(u, u_old, dv) = (u - u_old) * dv
 
-_sum_du_dot_dv(solver, ux, uy) =
-    mapreduce(_du_dot_dv, +, asarray(ux), asarray(solver.velocity_x_old),
-              asarray(solver.velocity_x_dt)) +
-    mapreduce(_du_dot_dv, +, asarray(uy), asarray(solver.velocity_y_old),
-              asarray(solver.velocity_y_dt))
+_layer_weight(grid, ::Type{T}, k) where {T} = T(Δz(grid, Center(), 1, 1, k))
+
+# `Σ_k Δζ_k · Σ_ij Δu·f`, with `f` the residual (numerator) or the damped rate (denominator).
+function _weighted_sum(f, solver, ux, uy, fx, fy, rt::Runtime)
+    T = eltype(asarray(ux))
+    ax, ay = asarray(ux), asarray(uy)
+    ox, oy = asarray(solver.velocity_x_old), asarray(solver.velocity_y_old)
+    bx, by = asarray(fx), asarray(fy)
+    total = zero(T)
+    for k in axes(ax, 3)
+        w = _layer_weight(rt.grid, T, k)
+        total += w * (mapreduce(f, +, view(ax, :, :, k), view(ox, :, :, k),
+                                view(bx, :, :, k)) +
+                      mapreduce(f, +, view(ay, :, :, k), view(oy, :, :, k),
+                                view(by, :, :, k)))
+    end
+    return total
+end
+
+_sum_du_dot_r_weighted(solver, ux, uy, rt) =
+    _weighted_sum(_du_dot_r, solver, ux, uy, solver.residual_x, solver.residual_y, rt)
+
+_sum_du_dot_dv_weighted(solver, ux, uy, rt) =
+    _weighted_sum(_du_dot_dv, solver, ux, uy, solver.velocity_x_dt, solver.velocity_y_dt, rt)
 
 """
 $(TYPEDSIGNATURES)
 
 [`AbstractVerticalTreatment`](@ref)-aware [`_arm_tuning`](@ref), used by the
 [`MomentumBalance3D`](@ref) loop. [`ExplicitVertical`](@ref) delegates to the method the
-depth-averaged loop uses, unchanged; [`ImplicitVertical`](@ref) differs in one term, the
-Rayleigh quotient's `M`-inner product, which is `Σ Δu·dv` rather than `Σ Δu²/Δτ` once `M`
-carries the vertical operator (see `_sum_du_dot_dv`).
+depth-averaged loop uses, unchanged; [`ImplicitVertical`](@ref) takes both Rayleigh sums in
+the layer-volume-weighted inner product that makes the quotient well-posed once `M` is no
+longer diagonal (see the source note above).
 """
-_arm_tuning(tu::AbstractPTTuning, ::AbstractVerticalTreatment, state, solver, ux, uy,
+_arm_tuning(tu::AbstractPTTuning, ::AbstractVerticalTreatment, state, solver, rt, ux, uy,
             iter::Int) = _arm_tuning(tu, state, solver, ux, uy, iter)
 
 function _arm_tuning(tu::AutotunedDynamicRelaxation, ::ImplicitVertical, state,
-                     solver::PseudoTransientSolver, ux, uy, iter::Int)
+                     solver::PseudoTransientSolver, rt::Runtime, ux, uy, iter::Int)
     iter % tu.cadence == 0 || return state
-    return merge(state, (; rayleigh_ur = _sum_du_dot_r(solver, ux, uy),
-                           rayleigh_uu = _sum_du_dot_dv(solver, ux, uy),
+    return merge(state, (; rayleigh_ur = _sum_du_dot_r_weighted(solver, ux, uy, rt),
+                           rayleigh_uu = _sum_du_dot_dv_weighted(solver, ux, uy, rt),
                            armed = true))
 end
 
@@ -1650,7 +1732,8 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
         iter += 1
 
         pseudo_rate!(mech, c, rt, momentum, solver, mask; gamma = state.gamma, strainrate_cap)
-        state = _tune!(tuning, state, solver, mech, c, rt, momentum, mask, ux, uy; dtau_cap)
+        state = _tune!(tuning, vertical, state, solver, mech, c, rt, momentum, mask, ux, uy;
+                       dtau_cap)
 
         # After `_tune!`, which needs the pre-copy `u_old` (see its docstring).
         copyto!(asarray(ux_old), asarray(ux))
@@ -1662,7 +1745,7 @@ function pseudo_transient!(mech::MechanicState, c::Constants, solver::PseudoTran
         bc!(rt.arch, rt.grid, ux => Neumann())
         bc!(rt.arch, rt.grid, uy => Neumann())
 
-        state = _arm_tuning(tuning, vertical, state, solver, ux, uy, iter)
+        state = _arm_tuning(tuning, vertical, state, solver, rt, ux, uy, iter)
 
         if iter % ncheck == 0 || iter == maxiter
             err = _pt_error(solver.convergence, solver, ux, uy, scale)
