@@ -1,4 +1,4 @@
-oul# @dev TODO: predates the current `IceSheet` layout (references `state`/`domain`/`params`
+# @dev TODO: predates the current `IceSheet` layout (references `state`/`domain`/`params`
 # fields and a `method` variable that no longer exist); needs to be rewritten against the
 # current API before use.
 function velocity!(icesheet::IceSheet)
