@@ -87,14 +87,43 @@ times for one answer.
 
 - `update_basalstress!` copies `ū` into `velocity.base_{x,y}` and reads it straight back.
   Under the SSA limit `u_b = ū` the kernel can read `ū` itself and write `base_{x,y}` on the
-  way past: 1.33×.
+  way past: 1.33×. **In `src`**: `update_basalstress!`'s `ActiveFrictionUpdate` method
+  (`src/mechanics/pseudotransient.jl`) is one `_basalstress_active!` launch now, reading
+  `velocity.depthaverage_{x,y}` once and writing both `velocity.base_{x,y}` and
+  `stress.base_{x,y}` from it — no `copyto!`, no separate `basalstress!` call.
 - `copyto!(u_old, u)` then `u = u_old + θ·dv·dτ` reads `u` twice. One kernel doing both, for
-  both components at once: 1.79×.
+  both components at once: 1.79×. **In `src`**: `pseudo_transient!`'s `MomentumBalance2D`
+  loop calls `_pseudo_vel_and_store!` (`src/mechanics/pseudotransient.jl`), which reads each
+  component's pre-update value once and writes both `u_old` and the relaxed `u` from it. The
+  `MomentumBalance3D` (Blatter-Pattyn) loop still uses the unfused `copyto!` + `pseudo_vel!`
+  pair — this fusion was only ever validated (bit-for-bit, against `pseudo_transient!`
+  itself, on real 760×760 GPU geometry — see `pt_loop.jl`) for the 2D SSA/DIVA path.
+
+  !!! warning "The isolated 1.33×/1.79× numbers above assume the flat worksize"
+      `kernel_variants.jl` measures both fusions at `FlatLauncher`'s `(nx+2, ny+2, 1)`
+      worksize, not through `rt.launch2d`. `pseudo_vel!`'s `copyto!`/broadcast pair paid no
+      `Launcher` tax at all (`asarray`/`interior` sweeps exactly the field's real extent) —
+      routing the fused replacement through the ordinary `rt.launch2d` instead (§1's
+      `(nx+2, ny+2, 3)`) makes it pay a 3× tax on work that previously paid none, which
+      **measured ~10% slower** for the whole PT loop, not faster. Both `src` methods above
+      launch by hand at the flat worksize instead (`_launch_flat2d!`, next to `pseudo_vel!`
+      in `pseudotransient.jl`) without pulling `FlatLauncher` itself into the public API.
+      With that fix, the real `pseudo_transient!` loop measures 4.09 → 3.76 ms/iter (median
+      of 15, Float64, same 760×760 slab and RTX 2070 Super Max-Q as above) from these two
+      fusions alone — smaller than the isolated numbers since they are 2 of ~7 kernels in
+      the unflattened loop, but a real, reproducible ~1.09× on top of the unchanged
+      3-k-plane launcher, sync-per-launch and `hlerp`-recompute costs findings #1–#3
+      describe.
 
 Separately, `asarray(f) = interior(f)` is a **strided** `SubArray`, so every `copyto!` and
 every broadcast on it goes through a Cartesian-index kernel: 156 GB/s against 243 GB/s for
 the same bytes as the contiguous parent k-plane `view(parent(f), :, :, 3)`. That is a 1.6×
-lever on any `asarray` op that survives the fusions above.
+lever on any `asarray` op that survives the fusions above — moot for the two above once
+fused into kernels (a `Chmy.Field`'s own `getindex`/`setindex!` isn't the strided path this
+measures), so there was nothing left in the per-iteration loop to apply it to. The one
+`asarray`-based `copyto!` this doesn't reach is `velocities3D!`'s `surface_{x,y} ←
+depthaverage_{x,y}` (`src/mechanics/velocities.jl`) — called once per solve, not once per
+iteration, so out of scope for what this benchmark measured.
 
 ## Two measurement traps
 

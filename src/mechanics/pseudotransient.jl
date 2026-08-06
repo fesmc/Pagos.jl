@@ -12,6 +12,82 @@ function pseudo_vel!(v, v_old, dotvel, dtau, theta_v)
     return nothing
 end
 
+# `rt.launch2d`'s Chmy `Launcher` sweeps `size(grid2d, Center()) .+ 2` — on `grid2d`
+# (z-extent 1) that is `(nx + 2, ny + 2, 3)`, three k-planes rather than the one that holds
+# real data (`benchmark/basics/gpu/README.md` §1). `pseudo_vel!`'s plain broadcast and
+# `copyto!` never paid that tax (`asarray`/`interior` sweeps exactly the field's own extent,
+# no `Launcher` involved) — so a kernel that fuses them must not pay it either, or the fusion
+# triples the swept volume of exactly the work it was written to shrink, drowning the gain
+# (measured: routing the two fused kernels below through `rt.launch2d` made the whole PT loop
+# ~10% *slower*, not faster). Launching by hand at the flat `(nx + 2, ny + 2, 1)` worksize
+# instead — the same shape `benchmark/basics/gpu/kernel_variants.jl`'s `flat()` helper and
+# `FlatLauncher` use — keeps the fusion's saving real without adding a `FlatLauncher`-like
+# type to the public `Runtime`/`Launcher` API (out of scope here; see finding #1).
+function _launch_flat2d!(rt::Runtime, kernel, args...)
+    backend = get_backend(rt.arch)
+    n = size(rt.grid2d, Center())
+    ws = (n[1] + 2, n[2] + 2, 1)
+    gs = heuristic_groupsize(backend, Val(3))
+    kernel(backend, gs, ws)(args..., Offset(-1, -1, 0))
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+@kernel inbounds = true function _pseudo_vel_fused!(
+    ux,
+    uy,
+    ux_old,
+    uy_old,
+    dvx,
+    dvy,
+    dtau_x,
+    dtau_y,
+    θ,
+    O,
+)
+    I = @index(Global, NTuple)
+    I = I + O
+    a = ux[I...]
+    ux_old[I...] = a
+    ux[I...] = a + θ * dvx[I...] * dtau_x[I...]
+    b = uy[I...]
+    uy_old[I...] = b
+    uy[I...] = b + θ * dvy[I...] * dtau_y[I...]
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Fused `u → u_old` copy and [`pseudo_vel!`](@ref) relaxation, for both velocity components in
+one launch: `u_old ← u` (the pre-update iterate [`_tune!`](@ref) needs — see its docstring),
+then `u ← u_old + theta_v * dotvel * dtau`, reading each component's pre-update value exactly
+once instead of writing it to `u_old` via `copyto!` and reading it straight back through
+[`pseudo_vel!`](@ref). `benchmark/basics/gpu/README.md` §4 measures the two-`copyto!`-plus-
+`pseudo_vel!` sequence this replaces at 1.79×.
+
+Depth-integrated throughout (`rt.grid2d`), so this is [`pseudo_transient!`](@ref)'s own
+[`MomentumBalance2D`](@ref) loop fusion; [`_velocity_update!`](@ref)'s `ExplicitVertical`
+method (shared with [`MomentumBalance3D`](@ref)) still goes through the unfused `copyto!` +
+[`pseudo_vel!`](@ref) pair, since the benchmark that validated this fusion bit-for-bit only
+ever exercised the 2D SSA/DIVA loop.
+"""
+function _pseudo_vel_and_store!(
+    ux,
+    uy,
+    ux_old,
+    uy_old,
+    dvx,
+    dvy,
+    dtau_x,
+    dtau_y,
+    theta_v,
+    rt::Runtime,
+)
+    θ = convert(eltype(dvx), theta_v)
+    _launch_flat2d!(rt, _pseudo_vel_fused!, ux, uy, ux_old, uy_old, dvx, dvy, dtau_x, dtau_y, θ)
+    return nothing
+end
+
 ###############################################################
 # C-grid staggered pseudo-transient solver
 ###############################################################
@@ -1377,15 +1453,55 @@ $(TYPEDSIGNATURES)
 [`ActiveFrictionUpdate`](@ref): the ordinary basal friction law. Overwrites
 `velocity.base_x`/`base_y` from the current (SSA-limit) depth-averaged velocity
 `velocity.depthaverage_x`/`y` — the field the solver actually iterates (decision 1) — then
-`stress.base_x`/`base_y` from `friction.beta_eff * velocity.base_{x,y}` via
-[`basalstress!`](@ref) — the behaviour every solver had before
-[`AbstractFrictionUpdate`](@ref) existed.
+`stress.base_x`/`base_y` from `friction.beta_eff * velocity.base_{x,y}` — the behaviour every
+solver had before [`AbstractFrictionUpdate`](@ref) existed.
+
+One fused launch ([`_basalstress_active!`](@ref)) rather than two `copyto!`s into
+`velocity.base_{x,y}` followed by [`basalstress!`](@ref): under the SSA limit `u_b = ū`, so
+the depth-averaged velocity can be read once and both `velocity.base_{x,y}` (written on the
+way past) and `stress.base_{x,y}` (its friction product) come out of the same pass —
+`benchmark/basics/gpu/README.md` §4 measures the round trip through `velocity.base_{x,y}`
+this replaces at 1.33× on its own.
 
 !!! note "Uses the SSA limit for both balances"
     `u_b = ū` here regardless of the momentum balance. DIVA's correction
     `u_b = ū/(1 + βF₂)` (Robinson et al. 2022, Eq. 18) is Stage 2 future work
     (`roadmaps/chmy.md`, Phase 3).
 """
+@kernel inbounds = true function _basalstress_active!(
+    stress_base_x,
+    stress_base_y,
+    velocity_base_x,
+    velocity_base_y,
+    ux,
+    uy,
+    β,
+    mask,
+    grid,
+    O,
+)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    Z = zero(eltype(stress_base_x))
+    if node_active(mask, NODE_ACX, i, j)
+        u = ux[I...]
+        velocity_base_x[I...] = u
+        stress_base_x[I...] = lerp(β, NODE_ACX, grid, I...) * u
+    else
+        velocity_base_x[I...] = Z
+        stress_base_x[I...] = Z
+    end
+    if node_active(mask, NODE_ACY, i, j)
+        v = uy[I...]
+        velocity_base_y[I...] = v
+        stress_base_y[I...] = lerp(β, NODE_ACY, grid, I...) * v
+    else
+        velocity_base_y[I...] = Z
+        stress_base_y[I...] = Z
+    end
+end
+
 function update_basalstress!(
     mech::MechanicState,
     ::ActiveFrictionUpdate,
@@ -1393,16 +1509,18 @@ function update_basalstress!(
     mask::AbstractIceMask = NoMask(),
 )
     (; velocity, stress, friction) = mech
-    copyto!(asarray(velocity.base_x), asarray(velocity.depthaverage_x))
-    copyto!(asarray(velocity.base_y), asarray(velocity.depthaverage_y))
-    basalstress!(
+    _launch_flat2d!(
+        rt,
+        _basalstress_active!,
         stress.base_x,
         stress.base_y,
-        friction.beta_eff,
         velocity.base_x,
         velocity.base_y,
-        rt,
+        velocity.depthaverage_x,
+        velocity.depthaverage_y,
+        friction.beta_eff,
         mask,
+        rt.grid2d,
     )
     return nothing
 end
@@ -1618,24 +1736,10 @@ function pseudo_transient!(
         pseudo_rate!(mech, c, rt, momentum, solver, mask; gamma = state.gamma)
         state = _tune!(tuning, state, solver, mech, c, rt, mask, ux, uy)
 
-        # After `_tune!`, which needs the pre-copy `u_old` (see its docstring).
-        copyto!(asarray(ux_old), asarray(ux))
-        copyto!(asarray(uy_old), asarray(uy))
-
-        pseudo_vel!(
-            asarray(ux),
-            asarray(ux_old),
-            asarray(dvx),
-            asarray(dtau_x),
-            state.theta_v,
-        )
-        pseudo_vel!(
-            asarray(uy),
-            asarray(uy_old),
-            asarray(dvy),
-            asarray(dtau_y),
-            state.theta_v,
-        )
+        # After `_tune!`, which needs the pre-copy `u_old` (see its docstring). Fused: see
+        # `_pseudo_vel_and_store!`'s docstring for why this is one launch, not a `copyto!`
+        # pair followed by two `pseudo_vel!` calls.
+        _pseudo_vel_and_store!(ux, uy, ux_old, uy_old, dvx, dvy, dtau_x, dtau_y, state.theta_v, rt)
 
         bc!(rt.arch, rt.grid2d, ux => Neumann())
         bc!(rt.arch, rt.grid2d, uy => Neumann())

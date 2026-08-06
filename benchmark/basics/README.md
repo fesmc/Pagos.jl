@@ -14,8 +14,13 @@ not because they are expected to run.
 | `chmy_comparison.jl` | Pagos' own launcher vs. Chmy's, before the Chmy migration |
 | `velocities.jl` | COO-fill + `sparse()` vs. pre-built CSC + direct `nzval` writes; UMFPACK vs. CUDSS; PT iteration vs. a direct solve |
 | `pseudotransient/` | PT vs. linear solve, single- and multi-resolution, the PT loop itself |
+| `gpu/` | where the DIVA/SSA PT loop's GPU time goes: launch worksize, field layout, `hlerp` cost, the per-iteration copies (see its own README) |
 
 ## They do not run as-is
+
+**`gpu/` is the exception** — it targets the current API and is meant to be re-run whenever
+the momentum path changes. Everything below applies to the scripts in this directory only.
+
 
 Most of them target the pre-Chmy API (`Domain`, `State`, `IceSheet`, `RegularGrid`,
 `LinearMomentumSolver2D`), which no longer exists in that form. Reviving one means porting
