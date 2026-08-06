@@ -13,7 +13,20 @@ using Pkg
 Pkg.activate(joinpath(@__DIR__, "../../.."))
 using Pagos, NCDatasets, CairoMakie, Statistics, Printf
 
-restart_file = "/home/jan/pCloudSync/PhD/Projects/Ice-Sheet-Modelling/ice-data-pagos/yelmo_restart_ais_8km.nc"
+#=
+`resolution_km` picks which Yelmo restart to load — `8` or `16`, matching the two restarts
+that actually exist on disk (`ice-data-pagos/yelmo_restart_ais_{8,16}km.nc`). A script that
+wants a specific resolution sets it before `include`ing this file; scripts that don't care
+get the `8` km default below, unchanged from before this switch existed.
+=#
+resolution_km = @isdefined(resolution_km) ? resolution_km : 8
+restart_file = if resolution_km == 8
+    "/home/jan/pCloudSync/PhD/Projects/Ice-Sheet-Modelling/ice-data-pagos/yelmo_restart_ais_8km.nc"
+elseif resolution_km == 16
+    "/home/jan/pCloudSync/PhD/Projects/Ice-Sheet-Modelling/ice-data-pagos/yelmo_restart_ais_16km.nc"
+else
+    error("resolution_km must be 8 or 16, got $resolution_km")
+end
 figdir = joinpath(@__DIR__, "figs")
 
 load2d(ds, name, T) = T.(dropdims(ds[name][:, :, :]; dims = 3))
@@ -43,12 +56,12 @@ shared by every comparison below: [`TopographicState`](@ref) and the mask are bu
 nothing about them depends on which momentum balance or element type a given solve uses. The
 `is_momentum_solved` mask excludes the ~48 detached iceberg cells a force balance cannot be posed on.
 =#
-
-layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, nz))
-grid = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
+T = Float64
+layering = CorrectedVerticalLayering(T, QuadraticSigmaTransform(T, nz))
+grid = StaggeredGrid(T, lx, ly, dx, dy, layering)
 rt   = Runtime(grid)
 topo = TopographicState(grid)
-cst  = Constants{Float64}()
+cst  = Constants{T}()
 
 function fill_from_grid!(f, data)
     ni, nj = size(data)
@@ -165,7 +178,7 @@ end
 
 const SOLVER_KWARGS = (
     abstol = 1e-3, maxiter = 2000, ncheck = 20, printout_every = 50,
-    pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.99),
+    pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.8),
     convergence = ScaledResidual(),
     friction_update = ActiveFrictionUpdate(),
     tuning = AutotunedDynamicRelaxation(cadence = 50),

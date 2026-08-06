@@ -40,6 +40,7 @@ itself and resetting its velocity to zero before the timed solve gets the same b
 ever holding two full states at once — and sidesteps the GC-timing question entirely rather
 than trying to force it.
 =#
+resolution_km = 8
 include(joinpath(@__DIR__, "helpers.jl"))
 using CUDA
 
@@ -90,13 +91,12 @@ if CUDA.functional()
     solve_on!(mech_gpu, grid_gpu, rt_gpu, mask_gpu; SOLVER_KWARGS..., maxiter = 5, abstol = 0.0)
     setdata!(mech_gpu.velocity.depthaverage_x, 0.0)
     setdata!(mech_gpu.velocity.depthaverage_y, 0.0)
-    println("GPU warm-up done (kernels compiled, not timed)."); ram()
+    println("GPU warm-up done (kernels compiled, not timed).")
 
     diva_gpu = solve_on!(mech_gpu, grid_gpu, rt_gpu, mask_gpu; SOLVER_KWARGS...)
     mech_gpu = nothing
     GC.gc()
     println("DIVA, GPU: ", (; diva_gpu.converged, diva_gpu.iterations, diva_gpu.elapsed, diva_gpu.residual))
-    ram()
 
     diff_gpu = on_ice(diva.speed .- diva_gpu.speed)
     diff_gpu_vals = filter(!isnan, diff_gpu)
