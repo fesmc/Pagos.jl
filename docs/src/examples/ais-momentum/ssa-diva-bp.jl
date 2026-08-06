@@ -21,14 +21,23 @@ at most one `MechanicState` alive at a time; Blatter-Pattyn's is by far the larg
 column tensor fields against SSA/DIVA's handful of 2D ones), so this script never holds two
 solves' `MechanicState`s at once.
 
-The BP run uses [`ImplicitVertical`](@ref) (`roadmaps/blatter-pattyn.md`, Phase 2): the
-vertical-shear divergence is solved per column by a tridiagonal line relaxation, so `Δτ` is
-bounded by the membrane operator alone and the aspect-ratio penalty that dominated the
-explicit run on exactly this geometry is gone. It is the *same fixed point* as
-[`ExplicitVertical`](@ref) — the difference is iteration count and how much of the domain
-reaches the tolerance within `maxiter`, not what the converged velocity is. Swap it back to
-`ExplicitVertical()` (the default, i.e. drop the keyword) to reproduce the Phase 1 numbers.
+!!! warning "The BP run below does not converge on this geometry"
+    It uses [`ImplicitVertical`](@ref) (`roadmaps/blatter-pattyn.md`, Phase 2), which removes
+    the aspect-ratio penalty on `Δτ` and is verified — same fixed point, iteration count flat
+    in `nz` — on clean and synthetically masked geometry. On the real 8 km restart it instead
+    *cycles*: down to `err ~ 3e-2`, a burst to `1e6`–`1e7`, recovery over ~60 iterations,
+    repeat. The cause is open (Phase 2's "recurring bursts" section ranks the hypotheses);
+    it is not the `cfl` margin and not the `λ_min` clamp, both of which were ruled out.
+    **The BP panel below is therefore not a converged solve** — read `bp.converged` before
+    reading the figure. Swap in `ExplicitVertical()` (the default, i.e. drop the keyword) for
+    a BP field that is actually converged, at Phase 1's iteration cost.
+
+!!! note "Choosing the horizontal resolution"
+    `resolution_km` selects which Yelmo restart `helpers.jl` loads — `8` or `16`, the two
+    resolutions with a restart file on disk. Anything else errors out in `helpers.jl` rather
+    than silently falling back to a default.
 =#
+resolution_km = 8   # 8 or 16 km Yelmo restart; anything else errors in `helpers.jl`.
 include(joinpath(@__DIR__, "helpers.jl"))
 
 ssa  = run_solve(SSAMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...)
@@ -37,8 +46,13 @@ println("SSA:  ", (; ssa.converged, ssa.iterations, ssa.elapsed, ssa.residual))
 diva = run_solve(DIVAMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...)
 println("DIVA: ", (; diva.converged, diva.iterations, diva.elapsed, diva.residual))
 
-bp   = run_solve(BlatterPattynMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...,
-                 vertical_treatment = ImplicitVertical(grid))
+bp   = run_solve(BlatterPattynMomentumBalance(), grid, rt, mask;
+    abstol = 1e-3, maxiter = 2000, ncheck = 10, printout_every = 10,
+    pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.8),
+    convergence = ScaledResidual(),
+    friction_update = ActiveFrictionUpdate(),
+    tuning = AutotunedDynamicRelaxation(cadence = 1),
+    vertical_treatment = ExplicitVertical())
 println("BP:   ", (; bp.converged, bp.iterations, bp.elapsed, bp.residual))
 
 #=
@@ -100,5 +114,5 @@ for (col, (data, title)) in enumerate((
     col == 3 && Colorbar(fig1[2, 4], hm, label = "Δ speed (m/yr)")
 end
 
-save("$figdir/ssa-diva-bp.png", fig1)
+save("$figdir/ssa-diva-bp-$(resolution_km)km.png", fig1)
 fig1
