@@ -64,36 +64,13 @@ end
 # Gershgorin pseudo-time step
 ###############################################################
 #
-# `ViscosityPseudoTimeStep` (Sandip Eq. 7) bounds the *membrane* part of the operator and
-# nothing else. That is fine on the uniform-slab tests, where β is small and there is no ice
-# margin, and wrong in both directions on real geometry:
-#
-#  - it omits the basal-drag term β/(ρH) from the bound, which under grounded Antarctic ice
-#    (β_eff up to ~5e13 Pa s m⁻¹) is the *dominant* eigenvalue — a solve that recomputes
-#    friction from the velocity (`ActiveFrictionUpdate`) diverges within ~20 iterations;
-#  - it `lerp`s the viscosity straight across the ice margin, so an ice-free cell's
-#    placeholder viscosity throttles Δτ on exactly the faces that carry the calving-front
-#    forcing.
-#
-# The bound below is Gershgorin's: λ_max ≤ max row sum of |coefficients| of the mass-scaled
-# residual operator, and explicit stability is Δτ ≤ 2/λ_max. The coefficients are read off
-# the discretisation the solver actually runs — `_membrane_stress_staggered!`'s `ηH` at `aa`
-# and `hlerp(η)·lerp(H)` at `ab`, `_basalstress_staggered!`'s `lerp(β)`, and
-# `_dotvel_staggered!`'s `lerp(H)` — and every one of them is evaluated through the same
-# mask those kernels use, so an ice-free neighbour contributes exactly the zero it
-# contributes to the residual itself.
-#
-# Row sum for the u-equation at `acx(i, j)`, writing P = ηH at `aa` and Q = hlerp(η)·lerp(H)
-# at `ab` (derivation: expand ∂x(N_xx) + ∂y(N_xy) - βu and sum |coefficients| over both the
-# u and the v unknowns, since the two equations are coupled):
-#
-#   ∂x(N_xx) : u-terms 8(P₋+P₊)/dx²   v-terms 4(P₋+P₊)/(dx·dy)
-#   ∂y(N_xy) : u-terms 2(Q₋+Q₊)/dy²   v-terms 2(Q₋+Q₊)/(dx·dy)
-#   basal    : β_face
-#
-# all divided by ρ·H_face. Sanity check: uniform η, H, no drag, dx = dy gives
-# Λ = 32η/(ρdx²) hence Δτ = ρdx²/(16η) — which is Sandip's Eq. 7 at muB = 0, ndim2 = 4.1
-# (ρdx²/16.4η). The two agree where they should; they differ only by the terms Eq. 7 omits.
+# Bounds λ_max of the mass-scaled residual operator via Gershgorin's row-sum bound
+# (Δτ ≤ 2/λ_max); see `GershgorinPseudoTimeStep`'s docstring in solvers.jl for the
+# derivation, the row-sum formula and why it beats `ViscosityPseudoTimeStep` on real
+# geometry (basal drag, ice margin). The coefficients below are read off the same
+# discretisation the solver runs — `_membrane_stress_staggered!`'s `ηH`/`hlerp(η)·lerp(H)`,
+# `_basalstress_staggered!`'s `lerp(β)`, `_dotvel_staggered!`'s `lerp(H)` — through the same
+# mask those kernels use.
 
 @inline _etaH_aa(η, H, mask, i, j, k) =
     node_active(mask, NODE_AA, i, j) ? η[i, j, k] * H[i, j, k] : zero(eltype(η))
@@ -989,19 +966,20 @@ _iterate_viscosity!(mech::MechanicState, ::BlatterPattynMomentumBalance,
 $(TYPEDSIGNATURES)
 
 [`ActiveFrictionUpdate`](@ref): the ordinary basal friction law. Overwrites
-`velocity.base_x`/`base_y` from the current (SSA-limit) depth-averaged velocity, then
+`velocity.base_x`/`base_y` from the current (SSA-limit) depth-averaged velocity
+`velocity.depthaverage_x`/`y` — the field the solver actually iterates (decision 1) — then
 `stress.base_x`/`base_y` from `friction.beta_eff * velocity.base_{x,y}` via
 [`basalstress!`](@ref) — the behaviour every solver had before
 [`AbstractFrictionUpdate`](@ref) existed.
+
+!!! note "Uses the SSA limit for both balances"
+    `u_b = ū` here regardless of the momentum balance. DIVA's correction
+    `u_b = ū/(1 + βF₂)` (Robinson et al. 2022, Eq. 18) is Stage 2 future work
+    (`roadmaps/chmy.md`, Phase 3).
 """
 function update_basalstress!(mech::MechanicState, ::ActiveFrictionUpdate, rt::Runtime,
                              mask::AbstractIceMask = NoMask())
     (; velocity, stress, friction) = mech
-    # The SSA limit `u_b = ū`, which is what both balances use today. DIVA's correction
-    # `u_b = ū/(1 + βF₂)` (Robinson et al. 2022, Eq. 18) is Stage 2 — see
-    # `roadmaps/chmy.md`, Phase 3. Reads `depthaverage_x`/`y`, the field the solver
-    # actually iterates (decision 1); it used to read `velocity.x`/`y`, which held the same
-    # numbers only because `nz == 1` collapsed `ACX3` onto `ACX2`.
     copyto!(asarray(velocity.base_x), asarray(velocity.depthaverage_x))
     copyto!(asarray(velocity.base_y), asarray(velocity.depthaverage_y))
     basalstress!(stress.base_x, stress.base_y, friction.beta_eff,
@@ -1113,12 +1091,10 @@ Three solver-held strategies steer the iteration:
    omits `β/(ρH)`.
  - `solver.convergence` ([`AbstractPTConvergence`](@ref)) — what `abstol` measures.
    [`VelocityIncrement`](@ref) (default) is the exact max-norm increment `|u_new - u_old|`
-   (`ux`/`uy` still hold the pre-update iterate in `ux_old`/`uy_old` at that point) rather
-   than the algebraic reconstruction `theta_v * dtau * dv` an earlier version used — that
-   reconstruction relied on `dtau` being the same scalar everywhere, which a local `Δτ`
-   field is not. [`ScaledResidual`](@ref) is the driving-stress-normalized momentum
-   residual, and is what a domain mixing drag regimes (grounded ice + ice shelves) needs:
-   the increment criterion cannot distinguish a converged shelf from a stalled one.
+   (`ux`/`uy` still hold the pre-update iterate in `ux_old`/`uy_old` at that point).
+   [`ScaledResidual`](@ref) is the driving-stress-normalized momentum residual, and is what
+   a domain mixing drag regimes (grounded ice + ice shelves) needs: the increment criterion
+   cannot distinguish a converged shelf from a stalled one.
  - `solver.tuning` ([`AbstractPTTuning`](@ref)) — where `Δτ` and the damping come from.
    [`FixedTuning`](@ref) (default) carries them as hand-set numbers;
    [`AutotunedDynamicRelaxation`](@ref) derives both from a Gershgorin `λ_max` and a
@@ -1133,8 +1109,8 @@ Three solver-held strategies steer the iteration:
     stress's `hlerp(η)` reads the outer ghost ring of `viscosity_depthaveraged` at the two
     boundary `ab` corners, and `hlerp` of an unset (zero) neighbour is `NaN`, exactly like
     the already-documented ice-free case — except here there is no ice-free cell at all,
-    only an unfilled halo. Found while writing this solver's own tests, which fill every
-    such field with `fill_analytic!` for exactly this reason.
+    only an unfilled halo. This solver's own tests fill every such field with
+    `fill_analytic!` for exactly this reason.
 
 Requires a depth-averaged grid (`rt.grid2d === rt.grid`, i.e. `nz == 1`, checked): DIVA's
 vertical-shear integral is Phase 3 future work, so today `mech.velocity.x`/`y` *are* the

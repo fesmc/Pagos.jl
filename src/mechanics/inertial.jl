@@ -1,4 +1,4 @@
-# TODO: predates the current `IceSheet` layout (references `state`/`domain`/`params`
+# @dev TODO: predates the current `IceSheet` layout (references `state`/`domain`/`params`
 # fields and a `method` variable that no longer exist); needs to be rewritten against the
 # current API before use.
 function velocity!(icesheet::IceSheet)
@@ -14,7 +14,7 @@ momentum balance, i.e. the right-hand side of the acceleration equation
 the required fields and forwards them to the low-level method. Mutates `dudt` in place.
 """
 function inertial_velocity!(dudt, u, t, icesheet::IceSheet)
-    # TODO: predates the current `IceSheet` layout (references `domain`/`now`/`params`
+    # @dev TODO: predates the current `IceSheet` layout (references `domain`/`now`/`params`
     # fields that no longer exist); needs to be rewritten against the current API.
     error("inertial_velocity!(::IceSheet) is not yet implemented for the current IceSheet API")
 end

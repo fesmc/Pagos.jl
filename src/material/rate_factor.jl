@@ -82,12 +82,12 @@ fig = plot_rate_factor(T_relative_kelvin .- 273.15, A)
 """
 @kwdef struct ArrheniusRateFactor{T<:Real} <: AbstractRateFactor
     E_f::T = 1.0
-    T_p1_p2::T = 263.15                          # breakpoint temperature, Cuffey & Paterson (2010)
-    A_0_p1::T = 3.985e-13 * SECONDS_PER_YEAR     # Pa^-3 s^-1 published -> Pa^-3 yr^-1 internal
-    A_0_p2::T = 1.916e3 * SECONDS_PER_YEAR     # piecewise definition, Cuffey & Paterson (2010)
-    Q_a_p1::T = 60e3                             # "J mol^-1" activation energy
-    Q_a_p2::T = 139e3                            #  piecewise definition, Cuffey & Paterson (2010)
-    R::T = 8.314                                 # "J K^-1 mol^-1" universal gas constant
+    T_p1_p2::T = 263.15
+    A_0_p1::T = 3.985e-13 * SECONDS_PER_YEAR
+    A_0_p2::T = 1.916e3 * SECONDS_PER_YEAR
+    Q_a_p1::T = 60e3
+    Q_a_p2::T = 139e3
+    R::T = 8.314
 end
 
 """
@@ -144,7 +144,7 @@ pressure melting point ``T_r``. Avoids the discontinuity of the piecewise
 """
 @kwdef struct HookeRateFactor{T<:Real} <: AbstractRateFactor
     E_f::T = 1.0
-    A_0::T = 4.42165e-9 * SECONDS_PER_YEAR   # = B_0^-3 for B_0 = 1.928 Pa yr^(1/3)
+    A_0::T = 4.42165e-9 * SECONDS_PER_YEAR
     Q_a::T = 78.8e3
     C::T = 0.16612
     T_r::T = 273.39
@@ -195,10 +195,10 @@ spatially varying fields, call the scalar method pointwise.
 @kwdef struct LliboutryDuvalRateFactor{T<:Real} <: AbstractRateFactor
     ω::T = 0.0
     γ::T = 181.25
-    water_fraction_max::T = 0.01   # PISM flow_law.gpbld.water_frac_observed_limit
+    water_fraction_max::T = 0.01
     E_f::T = 1.0
     T_p1_p2::T = 263.15
-    A_0_p1::T = 3.985e-13 * SECONDS_PER_YEAR   # Pa^-3 s^-1 published -> Pa^-3 yr^-1 internal
+    A_0_p1::T = 3.985e-13 * SECONDS_PER_YEAR
     A_0_p2::T = 1.916e3 * SECONDS_PER_YEAR
     Q_a_p1::T = 60e3
     Q_a_p2::T = 139e3

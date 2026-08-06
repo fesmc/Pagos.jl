@@ -3,8 +3,8 @@ Shared setup for the [Antarctic momentum-balance comparisons](@id ais_momentum):
 loading, grid/topography/mask construction, and the common [`run_solve`](@ref) helper. Each
 comparison script `include`s this file first, then runs its own solves.
 
-None of the comparisons is a validated simulation — see `ais-pt.jl`'s own framing, which
-still applies: this is a code-state check on real geometry, not a benchmark paper.
+None of the comparisons is a validated simulation: this is a code-state check on real
+geometry, not a benchmark paper.
 
 `load2d`/`load3d` read one variable, drop the trailing size-1 `time` dimension, and cast
 directly to `T` in a single pass — no Float64 intermediate that then gets thrown away.
@@ -17,7 +17,7 @@ using Pagos, NCDatasets, CairoMakie, Statistics, Printf
 `resolution_km` picks which Yelmo restart to load — `8` or `16`, matching the two restarts
 that actually exist on disk (`ice-data-pagos/yelmo_restart_ais_{8,16}km.nc`). A script that
 wants a specific resolution sets it before `include`ing this file; scripts that don't care
-get the `8` km default below, unchanged from before this switch existed.
+get the `8` km default below.
 =#
 resolution_km = @isdefined(resolution_km) ? resolution_km : 8
 restart_file = if resolution_km == 8
@@ -95,8 +95,7 @@ n_detached = count(asarray(topo.mask.is_ice) .& .!asarray(topo.mask.is_momentum_
 
 No conversion needed. Pagos computes in `(m, yr, Pa)` — see [`Constants`](@ref) — and
 Yelmo's restart fields are already `Pa yr` / `Pa yr m⁻¹`, so viscosity, friction and
-velocity all line up as read. This block used to multiply through by `seconds_per_year`
-to reach an SI-internal convention that no longer exists.
+velocity all line up as read.
 =#
 
 visc_off_ice   = maximum(visc_bar)
@@ -117,8 +116,7 @@ and a few scalars survive.
 `MomentumBalance3D` (Blatter-Pattyn) iterates the full column `velocity.x`/`y`, not
 `velocity.depthaverage_x`/`y` — depth-averaging it down to the same `(nx, ny)` speed field
 the SSA/DIVA runs produce is a diagnostic reduction the solve itself has no reason to do, so
-it lives here rather than in the library (`roadmaps/blatter-pattyn.md`, §1.3: `nothing on
-the BP path reads `depthaverage_x`/`y``). Weighted by the sigma-axis layer thickness `Δζ_k`
+it lives here rather than in the library. Weighted by the sigma-axis layer thickness `Δζ_k`
 — the same weights `depthaverage!` uses for `µ̄` — read at a single representative column
 since `CorrectedVerticalLayering`'s `ζ` layout does not depend on `(i, j)`.
 =#

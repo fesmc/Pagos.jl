@@ -29,8 +29,8 @@ A struct that computes the overburden pressure as effective pressure via [`effec
  - `ρ::T`: ice density (``\\mathrm{kg \\, m^{-3}}``).
 """
 @kwdef struct OverburdenEffectivePressure{T} <: AbstractEffectivePressure
-    ρ::T = 918.0      # ice density
-    g::T = 9.81       # gravitational acceleration
+    ρ::T = 918.0
+    g::T = 9.81
 end
 
 """
@@ -59,11 +59,11 @@ A struct that computes the till pressure via [`effective_pressure`](@ref), follo
  - `Cc::T=0.12`: till compressibility.
 """
 @kwdef struct TillEffectivePressure{T} <: AbstractEffectivePressure
-    H_w_max::T = 2.0        # saturation water thickness
-    N0::T = 1e3             # reference effective pressure
-    delta::T = 0.04         # fraction of overburden pressure for saturated till
-    e0::T = 0.69            # reference void ratio at N0
-    Cc::T = 0.12            # till compressibility
+    H_w_max::T = 2.0
+    N0::T = 1e3
+    delta::T = 0.04
+    e0::T = 0.69
+    Cc::T = 0.12
     overburden::OverburdenEffectivePressure{T} = OverburdenEffectivePressure{T}()
 end
 

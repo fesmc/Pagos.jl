@@ -11,7 +11,7 @@ An abstract type to multiple dispatch the dynamics solver via [`velocity`](@ref)
 """
 abstract type AbstractMomentumSolver end
 
-# TODO
+# @dev TODO: not yet implemented.
 """
 $(TYPEDSIGNATURES)
 
@@ -20,7 +20,7 @@ Solve the ice dynamics via energy minimization.
 struct OptimMomentumSolver <: AbstractMomentumSolver
 end
 
-# TODO
+# @dev TODO: not yet implemented.
 """
 $(TYPEDSIGNATURES)
 
@@ -29,15 +29,16 @@ Solve the ice dynamics via an iterative linear solver (e.g., CG, GMRES).
 struct IterativeMomentumSolver <: AbstractMomentumSolver
 end
 
+# @dev TODO: not yet implemented.
 """
 $(TYPEDSIGNATURES)
 
-TODO: Solve the ice dynamics via wavelet methods.
+Solve the ice dynamics via wavelet methods.
 """
 struct WaveletMomentumSolver <: AbstractMomentumSolver
 end
 
-# TODO
+# @dev TODO: not yet implemented.
 """
 $(TYPEDSIGNATURES)
 
@@ -46,7 +47,7 @@ Solve the ice dynamics via convolutional neural network (IGM style).
 struct ConvolutionalMomentumSolver <: AbstractMomentumSolver
 end
 
-# TODO
+# @dev TODO: not yet implemented.
 """
 $(TYPEDSIGNATURES)
 
@@ -824,9 +825,10 @@ Build a [`PseudoTransientSolver`](@ref) for [`pseudo_transient!`](@ref). All wor
 are Chmy `Field`s at `acx`/`acy` on `grid.grid2d`, matching the velocity components they
 mirror (`mech.velocity.x`/`y`).
 
-Requires a depth-averaged grid (`grid.grid2d === grid.grid`, i.e. `nz == 1`), checked at
-construction rather than left to fail at first solve: DIVA's vertical-shear integral is
-Phase 3 future work (`roadmaps/chmy.md`).
+No `nz == 1` requirement here: every work array is built on `grid.grid2d`, and the unknown
+the solver iterates (`velocity.depthaverage_x`/`y`) is depth-integrated for SSA and DIVA
+alike. Whether a given momentum balance tolerates the grid is [`_check_momentum_grid`](@ref)'s
+job, at the `pseudo_transient!` call that knows which balance it is.
 """
 function PseudoTransientSolver(grid::StaggeredGrid;
     abstol = 1e-8,
@@ -845,10 +847,6 @@ function PseudoTransientSolver(grid::StaggeredGrid;
 )
     _check_tuning(tuning, pseudo_timestep)
     _check_vertical_treatment(vertical_treatment)
-    # No `nz == 1` requirement: every work array below is built on `grid.grid2d`, and the
-    # unknown the solver iterates (`velocity.depthaverage_x`/`y`) is depth-integrated for
-    # SSA and DIVA alike. Whether a given momentum balance tolerates the grid is checked by
-    # `_check_momentum_grid` at the `pseudo_transient!` call that knows which balance it is.
     (; arch) = grid
     g = grid.grid2d
     T = eltype(g)
@@ -909,10 +907,14 @@ function PseudoTransientSolver(grid::StaggeredGrid, momentum::MomentumBalance3D;
     )
 end
 
-# `ImplicitVertical` carries its own scratch, so it is the one strategy that can be built
-# against a *different* grid than the solver it is handed to — which would not error, it
-# would silently write the Thomas coefficients into the wrong shape. Checked here, where both
-# are in hand, rather than left to a bounds error deep inside a kernel.
+"""
+$(TYPEDSIGNATURES)
+
+Reject an [`ImplicitVertical`](@ref) built against a *different* grid than the solver it is
+handed to — which would not error on its own, it would silently write the Thomas
+coefficients into the wrong shape. Checked here, where both are in hand, rather than left
+to a bounds error deep inside a kernel.
+"""
 _check_vertical_scratch(::ExplicitVertical, acx, acy) = nothing
 
 function _check_vertical_scratch(vt::ImplicitVertical, acx, acy)
@@ -966,14 +968,10 @@ end
 # Dispatch functions
 ###############################################################
 
-# Functions to calculate velocity
+# @dev TODO: not yet implemented.
 function calc_F_integral(visc_eff, H_ice, f_ice, zeta_aa, n)
-    # TODO: not yet implemented.
     error("calc_F_integral is not yet implemented")
 end
-
-# function velocity( solver::LinearSolver, dynamics::DIVA)
-# end
 
 function vertically_integrated_viscosity!(N, H, μ)
     N .= H .* μ
@@ -1046,18 +1044,15 @@ function LinearMomentumSolver2D(grid::RegularGrid, dynamics::DYN, backend = CPU(
     A_cpu    = sparse(Ai_cpu, Aj_cpu, ones(T, n_sprs), n_u, n_u)
     perm_cpu = coo_to_nzval_idx(Ai_cpu, Aj_cpu, A_cpu)
 
-    # Allocate live arrays on the target backend.
-    # For GPU (e.g. CUDABackend()), KernelAbstractions.zeros returns CuVector and
-    # the sparse matrix should be adapted via CUDA.CUSPARSE.CuSparseMatrixCSC(A_cpu).
+    # Allocate live arrays on the target backend (H→D transfer on GPU, no-op copy on CPU).
     u    = KernelAbstractions.zeros(backend, T,   n_u)
     u0   = KernelAbstractions.zeros(backend, T,   n_u)
     b    = KernelAbstractions.zeros(backend, T,   n_u)
     perm = KernelAbstractions.zeros(backend, Int, n_sprs)
-    perm .= perm_cpu   # works for both CPU (no-op copy) and GPU (H→D transfer)
+    perm .= perm_cpu
 
-    # A stays as SparseMatrixCSC for the CPU default; for GPU, adapt before passing
-    # to the inner constructor, e.g.:
-    #   A = CUDA.CUSPARSE.CuSparseMatrixCSC(A_cpu)
+    # `A_cpu` stays a `SparseMatrixCSC` for the CPU default; for GPU, adapt it before
+    # passing to the inner constructor, e.g. `CUDA.CUSPARSE.CuSparseMatrixCSC(A_cpu)`.
     return LinearMomentumSolver2D(dynamics, nx, ny, dxdx_, dydy_, dxdy_, u, u0, b, A_cpu, perm, i_idx, j_idx, Ref{Any}(nothing))
 end
 

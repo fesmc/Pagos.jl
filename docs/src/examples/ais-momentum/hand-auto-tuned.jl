@@ -2,12 +2,10 @@
 
 # DIVA: `FixedTuning()` defaults vs. `AutotunedDynamicRelaxation()`
 
-The DIVA counterpart of `roadmaps/PT-autotune.md` Phase 2's headline SSA result (6.3× on
-this exact geometry, `gamma = 0.2` found by a hand scan there). No DIVA hand-tuned value
-exists anywhere to reuse, and a genuine hand scan means several full solves before the
-comparison even starts (per the earlier discussion) — so this compares the **untuned
-library default** `FixedTuning()` (`theta_v = 0.6, gamma = 1`) against the autotuner,
-rather than simulating a hand search.
+Compares the untuned library default `FixedTuning()` (`theta_v = 0.6, gamma = 1`) against
+the autotuner. No DIVA hand-tuned value exists to reuse, and a genuine hand scan would need
+several full solves before the comparison even starts, so this measures the autotuner
+against the out-of-the-box default rather than simulating a hand search.
 =#
 include(joinpath(@__DIR__, "helpers.jl"))
 

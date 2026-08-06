@@ -19,8 +19,8 @@ struct FullGroundingZoneMelt{T} <: AbstractGroundingZoneMelt end
 # following Juarez-Martinez
 struct LinearTidePartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt end
 
-# TODO: following own implementation
+# @dev TODO: following own implementation
 struct NonlinearTidePartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt end
 
-# TODO: try to include topography, hydrology, bed nature, porosity and velocity + something else?
+# @dev TODO: try to include topography, hydrology, bed nature, porosity and velocity + something else?
 struct MultilinearTidePartialGroundingZoneMelt{T} <: AbstractGroundingZoneMelt end

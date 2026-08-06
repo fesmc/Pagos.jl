@@ -4,25 +4,16 @@ struct OutputWriter
     restart::Any     # for restart output (jld2)
 end
 
-"""
-I would like to define a list of variables that are only computed when writing out the netcdf file. They should not be stored in memory, but computed on-the-fly. In terms of API, this should look like this:
-
-netcdf = NetCDFOutputWriter(
-    "output.nc",
-    save = [
-        :thickness,
-        :velocity,
-        :driving_stress,
-        :mass_fluxes,
-    ],
-    diagnose = [
-        :driving_stress,
-        :mass_fluxes,
-    ],
-)
-
-`save` provides the list of variables that are written to the netcdf file, while `diagnose` provides the list of variables that are computed on-the-fly when writing out the netcdf file. 
-
-I wonder whether we could collapse both very easily into a single list of variables, and then have a flag in our internal dictionary that indicates how the variable is computed (on-the-fly or stored in memory).
-"""
+# @dev TODO: design a lazy output path — variables computed on-the-fly at netcdf write
+# time rather than stored in memory. Sketch:
+#
+#   netcdf = NetCDFOutputWriter(
+#       "output.nc",
+#       save = [:thickness, :velocity, :driving_stress, :mass_fluxes],
+#       diagnose = [:driving_stress, :mass_fluxes],
+#   )
+#
+# `save` lists variables written to the netcdf file; `diagnose` lists ones computed
+# on-the-fly at write time. Consider collapsing both into one list with a per-variable
+# flag for how it's computed, instead of two separate lists.
 abstract type AbstractOutput end

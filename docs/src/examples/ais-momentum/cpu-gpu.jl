@@ -2,43 +2,29 @@
 
 # DIVA: CPU vs. GPU
 
-GPU-backed [`Chmy.Field`](@ref)s cannot be filled the way [`run_solve`](@ref) fills CPU
-ones: `fill_from_grid!`/`fill_from_grid3d!` write one element at a time
-(`f[i, j, k] = ...`), and CUDA.jl deliberately disallows scalar indexing on a `CuArray` — it
-is almost always a performance bug, and would be one here too (each write becomes its own
-kernel launch/sync). The fix is not to avoid it element-by-element; it is to never do it on
-the GPU side at all: build the whole [`MechanicState`](@ref) on the CPU exactly as
-[`run_solve`](@ref) already does, then move it to the GPU **in one bulk operation** —
-`Adapt.adapt(CuArray, mech)`. `Field` carries its own `Adapt` rule for exactly this
-(`test/api/state.jl`'s own `adapt` testset: *"a state of Fields stays adaptable — this is
-what a GPU launch relies on"*), so the whole struct, every field, at its correct
-location/shape, moves in one call — not a loop of per-field copies, and definitely not a
-loop of per-element ones.
+GPU-backed [`Chmy.Field`](@ref)s can't be filled element-by-element the way
+[`run_solve`](@ref) fills CPU ones (`fill_from_grid!`/`fill_from_grid3d!`): CUDA.jl
+disallows scalar indexing on a `CuArray`, since each write would become its own kernel
+launch. Instead the whole [`MechanicState`](@ref) is built on the CPU as usual, then moved
+to the GPU in one bulk `Adapt.adapt(CuArray, mech)` call — `Field` carries its own `Adapt`
+rule for this, so the whole struct moves at once rather than field-by-field or
+element-by-element.
 
-The mask needs the same treatment before it can be rebuilt: [`IceMask`](@ref) wraps a
-`Field` reference, not a copy, so it has to be reconstructed from the *adapted* topography's
-mask field, not adapted itself.
+[`IceMask`](@ref) wraps a `Field` reference rather than a copy, so it must be reconstructed
+from the *adapted* topography's mask field rather than adapted itself.
 
-A **discarded warm-up solve** runs first and is excluded from the timed comparison:
-GPU kernels compile on first use (`GPUCompiler`), and that compilation is a one-time cost of
-plausibly comparable size to the ~20 s solves being measured — timing it in would answer "how
-long until this GPU is warm", not "how fast does it run once warm", which is the actually
-interesting number here. `f32-f64.jl`'s Float64-vs-Float32 timing does **not** get this
-treatment (that confound is flagged instead of fixed) because CPU JIT compilation is a much
-smaller fraction of a ~20 s CPU solve than GPU kernel compilation is of a GPU one.
+A discarded warm-up solve runs first and is excluded from the timed comparison: GPU kernels
+compile on first use (`GPUCompiler`), and that one-time cost is comparable in size to the
+~20 s solves being measured. (`f32-f64.jl`'s Float64-vs-Float32 timing does not get this
+treatment — that confound is flagged instead of fixed — because CPU JIT is a much smaller
+fraction of a CPU solve's wall-clock.)
 
-The warm-up runs **in place on the same `mech_gpu`**, not on a second throwaway state: an
-8 GB card holds one adapted `MechanicState` (~3.3 GB) plus its solver comfortably, but not
-two at once — a first version of this section built a separate `mech_warmup`, and
-`mech_warmup = nothing; GC.gc(); CUDA.reclaim()` afterwards did *not* actually return its
-~3.3 GB to the pool before the real solve tried to allocate its own copy (confirmed via
-`CUDA.pool_status()` printed at each step — the pool usage after the "freed" warm-up state
-was indistinguishable from before), so the two states' peak overlap alone exceeded 7.6 GB and
-the real solve's `PseudoTransientSolver` construction failed with an out-of-memory error.
-Compiled kernels are specialized on argument *type*, not identity, so warming up on `mech_gpu`
-itself and resetting its velocity to zero before the timed solve gets the same benefit without
-ever holding two full states at once — and sidesteps the GC-timing question entirely rather
-than trying to force it.
+The warm-up runs **in place on `mech_gpu`** rather than on a second throwaway state: an 8 GB
+card holds one adapted `MechanicState` (~3.3 GB) comfortably but not two at once, and
+`GC.gc(); CUDA.reclaim()` on a discarded GPU state does not reliably return its memory to the
+pool before a second allocation. Kernels are specialized on argument *type*, not identity, so
+warming up on `mech_gpu` itself and resetting its velocity to zero before the timed solve
+gets the same benefit without ever holding two full states at once.
 =#
 resolution_km = 8
 include(joinpath(@__DIR__, "helpers.jl"))
@@ -84,10 +70,9 @@ if CUDA.functional()
     GC.gc()
     CUDA.reclaim()
 
-    # Warm-up: a cheap, throwaway solve (loose `abstol`, `maxiter` capped low) whose only
-    # purpose is to force every kernel this solve path touches through GPUCompiler once, off
-    # the clock — run in place on `mech_gpu` itself (see the note above), then the velocity
-    # it leaves behind is reset to zero before the real, timed solve reuses the same state.
+    # Warm-up: cheap throwaway solve (loose abstol, low maxiter) to force kernel compilation
+    # off the clock — runs in place on mech_gpu (see note above); velocity resets to zero
+    # before the real, timed solve reuses the same state.
     solve_on!(mech_gpu, grid_gpu, rt_gpu, mask_gpu; SOLVER_KWARGS..., maxiter = 5, abstol = 0.0)
     setdata!(mech_gpu.velocity.depthaverage_x, 0.0)
     setdata!(mech_gpu.velocity.depthaverage_y, 0.0)

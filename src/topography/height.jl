@@ -1,12 +1,12 @@
 """
 $(TYPEDSIGNATURES)
 
-Compute the effective ice thickness ``H_\mathrm{eff}``:
+Compute the effective ice thickness ``H_\\mathrm{eff}``:
 
 ```math
-\begin{aligned}
-H_\mathrm{eff} = \begin{cases}\dfrac{H_\mathrm{ice}}{f_\mathrm{ice}} & \text{for } f_\mathrm{ice} > 0 \\ 0 & \text{for } f_\mathrm{ice} = 0 \end{cases}
-\end{aligned}
+\\begin{aligned}
+H_\\mathrm{eff} = \\begin{cases}\\dfrac{H_\\mathrm{ice}}{f_\\mathrm{ice}} & \\text{for } f_\\mathrm{ice} > 0 \\\\ 0 & \\text{for } f_\\mathrm{ice} = 0 \\end{cases}
+\\end{aligned}
 ```
 """
 function H_ice_effective(H_ice, f_ice)
@@ -19,13 +19,14 @@ function H_ice_effective(H_ice, f_ice)
 end
 
 """
-($(TYPEDSIGNATURES)
+$(TYPEDSIGNATURES)
+
 Compute the height of the ice above floatation:
 
 ```math
-\begin{aligned}
-H_\mathrm{grnd} = \max\left(H_\mathrm{ice} - \dfrac{\rho_\mathrm{seawater}}{\rho_\mathrm{ice}} \\max(z_\mathrm{sl} - z_\mathrm{bed}, 0), 0\right)
-\end{aligned}
+\\begin{aligned}
+H_\\mathrm{grnd} = \\max\\left(H_\\mathrm{ice} - \\dfrac{\\rho_\\mathrm{seawater}}{\\rho_\\mathrm{ice}} \\max(z_\\mathrm{sl} - z_\\mathrm{bed}, 0), 0\\right)
+\\end{aligned}
 ```
 """
 function height_above_floatation(H, ρ_ice, ρ_seawater, z_sl, z_bed)

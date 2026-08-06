@@ -36,15 +36,15 @@ T' = T + \\beta \\, p
 \\end{align}
 ```
 
-For pure ice, the Clausius-Clapeyron constant yields ``\\beta = 7.42 \\times 10^{-8} \\, \\mathrm{K}\\,\\mathrm{Pa}^{-1}``, but under realistic conditions, the value for air-saturated ice is closer to ``\\beta = 9.8 \\times 10^{-8} \\, \\mathrm{K}\\,\\mathrm{Pa}^{-1}`` ([greve_dynamics_2009](@citet), p. 53-54). Therefore, we use the latter as default value.
+For pure ice, the Clausius-Clapeyron constant yields ``\\beta = 7.42 \\times 10^{-8} \\, \\mathrm{K}\\,\\mathrm{Pa}^{-1}``, but under realistic conditions, the value for air-saturated ice is closer to ``\\beta = 9.8 \\times 10^{-8} \\, \\mathrm{K}\\,\\mathrm{Pa}^{-1}`` ([greve_dynamics_2009](@citet), p. 53-54, following Hooke 2005). Therefore, we use the latter as default value.
 
 # Fields
  - `T_0::T=273.15`: melting point at standard pressure (``\\mathrm{K}``).
  - `β::T=9.8e-8`: Clausius-Clapeyron constant (``\\mathrm{K}\\,\\mathrm{Pa}^{-1}``).
 """
 @kwdef struct LinearPressureMeltingPoint{T} <: AbstractPressureMeltingPoint
-    T_0::T = 273.15     # K, melting point at standard pressure
-    β::T = 9.8e-8       # K Pa^-1, Greve and Blatter (2009), p. 54, (Hooke 2005)
+    T_0::T = 273.15
+    β::T = 9.8e-8
 end
 
 """
@@ -67,9 +67,9 @@ where ``S`` is salinity (psu), ``p`` is pressure (Pa), and the default coefficie
  - `λ₃::T=-7.53e-8`: pressure coefficient (``\\mathrm{K}\\,\\mathrm{Pa}^{-1}``).
 """
 @kwdef struct LinearSalinityPressureMeltingPoint{T} <: AbstractPressureMeltingPoint
-    λ₁::T = -0.0573     # K psu⁻¹, salinity coefficient (ISOMIP+)
-    λ₂::T = 0.0832      # K, constant offset (Holland & Jenkins 1999)
-    λ₃::T = -7.53e-8    # K Pa⁻¹, pressure coefficient (ISOMIP+)
+    λ₁::T = -0.0573
+    λ₂::T = 0.0832
+    λ₃::T = -7.53e-8
 end
 
 """
@@ -163,24 +163,3 @@ function thermal_forcing!(
     pointwise!(thermal_forcing, ΔT, (T, p, S), (law,))
     return nothing
 end
-
-# function update_relative_temperature!(
-#     T_rel_ice::Array{T, 3},
-#     T_ice::Array{T, 3},
-#     z::Vector{T},
-#     H::Matrix{T},
-#     pressure_melting_point::LinearPressureMeltingPoint{T},
-#     c::PhysicalConstants{T},
-#     idx::Matrix{CartesianIndex{2}},
-# ) where {T<:AbstractFloat}
-
-#     β = pressure_melting_point.β
-#     (; ρ_ice, g) = c
-#     for i in idx
-#         for l in axes(T_rel_ice, 3)
-#             T_rel_ice[i, l] = T_ice[i, l] + β * pressure_column(ρ_ice, g, z[l] * H[i, l])
-#         end
-#     end
-
-#     return nothing
-# end

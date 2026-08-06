@@ -54,11 +54,9 @@ function RungeKutta4(x::AbstractArray; dt)
 end
 
 # Adaptive methods ----------------------------------------------------------
-#= NOTE: these are `mutable struct` so the error controller can write the next
-# step size back into `dt` between calls. The scalar fields are isbits, so this
-# costs nothing in type stability. The embedded error norm is computed by a fused
-# reduction (see `_embedded_rms`), so no error-scratch buffer is stored.
-=#
+# NOTE: these are `mutable struct` so the error controller can write the next step
+# size back into `dt` between calls; the scalar fields stay isbits, so this costs
+# nothing in type stability.
 
 """
 $(TYPEDSIGNATURES)
@@ -99,10 +97,9 @@ end
 $(TYPEDSIGNATURES)
 
 Tsitouras 5(4) embedded pair. Fifth order with a fourth-order error estimate.
-Tsit5 is a **7-stage** FSAL method, so it needs seven stage buffers `k1..k7`
-(your sketch had six); `du` is the candidate-state scratch. The weighted error norm
-is reduced in a single fused pass (see [`_embedded_rms`](@ref)), so no error-scratch
-buffer is needed.
+Tsit5 is a **7-stage** FSAL method, so it needs seven stage buffers `k1..k7`;
+`du` is the candidate-state scratch. The weighted error norm is reduced in a single
+fused pass (see [`_embedded_rms`](@ref)), so no error-scratch buffer is needed.
 """
 mutable struct Tsitouras54{T, M} <: AbstractIntegrationMethod
     dt::T
@@ -271,10 +268,10 @@ duration of `Δt_sync`, consistent with the operator-splitting coupling in
 Returns `nothing`; `integ.x` (and, for adaptive methods, `integ.method.dt`) are
 mutated.
 """
-# TODO: the macro-step assumes the RHS is autonomous over [0, Δt_sync] (BCs frozen).
+# @dev TODO: the macro-step assumes the RHS is autonomous over [0, Δt_sync] (BCs frozen).
 #       If a component ever needs absolute time, thread a `t0` argument through here
 #       and into the stage-time arguments of each `substep!`.
-# TODO: optionally drive the step size from a CFL/stability limit (or
+# @dev TODO: optionally drive the step size from a CFL/stability limit (or
 #       min(error-based, CFL-based)) rather than the embedded error estimate alone —
 #       for ice the stability constraint usually binds before accuracy.
 # NOTE: FSAL is intentionally not exploited (the state/params are mutated between
@@ -318,7 +315,7 @@ end
 
 # Adaptive sub-steps --------------------------------------------------------
 #
-# TODO (applies to both BogackiShampine32 and Tsitouras54 substeps below):
+# @dev TODO (applies to both BogackiShampine32 and Tsitouras54 substeps below):
 #  - Final-substep dt leak: when the last substep is clamped to land exactly on
 #    `t_end`, that smaller `h` is written back into `m.dt` and carries into the next
 #    macro-step's first step. Benign (self-corrects in a step or two) but could be
@@ -460,14 +457,14 @@ end
 @inline _rkl2_b(j, ::Type{T}) where {T} =
     j ≥ 2 ? (T(j)^2 + T(j) - 2) / (2 * T(j) * (T(j) + 1)) : T(1//3)
 
-# TODO: clustered spectra (e.g. a real diffusion operator, whose top eigenvalues differ
+# @dev TODO: clustered spectra (e.g. a real diffusion operator, whose top eigenvalues differ
 #       by <1%) converge slowly here, so the *cold-start* estimate can under-resolve —
 #       and underestimating ρ is the unsafe direction for stability. Mitigations to add:
 #        - prefer an analytic bound when the operator provides one (e.g. SIA diffusion:
 #          ρ ≈ 2D(1/Δx² + 1/Δy²)); fall back to this power method only otherwise;
 #        - raise `maxiter` / tighten the stopping tolerance for the first (cold) call;
 #        - inflate `safety` for cold starts.
-# TODO: complex-dominated spectra (strong advection) violate RKL2's real-axis stability
+# @dev TODO: complex-dominated spectra (strong advection) violate RKL2's real-axis stability
 #       assumption; the magnitude returned here is then not a sufficient stability bound.
 #       Use an SSP/IMEX integrator for advection-dominated components instead.
 """
@@ -521,14 +518,14 @@ function substep!(f::F, x, p, m::RKL2, t, t_end) where {F}
     # Y_0 and F_0 = M(Y_0)
     copyto!(m.y0, x)
     f(m.f0, m.y0, p, t)
-    # TODO: re-estimating ρ every superstep costs (a few) extra f-evals; for cheap
+    # @dev TODO: re-estimating ρ every superstep costs (a few) extra f-evals; for cheap
     #       warm-started estimates that's fine, but consider re-estimating only every
     #       N supersteps (ρ varies slowly) and reusing m.spectral_radius in between.
     m.auto && estimate_spectral_radius!(f, p, t, m) # refresh ρ from the current state
 
     # Stage count for stability: h ≤ Δt_expl·(s²+s−2)/4 with Δt_expl = 2/ρ.
     # Invert for the smallest integer s (≥ 2).
-    # TODO: `s` is uncapped — for extreme stiffness (h·ρ ≫ 1) it grows like √(hρ) and can
+    # @dev TODO: `s` is uncapped — for extreme stiffness (h·ρ ≫ 1) it grows like √(hρ) and can
     #       become very large. Cap `s` at some s_max and take multiple supersteps instead.
     ρ = m.spectral_radius
     r = ρ > 0 ? h * ρ / 2 : zero(T)                 # = h / Δt_expl
@@ -567,7 +564,7 @@ bound for steps up to `C · dt_fe`. `C = 1` for [`SSPRK33`](@ref), `C = 2` for [
 ssp_coefficient(::SSPRK33{T}) where {T} = one(T)
 ssp_coefficient(::SSPRK43{T}) where {T} = T(2)
 
-# TODO: SSPRK43 admits an embedded 2nd-order companion for error-based adaptivity; could
+# @dev TODO: SSPRK43 admits an embedded 2nd-order companion for error-based adaptivity; could
 #       add it (mirroring the BS32/Tsit5 controller) if accuracy control is ever wanted
 #       on top of the CFL/SSP step limit.
 

@@ -68,12 +68,10 @@ function strainrate_effective!(strainrate, velocity, momentum::SSAMomentumBalanc
     )
 end
 
-# Deliberately *not* [`MomentumBalance2D`](@ref)/[`MomentumBalance3D`](@ref): this union
-# cuts across both. The criterion here is "does ε̇_e include the vertical-shear terms
-# ¼(u_z² + v_z²)", which DIVA (a 2D-unknown balance, Robinson et al. 2022 Eq. 13) and
-# Blatter-Pattyn (a 3D-unknown one) share while SSA does not. Spelling it out keeps that
-# distinct grouping visible rather than hiding it behind a name that would suggest
-# dimensionality.
+# Deliberately a custom union, not [`MomentumBalance2D`](@ref)/[`MomentumBalance3D`](@ref):
+# groups by whether ε̇_e includes the vertical-shear terms ¼(u_z² + v_z²) (DIVA and BP share
+# this, Robinson et al. 2022 Eq. 13) rather than by unknown dimensionality (SSA doesn't,
+# despite being in the same 2D group as DIVA).
 function strainrate_effective!(strainrate, velocity, momentum::MB, I) where MB<:Union{DIVAMomentumBalance, BlatterPattynMomentumBalance}
     strainrate.effective[I] = sqrt(
         velocity.x_dx[I]^2 + velocity.y_dy[I]^2 +
@@ -107,13 +105,10 @@ end
 
 # Default (plane / depth-integrated): ε̇_zz reconstructed from incompressibility.
 #
-# `I` is annotated `::Integer` (it is the flat `@index(Global, Linear)` of the kernel above,
-# so this is behaviour-neutral) purely to keep this 4-argument per-element method from being
-# ambiguous with the 4-argument staggered `raw_strainrate!(sr, vel, momentum, rt::Runtime)`
-# further down. Left untyped, `(Any, Any, MomentumBalance3D, Any)` and
-# `(StrainRateState, VelocityState, AbstractMomentumBalance, Runtime)` match the same call
-# with neither more specific, and `Runtime` has an empty type intersection with `Integer`,
-# so annotating removes the ambiguity without narrowing anything real.
+# `I::Integer` (the flat `@index(Global, Linear)` from the kernel above) is needed only to
+# disambiguate this 4-argument per-element method from the 4-argument staggered
+# `raw_strainrate!(sr, vel, momentum, rt::Runtime)` further down — left untyped, the two
+# would match the same call with neither more specific.
 function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance, I::Integer)
     dxx = velocity.x_dx[I]
     dyy = velocity.y_dy[I]
@@ -175,43 +170,33 @@ end
 # Chmy-native, C-grid staggered velocity gradients and strain rates
 ###############################################################
 #
-# This is where the C-grid layout is supposed to pay for itself, and the check that it
-# does is that **no interpolation appears anywhere in the tensor**. Assigning `u` to `acx`,
-# `v` to `acy` and `w` to `aa`/z-`Vertex` fixes every gradient by operator algebra:
+# The point of the C-grid layout: assigning `u` to `acx`, `v` to `acy` and `w` to
+# `aa`/z-`Vertex` fixes every gradient's node by operator algebra, so **no interpolation
+# appears anywhere in the tensor**:
 #
 #   ∂u/∂x : acx    → aa       ∂v/∂x : acy    → ab       ∂w/∂x : aa_ac → acx_ac
 #   ∂u/∂y : acx    → ab       ∂v/∂y : acy    → aa       ∂w/∂y : aa_ac → acy_ac
 #   ∂u/∂z : acx    → acx_ac   ∂v/∂z : acy    → acy_ac   ∂w/∂z : aa_ac → aa
 #
-# so each strain-rate component is a sum of terms that already live on the *same* node:
-# ε̇_xx = ∂u/∂x at `aa`; ε̇_xy = (∂u/∂y + ∂v/∂x)/2 with both at `ab`; ε̇_xz =
-# (∂u/∂z + ∂w/∂x)/2 with both at `acx_ac`. Nothing is staggered mid-formula. The
-# interpolations that remain are exactly the two places where physics genuinely mixes node
-# classes: the viscosity, which lives at `aa` but has to scale off-diagonal strain rates
-# elsewhere, and the second invariants, which are cell-centred quantities built from
-# off-diagonal components that are not.
+# Each strain-rate component is then a sum of terms already on the *same* node (e.g.
+# ε̇_xy = (∂u/∂y + ∂v/∂x)/2, both at `ab`). The interpolations that remain are exactly where
+# physics genuinely mixes node classes: viscosity (lives at `aa`, scales off-diagonal
+# strain rates elsewhere) and the second invariants (cell-centred, built from off-diagonal
+# components that are not).
 #
-# Two structural differences from the collocated kernels above, both forced:
+# Two things this forces, versus the collocated kernels above:
 #
-#  1. **No shared flat `@index(Global, Linear)`.** The components have four different
-#     shapes on the C-grid (`aa`, `ab`, `acx_ac`, `acy_ac`), so one linear index addresses
-#     a different physical point in each. The kernels below index every field at *its own*
-#     `(i, j, k)`, which is the same physical location precisely because each field's index
-#     space is anchored to its own node class. The `Launcher`'s `size(grid, Center()) .+ 2`
-#     sweep covers every one of those index spaces at once (`aa` needs `1:nx`, `ab` and
-#     `acx_ac` need `1:nx+1`, and the sweep provides `0:nx+1`), so a single fused kernel is
-#     still possible — it is the flat index that has to go, not the fusion.
-#  2. **The invariants need their own launch.** `ε̇_e` at `aa` reads `ε̇_xy` at neighbouring
-#     `ab` nodes, so it cannot be computed in the same pass that writes them — the
-#     neighbour may not exist yet. The collocated version got away with one pass because
-#     every component was at the same point. Hence `raw_strainrate!` then
+#  1. No shared flat `@index(Global, Linear)` — the four node classes (`aa`, `ab`, `acx_ac`,
+#     `acy_ac`) have different shapes, so each kernel indexes every field at its own
+#     `(i, j, k)` instead. Still one fused kernel; only the flat index goes.
+#  2. The invariants need their own launch: `ε̇_e` at `aa` reads `ε̇_xy` at neighbouring `ab`
+#     nodes, which may not be written yet in the same pass. Hence `raw_strainrate!` then
 #     `raw_strainrate_effective!`, in that order.
 
-# Physical vertical derivative on the terrain-following sigma axis: `∂/∂z = (1/H) ∂/∂ζ`,
-# matching the legacy `∂x₃!(du, u, H, transform)` convention (`Δu / (Δζ · H)`). `∂z_σ`
-# supplies `∂/∂ζ` — Chmy's own `∂z` is wrong on a non-uniform axis, see
-# `src/api/sigma_operators.jl`. Unlike the legacy kernel this returns zero rather than
-# `Inf`/`NaN` where there is no ice; an `Inf` here propagates into the whole tensor.
+# Physical vertical derivative on the terrain-following sigma axis: `∂/∂z = (1/H) ∂/∂ζ`.
+# `∂z_σ` supplies `∂/∂ζ` — Chmy's own `∂z` is wrong on a non-uniform axis, see
+# `src/api/sigma_operators.jl`. Returns zero rather than `Inf`/`NaN` where there is no ice,
+# since an `Inf` here would propagate into the whole tensor.
 @inline _dz_over_H(dζ, H) = H > zero(H) ? dζ / H : zero(dζ)
 
 @kernel inbounds = true function _velocity_gradients!(velocity, H, mask, grid, grid2d, O)
@@ -221,8 +206,8 @@ end
     u, v, w = velocity.x, velocity.y, velocity.z
     Z = zero(eltype(velocity.x_dx))
 
-    # `node_active` consults only the horizontal part of the node class, so the `_AC`
-    # (z-`Vertex`) variants share their activity with `NODE_ACX`/`NODE_ACY`.
+    # `node_active` only consults the horizontal part of the node class, so the `_AC`
+    # (z-`Vertex`) variants share activity with `NODE_ACX`/`NODE_ACY`.
     act_aa  = node_active(mask, NODE_AA, i, j)
     act_ab  = node_active(mask, NODE_AB, i, j)
     act_acx = node_active(mask, NODE_ACX, i, j)
@@ -278,47 +263,36 @@ end
 # Terrain-following (sigma) metric correction on the horizontal gradients
 ###############################################################
 #
-# `roadmaps/blatter-pattyn-equations.md`, item A1. `_velocity_gradients!` above differences
-# at constant ζ; every balance actually wants the derivative at constant *z*. For the
-# terrain-following map `z = b + ζH = s - (1-ζ)H` the two differ by one term,
+# `_velocity_gradients!` above differences at constant ζ; every balance wants the derivative
+# at constant *z*. For the terrain-following map `z = b + ζH = s - (1-ζ)H` the two differ by
+# one term (and the mirror image in y):
 #
 #   ∂f/∂x|_z = ∂f/∂x|_ζ - c_x ∂f/∂z,     c_x ≡ ∂z/∂x|_ζ = ∂s/∂x - (1-ζ) ∂H/∂x
 #
-# and the mirror image in y. `c_x` is the local slope of the ζ-surface the difference was
-# taken along: zero only where the surface *and* the thickness are both flat.
+# `c_x` is the local slope of the ζ-surface the difference was taken along, zero only where
+# the surface and thickness are both flat. Not a small correction on the geometries BP
+# exists for: on ISMIP-HOM B at `L = 10 km`, `∂H/∂x` reaches 0.31, so `c_x ∂u/∂z` exceeds the
+# uncorrected `∂u/∂x|_ζ`. Dropping it is defensible for SSA/DIVA (shallow by construction),
+# not for BP.
 #
-# **This is not a small correction on the geometries BP exists for.** On ISMIP-HOM B at
-# `L = 10 km` the bed amplitude gives `∂H/∂x` up to 0.31, so `c_x ∂u/∂z` exceeds the
-# uncorrected `∂u/∂x|_ζ` it corrects. Dropping it is defensible for SSA/DIVA, which are
-# shallow by construction; it is not defensible for the balance whose whole purpose is steep
-# beds and margins.
+# Cannot be fused into `_velocity_gradients!`: the correction to `∂u/∂x` at `aa` reads
+# `∂u/∂z` at the four surrounding `acx_ac` nodes, which that kernel is still writing in the
+# same sweep. Hence a second pass, same argument as `raw_strainrate_effective!`.
 #
-# Two structural notes.
+# `c_x` is evaluated from `s` and `H` (not a bed field) because those are what
+# `MechanicTopographyState` carries, and `b = s - H` makes the identity exact.
 #
-#  1. **It cannot be fused into `_velocity_gradients!`.** The correction to `∂u/∂x` at `aa`
-#     reads `∂u/∂z` at the four surrounding `acx_ac` nodes, which that kernel is writing in
-#     the same sweep — the neighbour may not exist yet. Same argument as
-#     `raw_strainrate_effective!` needing its own launch, and the same fix: a second pass,
-#     after the first has completed.
-#  2. **`c_x` is evaluated from `s` and `H`, not from a bed field**, because those are the
-#     two the state carries (`MechanicTopographyState`), and `b = s - H` makes the identity
-#     exact rather than approximate. `∂s/∂x` lands at `acx` natively, so the value at `aa` is
-#     the average of the two faces — which is exactly the centred difference
-#     `(s[i+1] - s[i-1])/2Δx`, not an extra approximation.
-#
-# What is corrected here is the *inner* gradient. The **outer** divergence
-# `∂σxx/∂x|_z = ∂x(σxx)|_ζ - c_x ∂σxx/∂z` carries the same term and is **not** corrected yet
-# (`_dotvel_staggered_bp!` still differences at constant ζ). In conservative form the whole
-# membrane+vertical divergence is
+# @dev: only the *inner* gradient is corrected here. The **outer** divergence
+# `∂σxx/∂x|_z = ∂x(σxx)|_ζ - c_x ∂σxx/∂z` carries the same term and is not corrected yet
+# (`_dotvel_staggered_bp!` still differences at constant ζ). Conservative form:
 #
 #   r_x = (1/H)[ ∂(H σxx)/∂x|_ζ + ∂(H σxy)/∂y|_ζ + ∂(σxz - σxx c_x - σxy c_y)/∂ζ ]
 #
-# — i.e. the outer correction folds exactly into the *vertical flux*, which also makes the
-# stress-free surface condition the true `τ·n = 0` rather than its small-slope reduction
-# (equations doc, item A2). That form needs `σxx`/`σxy` at the layer interfaces and a
-# matching Gershgorin row sum, so it is deliberately left for its own change rather than
-# bolted on here: an unbounded new coupling in the operator is exactly what the explicit
-# iteration cannot absorb.
+# — the outer correction folds into the vertical flux, which also makes the stress-free
+# surface condition the true `τ·n = 0` (equations doc, item A2). That form needs `σxx`/`σxy`
+# at the layer interfaces and a matching Gershgorin row sum, so it's left for its own change:
+# an unbounded new coupling in the operator is more than the explicit iteration can absorb
+# right now.
 
 @kernel inbounds = true function _terrain_metric_correction!(velocity, H, s, mask,
                                                               grid, grid2d, O)
@@ -328,26 +302,19 @@ end
     T = eltype(velocity.x_dx)
     w = one(T) - T(zcenter(grid, k))          # (1 - ζ) at the layer midpoint
 
-    ## The four `∂/∂z` averages are written out rather than delegated to `lerp`. `x_dz` and
-    ## `y_dz` are staggered in *two* axes at once relative to their targets (`x_dz` sits at
-    ## `acx_ac`, i.e. Vertex in both `x` and `ζ`), and Chmy's `itp` does not unroll that case
-    ## under `GPUCompiler` — the tuple index inside its `ntuple` stays dynamic, which is an
-    ## `InvalidIRError` on a `CuArray`. Each is the plain 4-point average over the two
-    ## staggered axes, which is exactly what `lerp` computes here; the uniform-slab and
-    ## staggered-gradient tests pin the stencil.
+    ## Written out rather than delegated to `lerp`: `x_dz`/`y_dz` are staggered in *two* axes
+    ## at once relative to their targets, and Chmy's `itp` does not unroll that case under
+    ## `GPUCompiler` (dynamic tuple index inside `ntuple` → `InvalidIRError` on a `CuArray`).
+    ## Plain 4-point average, pinned by the uniform-slab and staggered-gradient tests.
     q4(f, a, b, c, d) = (f[a...] + f[b...] + f[c...] + f[d...]) / 4
 
-    ## This kernel reads one node further out than `velocitygradients!` writes (`i-1`, `j-1`
-    ## at `ab`; `i+1`, `j+1`, `k+1` at `aa`), so on the outermost launched ring it folds in
-    ## entries nothing ever wrote — a deterministic allocation zero, which halves the
-    ## correction there. Measured consequence: contamination stays in the halo (0 of the
-    ## interior cells are affected). **Do not "fix" this by clamping or skipping** — both were
-    ## tried and both are worse, because that ghost ring feeds the interior residual through
-    ## `membranestress!`. Clamping reads back into the written ring imports `NaN` under a mask
-    ## (`_dz_over_H` divides by a degenerate off-ice `H`) and broke the masked
-    ## `ImplicitVertical` fixed-point test; skipping the ring outright broke the uniform-slab
-    ## test. The real fix is a proper halo/BC treatment for the gradient fields
-    ## (`roadmaps/blatter-pattyn-equations.md`, A1 and A6), not a stencil patch here.
+    ## This kernel reads one node further out than `velocitygradients!` writes, so on the
+    ## outermost launched ring it folds in entries nothing ever wrote (a deterministic zero),
+    ## halving the correction there; contamination stays in the halo, not the interior.
+    ## @dev: do not "fix" this by clamping or skipping — both were tried and both are worse
+    ## (clamping imports `NaN` and broke the masked `ImplicitVertical` fixed-point test;
+    ## skipping the ring broke the uniform-slab test). The real fix is a proper halo/BC
+    ## treatment for the gradient fields (`roadmaps/blatter-pattyn-equations.md`, A1 and A6).
 
     if node_active(mask, NODE_AA, i, j)
         ## `∂x` of an `aa` field lands at `acx`; averaging the two faces of the cell is the
@@ -414,21 +381,17 @@ end
 # Not a physical strain-rate regularization (contrast `GlenViscosityContinuation`'s `ε̇0`,
 # which floors a *denominator*): a hard ceiling on the gradients themselves, for real
 # geometry where a masked, ice-free-adjacent column can lose its entire vertical-stiffness
-# contribution to the Gershgorin bound (the strict `node_fully_active` check zeroing `R₋`/
-# `R₊` at every `k` in that column, since activity there doesn't depend on `k` —
-# `roadmaps/blatter-pattyn.md`, Phase 4 "Thin and ice-free columns", found on real 8 km AIS
-# geometry rather than fixed there). The vertical term is normally *dominant* (§2.1), so
-# losing it can leave `Δτ` orders of magnitude too large at exactly that column, and a single
-# explicit step from an otherwise unremarkable driving stress produces an unphysical
-# velocity there — which the *next* iteration reads back as an unphysical gradient, feeding
-# an equally unphysical `σxx`/`σxy`/`σxz` right back into the residual.
+# contribution to the Gershgorin bound (`node_fully_active` zeroes `R₋`/`R₊` at every `k` in
+# that column, found on real 8 km AIS geometry). The vertical term is normally dominant, so
+# losing it can leave `Δτ` orders of magnitude too large there, and a single explicit step
+# produces an unphysical velocity — which the next iteration reads back as an unphysical
+# gradient, feeding an equally unphysical stress right back into the residual.
 #
 # Clamping the gradients breaks that feedback loop at its source, complementing (not
-# replacing) `gershgorin_dt!`'s own `dtau_cap`, which addresses the *first* step's `Δτ`
+# replacing) `gershgorin_dt!`'s own `dtau_cap`, which addresses the first step's `Δτ`
 # directly. Real ice strain rates are `~1e-4`–`~1e-2` /yr even in fast shear margins, so any
-# `cap` worth using is several orders of magnitude below where this could ever bind on a
-# physically sane velocity field; `cap = Inf` (the default everywhere this is threaded
-# through) is a no-op.
+# `cap` worth using sits far below where this could ever bind on a physically sane velocity
+# field; `cap = Inf` (the default everywhere this is threaded through) is a no-op.
 
 @kernel inbounds = true function _clamp_velocity_gradients!(velocity, cap, O)
     I = @index(Global, NTuple)
@@ -459,12 +422,10 @@ function clamp_velocity_gradients!(velocity::VelocityState, cap, rt::Runtime)
     return nothing
 end
 
-# The depth-averaged counterpart of `_velocity_gradients!`, for the four horizontal
-# gradients of `ū`/`v̄` that the SSA/DIVA membrane stress is built from. Same node algebra
-# as the column kernel — `∂x` of an `acx` field lands on `aa`, `∂y` of it on `ab` — but
-# every field involved is depth-integrated, so this runs on `grid2d` and there is no
-# thickness argument: the sigma scaling `∂/∂z = (1/H)∂/∂ζ` that `H` exists for in the
-# column kernel has no counterpart here.
+# The depth-averaged counterpart of `_velocity_gradients!`: same node algebra (`∂x` of an
+# `acx` field lands on `aa`, `∂y` on `ab`), but every field is depth-integrated, so this runs
+# on `grid2d` with no thickness argument — the sigma scaling `H` exists for in the column
+# kernel has no counterpart here.
 @kernel inbounds = true function _depthaverage_velocity_gradients!(velocity, mask, grid, O)
     I = @index(Global, NTuple)
     I = I + O
@@ -514,13 +475,11 @@ end
 # Blatter-Pattyn/Stokes vertical velocity from incompressibility
 ###############################################################
 #
-# `w` is not an unknown of the momentum solve (`roadmaps/blatter-pattyn.md`, Phase 1): BP
-# resolves `u`/`v` only, and `∂w/∂z = -(u_x + v_y)` diagnoses `w` afterward, by integrating
-# up from the bed where `w = 0` (no basal melting/penetration). Per-column, serial in `k` —
-# the same `rt.launch2d` + internal `for k in 1:nz` shape as `_viscosity_integrals!`
-# (`src/mechanics/velocities.jl`), for the same reason: a cumulative sum has no useful
-# parallelism across `k`, and `w`/`x_dx`/`y_dy` are column (3D) fields read/written at their
-# own `k` inside the loop despite the launch itself sweeping only `(i, j)`.
+# `w` is not an unknown of the momentum solve: BP resolves `u`/`v` only, and
+# `∂w/∂z = -(u_x + v_y)` diagnoses `w` afterward by integrating up from the bed where
+# `w = 0` (no basal melting/penetration). Per-column, serial in `k` — same `rt.launch2d` +
+# internal `for k in 1:nz` shape as `_viscosity_integrals!` (`src/mechanics/velocities.jl`),
+# for the same reason: a cumulative sum has no useful parallelism across `k`.
 #
 # Midpoint rule: `Δw_k = -(u_x[k] + v_y[k]) · Δz_k(phys)`, `Δz_k(phys) = Δζ_k · H` — the same
 # sigma-to-physical conversion `_viscosity_integrals!` uses for its own `dz`. Requires
@@ -705,17 +664,13 @@ function raw_strainrate!(mech::MechanicState, momentum::AbstractMomentumBalance,
 end
 
 ###############################################################
-# Chmy-native, C-grid staggered membrane stress (SSA/DIVA `strainrate!`)
+# Chmy-native, C-grid staggered membrane stress (SSA/DIVA)
 ###############################################################
 #
-# This is the piece the strain-rate port above deliberately left out (see its notes in
-# `roadmaps/chmy.md`, Phase 3): despite sharing the name `strainrate!` with the collocated
-# dispatch it extends, the SSA/DIVA branch below is **not** the strain rate. It is the
-# vertically-integrated membrane stress `2ηH·(2ε̇_xx + ε̇_yy)` and friends that the SSA/DIVA
-# momentum balance actually differentiates (see the collocated method's own docstring one
-# screen up). It is written into the same `StrainRateState` fields as the real strain rate
-# purely for parity with the collocated code path — a legacy naming quirk kept, not fixed,
-# by this port.
+# Despite sharing the name `membranestress!` with the collocated dispatch it extends, this
+# is **not** the strain rate: it's the vertically-integrated membrane stress
+# `2ηH·(2ε̇_xx + ε̇_yy)` and friends that the SSA/DIVA momentum balance actually
+# differentiates (see the collocated method's own docstring one screen up).
 #
 # `N_xx`, `N_yy` land at `aa`: both velocity-gradient terms they combine (`x_dx`, `y_dy`)
 # already live there, so no interpolation enters, exactly like `deviatoric_stress!`'s `aa`
@@ -765,14 +720,6 @@ across a viscosity contrast); `H` arithmetically (matching [`drivingstress!`](@r
 
 Depth-integrated throughout, so it runs on `rt.grid2d`.
 
-!!! note "Renamed from `strainrate!`, and moved out of `StrainRateState`"
-    This used to be a `strainrate!` method writing `strainrate.xx`/`xy`/`yy`, which was
-    wrong twice: the quantity is a stress, not a strain rate (the collocated docstring
-    admits as much), and those fields are `AA3`/`AB3` column fields, which only worked
-    while `nz == 1` collapsed them onto the 2D shape this genuinely has. Both are fixed
-    here (`roadmaps/chmy.md`, Phase 3, decision 2); `strainrate.xx`/`xy`/`yy` now mean only
-    the true strain rate.
-
 !!! warning "A zero viscosity gives `NaN`, not zero — same trap as `deviatoric_stress!`"
     `hlerp` averages reciprocals, so an unmasked ice-free corner produces `NaN` in
     `stress.membrane_xy` rather than `0`; pass an [`IceMask`](@ref) once the material state
@@ -808,35 +755,28 @@ membranestress!(mech::MechanicState,
 # Chmy-native, C-grid staggered Blatter-Pattyn membrane stress
 ###############################################################
 #
-# Per unit *volume* rather than per unit area — no `H` anywhere, unlike the SSA/DIVA method
-# above — and with a genuine vertical-shear pair `σxz`/`σyz` the depth-integrated balance has
-# none of (`roadmaps/blatter-pattyn.md`, §1):
+# Per unit *volume*, not per unit area — no `H` anywhere, unlike the SSA/DIVA method above —
+# with a genuine vertical-shear pair `σxz`/`σyz` the depth-integrated balance has none of:
 #
 #   σxx = 2µ(2u_x + v_y)   σxy = µ(u_y + v_x)   σxz = µ u_z
 #
-# and `σyy`/`σyz` the mirror image. Written into `stress.xx`/`xy`/`xz`/`yy`/`yz` directly —
-# unlike SSA/DIVA's `membrane_xx`/`xy`/`yy`, no dedicated field is needed here, because BP's
-# operand is honestly `AA3`/`AB3`/`ACXZ3`-shaped already (no `nz == 1` shape-collapse
-# coincidence to launder, which is what forced SSA/DIVA's quantity out into its own field in
-# the first place). `deviatoric_stress!` writes the *true* pointwise deviatoric stress into
-# the same fields from `strainrate.xx`/`xy`/`xz` (a different combination — 2µε̇xx, not
-# 2µ(2ε̇xx+ε̇yy)); the two are simply never live at once, exactly as this field's role for
-# SSA/DIVA already is one thing during the PT loop (`membrane_xx`) and another once a caller
-# runs `raw_strainrate!` + `deviatoric_stress!` afterward for diagnostics.
+# and `σyy`/`σyz` the mirror image. Written into `stress.xx`/`xy`/`xz`/`yy`/`yz` directly:
+# unlike SSA/DIVA's `membrane_xx`/`xy`/`yy`, no dedicated field is needed since BP's operand
+# is already `AA3`/`AB3`/`ACXZ3`-shaped. `deviatoric_stress!` writes the true pointwise
+# deviatoric stress into the same fields from `strainrate.xx`/`xy`/`xz` (a different
+# combination, 2µε̇xx not 2µ(2ε̇xx+ε̇yy)) — the two are simply never live at once.
 #
-# `σxx`/`σyy` need no interpolation of `µ` (already at `aa`, matching `x_dx`/`y_dy`); `σxy`
-# needs the ordinary one-way `hlerp` onto `ab`, exactly as `_membrane_stress_staggered!`'s
-# does. `σxz`/`σyz` need `µ` **two-way** staggered onto `acx_ac`/`acy_ac` — staggered in both
-# x and z — which is exactly what Chmy's `hlerp` already does with no special-casing: it
-# interpolates every dimension on which `location(µ)` and the target differ, and dimension 3
-# (z) is one of them here (§1.1's "the one genuinely new interpolation").
+# `σxx`/`σyy` need no interpolation of `µ` (already at `aa`); `σxy` needs the ordinary
+# one-way `hlerp` onto `ab`. `σxz`/`σyz` need `µ` staggered in *both* x and z onto
+# `acx_ac`/`acy_ac`, which Chmy's `hlerp` handles with no special-casing — it interpolates
+# every dimension on which `location(µ)` and the target differ.
 #
 # Masking is *not* uniform across the three sites, and the split is load-bearing. `σxy` at
-# `ab` keeps the strict `node_fully_active` rule `_membrane_stress_staggered!` uses: `ab` is a
-# genuine four-cell node, and a corner touching ice-free ground really does transmit no shear
-# in this discretization. `σxz`/`σyz` do not, because `acx_ac`/`acy_ac` resolve to the *same*
-# cell pair the unknown itself does — applying the strict rule there deletes BP's vertical
-# operator along the whole margin ring. `_mu_acxz`/`_mu_acyz` carry that argument in full.
+# `ab` keeps the strict `node_fully_active` rule: `ab` is a genuine four-cell node, and a
+# corner touching ice-free ground really does transmit no shear in this discretization.
+# `σxz`/`σyz` do not, because `acx_ac`/`acy_ac` resolve to the *same* cell pair the unknown
+# itself does — applying the strict rule there would delete BP's vertical operator along the
+# whole margin ring. `_mu_acxz`/`_mu_acyz` carry that argument in full.
 
 @kernel inbounds = true function _membrane_stress_staggered_bp!(sxx, sxy, sxz, syy, syz, μ,
                                                                  vel, mask, grid, O)
@@ -925,18 +865,11 @@ membranestress!(mech::MechanicState,
 #
 # The true (not membrane-stress) second invariant ε̇_e of the *depth-averaged* velocity —
 # Robinson et al. (2022), Eq. 12 — needed by `GlenViscosityContinuation`
-# (`src/mechanics/solvers.jl`, wired in `src/mechanics/pseudotransient.jl`) to derive
-# `viscosity_depthaveraged` from the current velocity iterate.
-#
-# Writes `strainrate.effective_depthaveraged` (`AA2`), *not* `strainrate.effective`
-# (`AA3`). Those are two different quantities, not one at two resolutions: `.effective` is
-# DIVA's Eq. 13, which carries the vertical-shear terms `¼(u_z² + v_z²)` and so genuinely
-# varies layer by layer. This function computes Eq. 12, the same expression with those
-# terms dropped — a single number per column. One field served both only while `nz == 1`
-# collapsed `AA2` and `AA3` (`roadmaps/chmy.md`, Phase 3, decision 20).
+# (`src/mechanics/solvers.jl`) to derive `viscosity_depthaveraged` from the current velocity
+# iterate.
 #
 # Not reusable from `raw_strainrate_effective!`: that one reads `strainrate.xy` at `ab` as
-# *already written* by `raw_strainrate!`, and works on column fields throughout.
+# already written by `raw_strainrate!`, and works on column fields throughout.
 
 @kernel inbounds = true function _effective_strainrate_ssa_staggered!(eff, velocity, mask,
                                                                        grid, O)
@@ -963,7 +896,8 @@ Chmy-native SSA effective strain rate at `aa` (Robinson et al. 2022, Eq. 12):
 
 Writes `strainrate.effective_depthaveraged` (`AA2`) — a single value per column. DIVA's
 depth-*varying* effective strain rate (Eq. 13, with the vertical-shear terms) is a
-different quantity living in `strainrate.effective` (`AA3`); see the module note above.
+different quantity living in `strainrate.effective` (`AA3`), not the same field at two
+resolutions.
 
 Requires the depth-averaged velocity gradients to already be current — call
 [`depthaverage_velocitygradients!`](@ref) first, exactly as [`membranestress!`](@ref) does.
@@ -980,34 +914,13 @@ end
 # Chmy-native DIVA effective strain rate (per layer)
 ###############################################################
 #
-# Robinson et al. (2022), Eq. 13:
-#
-#   ε̇_e² = ū_x² + v̄_y² + ū_x v̄_y + ¼(ū_y + v̄_x)² + ¼u_z² + ¼v_z²
-#
-# i.e. the SSA invariant (Eq. 12, `effective_strainrate_ssa!` above) plus the vertical-shear
-# terms. The horizontal half is depth-independent — it is built from the *depth-averaged*
-# gradients, which is what makes DIVA a depth-integrated balance — so only `u_z`/`v_z` vary
-# with `z`, and they are what make this an `AA3` field rather than an `AA2` one.
-#
-# **`u_z` comes from Eq. 21, not from `∂z` of a velocity field.** Eq. 21 is
-#
-#   u_z(z) = τ_b,x (s − z) / (η(z) H),
-#
-# and with `(s − z) = (1 − ζ)H` on the sigma axis the thickness cancels outright:
-#
-#   u_z(z) = τ_b,x (1 − ζ) / µ(z),
-#
-# so no `H` is needed here at all (and no division by it, hence no ice-free special case
-# beyond the mask). Analytically this equals `∂z` of Eq. 16, but the diagnosed form is the
-# only one available inside the PT loop, where no 3D velocity exists yet — the paper is
-# explicit that `τ_b` and `η` are taken "from the previous iteration". Consequently DIVA
-# never reads `velocity.x_dz`.
+# See the docstring below for the equations; implementation notes not there:
 #
 # `τ_b` lives on the velocity faces (`acx`/`acy`) and `ε̇_e` at `aa`, so each component is
-# `lerp`ed onto `aa` — a 2D interpolation reused down the whole column, rather than a 3D
-# one per layer. The horizontal invariant is likewise recomputed per layer instead of being
-# cached in a 2D scratch field: it is a handful of flops against a field allocation, and it
-# keeps the kernel a pure function of state.
+# `lerp`ed onto `aa` — a 2D interpolation reused down the whole column rather than a 3D one
+# per layer. The horizontal invariant is likewise recomputed per layer instead of cached in
+# a 2D scratch field: a handful of flops against a field allocation, and it keeps the kernel
+# a pure function of state. Consequently DIVA never reads `velocity.x_dz`.
 
 @kernel inbounds = true function _effective_strainrate_diva!(eff, velocity, μ, τbx, τby,
                                                               mask, grid, grid2d, O)
@@ -1094,17 +1007,15 @@ effective_strainrate_diva!(mech::MechanicState, rt::Runtime,
 #
 # Same invariant as DIVA (Eq. 13), but every term is genuinely 3D: BP already carries a
 # resolved column velocity, so `u_z`/`v_z` are read straight from `velocity.x_dz`/`y_dz`
-# rather than diagnosed from `τ_b` via Eq. (21). No `µ`, no basal stress and no `grid2d`
-# argument are needed here at all — the sole difference from `_effective_strainrate_diva!`.
+# rather than diagnosed from `τ_b`. No `µ`, no basal stress and no `grid2d` argument are
+# needed here — the sole difference from `_effective_strainrate_diva!`.
 #
 # `x_dx`/`y_dy` are already at `aa`; `x_dy`/`y_dx` at `ab` and `x_dz`/`y_dz` at
-# `acx_ac`/`acy_ac` each need one `lerp` onto `aa` — the `x_dz`/`y_dz` one is a two-way
-# stagger (x *and* z), handled by Chmy's `lerp` without any special-casing (it interpolates
-# every dimension on which `from`/`to` differ; see `hlerp`'s use for `σxz` in
-# `_membrane_stress_staggered_bp!`, the same mechanism). Arithmetic, not harmonic: this
-# interpolates a strain rate, not a viscosity, so there is no series/parallel argument for
-# `hlerp` here, and no NaN trap either — `_velocity_gradients!` already zeroes an inactive
-# neighbour instead of leaving a placeholder to invert.
+# `acx_ac`/`acy_ac` each need one `lerp` onto `aa` (the latter a two-way x-and-z stagger,
+# which Chmy's `lerp` handles with no special-casing). Arithmetic, not harmonic: this
+# interpolates a strain rate, not a viscosity, so there's no NaN trap either —
+# `_velocity_gradients!` already zeroes an inactive neighbour rather than leaving a
+# placeholder to invert.
 
 @kernel inbounds = true function _effective_strainrate_bp!(eff, velocity, mask, grid, O)
     I = @index(Global, NTuple)

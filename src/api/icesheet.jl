@@ -31,8 +31,10 @@ $(TYPEDSIGNATURES)
 
 # Fields
  - `state`: the topographic state variables
- - `grid`: the grid on which the topography is defined
- - `time_stepper`: the time stepper for the topography component
+ - `grid`: the grid on which the topography is defined — `Grid`, or `CommonGrid` to use
+   the `IceSheet`'s own grid instead of a separate allocation
+ - `time_stepper`: `Tsit54()` (or similar), or `CommonTimeStepper()` to reuse the
+   `IceSheet`'s stepper and avoid a redundant pre-allocation
  - `mass_balance`: the mass balance model for the topography component
  - `solver`: the mass balance solver for the topography component
  - `calving`: the calving model for the topography component
@@ -40,33 +42,33 @@ $(TYPEDSIGNATURES)
 """
 struct Topography{S,G,TS,MB,SL,C,ST}
     state::S            # <: TopographicState
-    grid::G             # can be Grid or CommonGrid. If CommonGrid, then the grid is not defined and the grid of the IceSheet is used instead.
-    time_stepper::TS    # can be Tsit54(), some other similar method, or CommonTimeStepper() that uses the time stepper of the IceSheet (prevents unnecessary pre-allocation)
+    grid::G             # <: Grid or CommonGrid
+    time_stepper::TS    # <: Tsit54() or CommonTimeStepper()
     mass_balance::MB    # <: AbstractMassBalance
     solver::SL          # <: AbstractMassBalanceSolver
     calving::C          # <: AbstractCalving
     sigma_transform::ST # <: AbstractSigmaTransform
 end
 
+# @dev TODO: this should move into Ichnos.
 """
 $(TYPEDSIGNATURES)
-
-This should go into Ichnos
 
 # Fields
  - `state`: the tracer state variables
  - `grid`: the grid on which the tracers are defined
  - `time_stepper`: the time stepper for the tracers component
  - `age`: the age model for the tracers component
- - `isotopes`: the isotopic composition for the tracers component
+ - `isotopes`: the isotopic composition, a `NamedTuple` (`:oxygen_18`, `:deuterium`, ...)
+ - `frame`: the reference frame; only `Eulerian` is supported so far
 """
 struct Tracers{S,G,TS,A,I,FR}
     state::S            # <: TracersState
     grid::G             # <: Grid or CommonGrid
     time_stepper::TS    # <: Tsit54() or CommonTimeStepper()
     age::A              # <: AbstractAgeModel
-    isotopes::I         # NamedTuple{(:oxygen_18, :deuterium, ...), ...}
-    frame::FR           # <: AbstractFrame (only Eulerian for the beginning)
+    isotopes::I
+    frame::FR           # <: AbstractFrame
 end
 
 """

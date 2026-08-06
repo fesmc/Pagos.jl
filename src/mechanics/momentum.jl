@@ -7,6 +7,10 @@ $(TYPEDSIGNATURES)
 
 An abstract type to multiple dispatch the dynamics type via [`velocity`](@ref).
 
+Stub balances (`SIA`, `SIASSA`, the `Inertial*` variants, `NoMomentumBalance`) are not yet
+ported to [`MomentumBalance2D`](@ref)/[`MomentumBalance3D`](@ref) dispatch; using them raises
+a `MethodError` rather than silently reusing an unrelated method.
+
 # Available subtypes:
 """
 abstract type AbstractMomentumBalance end
@@ -85,20 +89,8 @@ struct StokesMomentumBalance <: AbstractMomentumBalance end
 ###############################################################
 # Dimensionality groupings
 ###############################################################
-#
-# The criterion is **the dimensionality of the unknown the momentum solve iterates**, not
-# whether the balance has any vertical structure at all. That is what makes the split
-# useful for dispatch: it is exactly the question "does this solve live on `grid2d` or on
-# `grid`?", which decides node classes, launcher and state fields throughout.
-#
-# It puts DIVA in the *2D* group, which is the right answer even though DIVA is a
-# higher-order balance with a genuine vertical profile: the depth-integrated balance
-# (Robinson et al. 2022, Eq. 14) is solved for the depth-averaged `ū`, `v̄`, and `u(z)` is
-# reconstructed afterwards from Eq. 16 as a post-solve diagnostic.
-#
-# The stub balances (`SIA`, `SIASSA`, the `Inertial*` variants, `NoMomentumBalance`) are
-# deliberately in neither group until they are ported — an unported balance should hit a
-# `MethodError`, not silently inherit a dispatch that was never written for it.
+# Split by the dimensionality of the unknown the solve iterates (2D depth-integrated vs.
+# genuine 3D), not by whether the balance has vertical structure — see docstrings below.
 
 """
     MomentumBalance2D

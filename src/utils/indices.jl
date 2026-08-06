@@ -15,7 +15,7 @@ abstract type AbstractIndexing end
 """
 $(TYPEDSIGNATURES)
 
-A struct representing strict indexing, where the caller guarantees that all indices are within bounds. No runtime checks are performed, and the effective stencil width is always 2 (central difference). GPU-compatible.
+A struct representing strict indexing, where the caller guarantees that all indices are within bounds. No runtime checks are performed (`error()` is not GPU-safe), and the effective stencil width is always 2 (central difference). GPU-compatible.
 """
 struct StrictIndexing <: AbstractIndexing
     i1::Int
@@ -56,9 +56,6 @@ $(TYPEDSIGNATURES)
 Return the index obtained by shifting `i` by `d` according to the indexing strategy `idx`.
 """
 @inline index(i, d, ::StrictIndexing) = i + d
-# No runtime bounds check: caller is responsible for staying within [i1, i2].
-# error() is not GPU-safe, so StrictIndexing simply performs the unchecked shift.
-
 @inline index(i, d, idx::FlatIndexing) = clamp(i + d, idx.i1, idx.i2)
 @inline function index(i, d, idx::ReflectiveIndexing)
     j = i + d

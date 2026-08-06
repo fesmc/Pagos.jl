@@ -68,7 +68,7 @@ via [`SmithMorlandFlowLaw`](@ref); see that docstring for units and caveats.
     p0::T = 0.3336
     p2::T = 0.3200
     p4::T = 0.02963
-    D_0::T = 3.169e-8 * SECONDS_PER_YEAR   # Pa^-1 s^-1 published -> Pa^-1 yr^-1 (= 1.0)
+    D_0::T = 3.169e-8 * SECONDS_PER_YEAR
     σ_0::T = 1e5
 end
 
@@ -202,9 +202,16 @@ evaluated at a point rather than taking pre-evaluated pre-factors — pass the l
    ``4.0\\times10^{-19}`` / ``6.0\\times10^{4}\\,\\mathrm{Pa}^{-4}\\,\\mathrm{s}^{-1}``.
  - `gbs_T_crit::T=255.0`, `gbs_A_cold`, `gbs_A_warm`, `gbs_n::T=1.8`,
    `gbs_Q_cold::T=49e3`, `gbs_Q_warm::T=192e3`, `gbs_p::T=1.4`: grain-boundary sliding.
- - `basal_A`, `basal_n::T=2.4`, `basal_Q::T=60e3`: basal (easy) slip.
+   Pre-factors are ``\\mathrm{Pa}^{-1.8}\\,\\mathrm{m}^{1.4}\\,\\mathrm{yr}^{-1}``, from the
+   published ``6.1811\\times10^{-14}`` / ``4.7547\\times10^{15}\\,\\mathrm{Pa}^{-1.8}\\,
+   \\mathrm{m}^{1.4}\\,\\mathrm{s}^{-1}``.
+ - `basal_A`, `basal_n::T=2.4`, `basal_Q::T=60e3`: basal (easy) slip. Pre-factor is
+   ``\\mathrm{Pa}^{-2.4}\\,\\mathrm{yr}^{-1}``, from the published
+   ``2.1896\\times10^{-7}\\,\\mathrm{Pa}^{-2.4}\\,\\mathrm{s}^{-1}``.
  - `diff_T_crit::T=258.0`, `diff_V_m::T=1.97e-5`, `diff_D_0v`, `diff_Q_v::T=59.4e3`,
-   `diff_D_0b`, `diff_Q_b::T=49e3`, `diff_delta::T=9.04e-10`: diffusional flow. Above
+   `diff_D_0b`, `diff_Q_b::T=49e3`, `diff_delta::T=9.04e-10`: diffusional flow. ``D_{0v}``,
+   ``D_{0b}`` are ``\\mathrm{m}^2\\,\\mathrm{yr}^{-1}``, from the published
+   ``9.10\\times10^{-4}`` / ``5.8\\times10^{-4}\\,\\mathrm{m}^2\\,\\mathrm{s}^{-1}``. Above
    `diff_T_crit` the grain-boundary diffusivity is multiplied by `diff_coble_factor`.
  - `diff_coble_factor::T=1000.0`: Coble-creep scaling applied to ``D_b`` when warm.
 """
@@ -217,7 +224,7 @@ evaluated at a point rather than taking pre-evaluated pre-factors — pass the l
 
     ## dislocation creep
     disl_T_crit::T = 258.0
-    disl_A_cold::T = 4.0e-19 * SECONDS_PER_YEAR   # Pa^-4 s^-1 published -> Pa^-4 yr^-1
+    disl_A_cold::T = 4.0e-19 * SECONDS_PER_YEAR
     disl_A_warm::T = 6.0e4 * SECONDS_PER_YEAR
     disl_n::T = 4.0
     disl_Q_cold::T = 60.0e3
@@ -225,7 +232,7 @@ evaluated at a point rather than taking pre-evaluated pre-factors — pass the l
 
     ## grain-boundary sliding
     gbs_T_crit::T = 255.0
-    gbs_A_cold::T = 6.1811e-14 * SECONDS_PER_YEAR # Pa^-1.8 m^1.4 s^-1 -> ... yr^-1
+    gbs_A_cold::T = 6.1811e-14 * SECONDS_PER_YEAR
     gbs_A_warm::T = 4.7547e15 * SECONDS_PER_YEAR
     gbs_n::T = 1.8
     gbs_Q_cold::T = 49.0e3
@@ -233,14 +240,14 @@ evaluated at a point rather than taking pre-evaluated pre-factors — pass the l
     gbs_p::T = 1.4
 
     ## basal (easy) slip
-    basal_A::T = 2.1896e-7 * SECONDS_PER_YEAR     # Pa^-2.4 s^-1 -> Pa^-2.4 yr^-1
+    basal_A::T = 2.1896e-7 * SECONDS_PER_YEAR
     basal_n::T = 2.4
     basal_Q::T = 60.0e3
 
     ## diffusional flow
     diff_T_crit::T = 258.0
     diff_V_m::T = 1.97e-5
-    diff_D_0v::T = 9.10e-4 * SECONDS_PER_YEAR     # m^2 s^-1 -> m^2 yr^-1
+    diff_D_0v::T = 9.10e-4 * SECONDS_PER_YEAR
     diff_Q_v::T = 59.4e3
     diff_D_0b::T = 5.8e-4 * SECONDS_PER_YEAR
     diff_Q_b::T = 49.0e3

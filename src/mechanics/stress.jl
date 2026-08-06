@@ -63,29 +63,13 @@ deviatoric_stress!(mech::MechanicState{<:Chmy.AbstractField}, mat::MaterialState
 ###############################################################
 # Chmy-native, C-grid staggered deviatoric stress
 ###############################################################
-#
-# `τ_ij = 2 η ε̇_ij`, one node class at a time. The strain rates are already at the right
-# places (see `mechanics/strainrate.jl`); what has to move is the viscosity, which lives at
-# `aa` and must scale off-diagonal components that do not. That interpolation is
-# **harmonic** (`hlerp`), not arithmetic: across a viscosity contrast the physically
-# conserved quantity is the stress, so the effective viscosity of two cells in series is
-# their harmonic mean. An arithmetic mean lets a stiff cell dominate its soft neighbour and
-# over-stiffens the margin — the standard choice in staggered viscous solvers, and the
-# reason Chmy provides `hlerp` at all.
-
-# The mask is load-bearing here, not a convenience: `η` is zero where there is no ice, and
-# `hlerp` averages reciprocals, so an unmasked off-diagonal component is `NaN` on every
-# ice-free node. Masking the *strain rate* does not help — `NaN * 0 == NaN` — so the guard
-# has to sit around the viscosity term itself, and it has to skip the evaluation rather than
-# discard its result.
-#
-# It also has to be the **strict** rule (`node_fully_active`, every contributing cell icy),
-# not the permissive one the fluxes and gradients use. A corner with even one ice-free
-# neighbour still gives `hlerp` a zero to invert. And strict is the physically right answer
-# as well as the finite one: the harmonic mean of `(η, 0)` tends to `0`, i.e. a cell of no
-# viscosity transmits no stress, so a zero there is the limit rather than a fudge. Callers
-# pass one mask and this kernel tightens it itself — the alternative, a separate strict mask
-# per call site, is a footgun that reintroduces the `NaN` the moment it is forgotten.
+# Strain rates are already at the right node classes (see `mechanics/strainrate.jl`); only
+# the viscosity, cell-centred at `aa`, needs interpolating onto the off-diagonal nodes,
+# which it does via `hlerp` (see the docstring below for why harmonic). Because `hlerp`
+# averages reciprocals, an unmasked ice-free neighbour gives `NaN` — masking the strain rate
+# instead doesn't help (`NaN * 0 == NaN`) — so each off-diagonal term is guarded by the
+# strict `node_fully_active` rule (every contributing cell icy), not the permissive rule the
+# fluxes and gradients use.
 @kernel inbounds = true function _deviatoric_stress_staggered!(stress, sr, η, mask, grid, O)
     I = @index(Global, NTuple)
     I = I + O
@@ -181,7 +165,7 @@ function deviatoric_stress!(sxx, syy, szz, sxy, sxz, syz, seff, η, exx, eyy, ex
         ndrange = length(sxx))
     return nothing
 end
-# TODO this typically does not need to be computed where we don't have any ice and could be easily handled via a mask passed to the kernel. Check performance!
+# @dev TODO this typically does not need to be computed where we don't have any ice and could be easily handled via a mask passed to the kernel. Check performance!
 
 @kernel function _deviatoric_stress_kernel!(
     sxx, syy, szz, sxy, sxz, syz, seff,
@@ -202,7 +186,7 @@ end
     end
 end
 
-# TODO maybe need to stagger the stresses!
+# @dev TODO maybe need to stagger the stresses!
 """
     shearstress!(shear_x, shear_y, strainrate_xx, strainrate_xy, strainrate_yy,
         prealloc, dx, dy)
@@ -245,15 +229,12 @@ end
 ###############################################################
 # Chmy-native, C-grid staggered basal stress
 ###############################################################
-#
-# Resolves the deferred half of the Phase 2 `FrictionState` item (`roadmaps/chmy.md`):
 # `β`/`β_eff` live at `aa`, but `τ_b = β v_b` needs `β` on the velocity faces (`acx`/`acy`).
-# Resolved by an inline `lerp`, the same choice `drivingstress!` makes for `H`, rather than
-# storing `β_acx`/`β_acy` copies: one memory sweep, and the face value can never go stale
-# relative to `friction.beta_eff`. Arithmetic, not harmonic: unlike the viscosity, `β` is a
-# local friction coefficient with no "two cells in series" physical argument for a harmonic
-# mean, and `lerp` carries no `NaN` risk even where `β = 0` (a frozen-bed or ice-free cell
-# on one side of a face simply contributes no drag from that side).
+# Resolved by an inline `lerp` (the same choice `drivingstress!` makes for `H`) rather than
+# storing `β_acx`/`β_acy` copies, so the face value can never go stale relative to
+# `friction.beta_eff`. Arithmetic, not harmonic: unlike the viscosity, `β` has no "two cells
+# in series" argument for a harmonic mean, and `lerp` carries no `NaN` risk since `β = 0`
+# just means no drag from that side of the face.
 
 @kernel inbounds = true function _basalstress_staggered!(base_x, base_y, β, v_x, v_y,
                                                           mask, grid, O)
@@ -315,15 +296,10 @@ end
 ###############################################################
 # Chmy-native, C-grid staggered driving stress
 ###############################################################
-#
-# The driving stress is the field the C-grid exists for. `s` and `H` are cell-centred
-# (`aa`), the velocity components live on the faces (`acx`/`acy`), and so must the driving
-# stress that forces them — the collocated methods above compute `∂s/∂x` with a central
-# difference *at the cell centre*, which needs a half-cell interpolation before it can
-# force a face velocity. Staggered, no interpolation is needed for the gradient at all:
-# Chmy's `∂x` maps `aa → acx` natively, and the difference it takes is exactly the
-# two-point difference across that face. Only `H` has to be moved, by one `lerp` onto the
-# same face.
+# `s` and `H` are cell-centred, but the driving stress must live on the velocity faces it
+# forces. Chmy's `∂x`/`∂y` map `aa → acx`/`acy` natively, so the gradient itself needs no
+# interpolation (unlike the collocated method's cell-centred central difference); only `H`
+# has to be moved, by one `lerp` onto the same face.
 
 @kernel inbounds = true function _surface_gradient!(dsdx, dsdy, s, mask, grid, O)
     I = @index(Global, NTuple)
@@ -420,15 +396,10 @@ drivingstress!(mech::MechanicState, c::Constants, rt::Runtime,
 ###############################################################
 # Chmy-native, C-grid staggered Blatter-Pattyn (un-integrated) driving stress
 ###############################################################
-#
-# `ρg ∂s/∂x`, not `ρgH ∂s/∂x`: the Blatter-Pattyn residual is per unit *volume*
-# (`roadmaps/blatter-pattyn.md`, §1), so no thickness enters. The surface slope has no `z`
-# dependence, so `stress.driving_x`/`driving_y` stay the same `ACX2`/`ACY2` fields
-# [`drivingstress!(::MomentumBalance2D)`](@ref) already uses — written once on `grid2d` here
-# and simply read at `k = 1` inside the 3D [`dotvel!`](@ref) sweep, the same broadcast
-# convention `_velocity_gradients!` already uses for `H`. A fused kernel (gradient and `ρg`
-# scale in one pass), matching `_drivingstress!`'s shape above; unlike it, there is no `H` to
-# stagger, so no `lerp` appears at all.
+# `ρg ∂s/∂x`, not `ρgH ∂s/∂x` — see `roadmaps/blatter-pattyn.md` §1 for why no thickness
+# enters. Written once on `grid2d` and read at `k = 1` inside the 3D [`dotvel!`](@ref) sweep,
+# the same broadcast convention `_velocity_gradients!` uses for `H`. No `H` to stagger here,
+# so no `lerp` appears at all.
 
 @kernel inbounds = true function _drivingstress_bp!(τx, τy, s, ρg, mask, grid, O)
     I = @index(Global, NTuple)

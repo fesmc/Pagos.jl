@@ -1,32 +1,19 @@
 # ---------------------------------------------------------------------------
 # The pseudo-transient momentum solver (`src/mechanics/pseudotransient.jl`).
 #
-# Two kinds of entry, deliberately kept apart:
+# Two kinds of entry, kept apart:
+#   "iteration" — fixed PT iterations (`abstol = -one(T)`, unreachable so `maxiter`
+#                 always runs). Measures cost per iteration only.
+#   "solve"     — a real solve to `abstol`. Measures cost to an answer, which moves
+#                 with tuning/step-rule/convergence-criterion changes even when no
+#                 kernel got slower — read a regression here against the iteration
+#                 entries before concluding anything about throughput.
 #
-#   "iteration"  — a fixed number of PT iterations (`abstol = -1`, see below). Measures
-#                  **cost per iteration** and nothing else. A regression here means a
-#                  kernel on the residual path got slower, full stop.
-#   "solve"      — a real solve, run to `abstol`. Measures **cost to an answer**, which is
-#                  per-iteration cost × iterations-to-converge. This one moves whenever the
-#                  tuning, the pseudo-time-step rule or the convergence criterion changes,
-#                  *without any kernel getting slower* — so read a regression here against
-#                  the iteration entries before concluding anything about throughput.
-#
-# The fixed-iteration entries use `abstol = -one(T)`, not `0.0`: `pseudo_transient!` loops
-# `while err > abstol`, and `err` is a norm, so a negative tolerance can never be met and
-# exactly `maxiter` iterations run on every sample. With `abstol = 0.0` a slab that reaches
-# its fixed point to the last bit — which the uniform fixture can — would exit early and
-# silently turn a "fixed 25 iterations" entry into a variable one.
-#
-# Every solve entry runs `restore_momentum!` then `reset_velocity!` in `setup`, and
-# `evals = 1` so that setup precedes every timed body rather than every *batch* of them.
-# Both halves are load-bearing. `reset_velocity!` fixes the initial guess: `pseudo_transient!`
-# iterates the velocity in place, so without it sample n would start from sample n-1's
-# converged answer and time a solve that had already happened. `restore_momentum!` fixes
-# everything else the solve reads — β_eff and the viscosities, which other benchmarks in
-# this suite overwrite (see `_momentum_inputs` in `common.jl`). Without it the iteration
-# count, and therefore this entry's whole meaning, would depend on the order BenchmarkTools
-# happened to walk the group in.
+# Every solve/iteration entry runs `restore_momentum!` + `reset_velocity!` in `setup`
+# (evals = 1, so setup precedes every sample): otherwise sample n would start from
+# sample n-1's converged velocity/β_eff/viscosities (which other benchmarks in this
+# suite overwrite, see `_momentum_inputs` in `common.jl`), making the iteration count
+# depend on the order BenchmarkTools walks the group in.
 # ---------------------------------------------------------------------------
 
 """

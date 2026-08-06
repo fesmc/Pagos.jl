@@ -1,17 +1,12 @@
 # Benchmark: Chmy's staggered-grid operators, with Pagos' `differences.jl` where a
-# genuine equivalent still exists.
-#
-# `utils/oceananigans.jl` (`StaggeredGrids`) — the from-scratch Oceananigans-style
-# staggered grid this benchmark used to compare against — has been deleted (see
-# roadmaps/chmy.md, Phase 0): Chmy is now Pagos' staggered-grid layer, so there is
-# nothing left to compare it *to* for staggered operations. What remains:
+# genuine equivalent exists. Chmy is Pagos' staggered-grid layer, so there is nothing
+# to compare it *to* for staggered operations beyond the cases below:
 #
 #   A. Directional derivatives (∂x, ∂y) — Pagos' flat, collocated `∂x₁₂!`
-#      (`numerics/differences.jl`, still live and load-bearing) vs a Chmy kernel
-#      calling `∂x`/`∂y` into a `VectorField`. These are genuinely different
-#      operators (collocated central difference vs staggered two-point
-#      difference, different output shapes) — there is no meaningful
-#      cross-system agreement check, so both are validated independently
+#      (`numerics/differences.jl`) vs a Chmy kernel calling `∂x`/`∂y` into a
+#      `VectorField`. These are genuinely different operators (collocated central
+#      difference vs staggered two-point difference, different output shapes) — no
+#      meaningful cross-system agreement check, so both are validated independently
 #      against the analytic derivative of a quadratic test field.
 #   B. Center → Vertex-x interpolation ("stagger") via `lerp` — Chmy only,
 #      validated against a linear test field (exact for linear interpolation).
@@ -19,12 +14,9 @@
 #      centers via `lerp`, following the pattern Chmy's own test suite uses to
 #      combine a `VectorField`'s components back onto their source location
 #      (see Chmy's test/test_grid_operators.jl "divg" test). Chmy only,
-#      validated against the analytic solution.
-#
-# Earlier revision bug (see roadmaps/chmy.md): case C originally read `∂x(H)`/
-# `∂y(H)` directly at the *center* index without staggering back via `lerp`
-# first — that silently computes a half-cell-shifted quantity. Validating
-# against an analytic solution here is exactly what would have caught it.
+#      validated against the analytic solution — case C must stagger `∂x(H)`/
+#      `∂y(H)` back via `lerp` before combining; reading them directly at the
+#      center index silently computes a half-cell-shifted quantity.
 #
 # All checks compare interior points only: Chmy fields carry an explicit halo
 # that nothing has filled via `bc!` in this script, so boundary-adjacent

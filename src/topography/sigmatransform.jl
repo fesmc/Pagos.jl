@@ -172,13 +172,3 @@ where `b` is the bed elevation ``z_{\\mathrm{b}}`` and `H` is the local ice thic
 Returns 0 at the bed and 1 at the ice surface.
 """
 sigma(z, b, H) = (z - b) / H
-
-# function sigma_transform(transform::LinearSigmaTransform)
-#     return range(0.0, 1.0; length=transform.n)
-# end
-
-
-# function sigma_transform(transform::ExponentialSigmaTransform)
-#     dz = 1 / transform.n
-#     return (exp.(dz:dz:1) .- exp(0)) ./ (exp(1) - exp(0))
-# end

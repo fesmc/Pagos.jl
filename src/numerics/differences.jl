@@ -228,10 +228,9 @@ end
 end
 
 
-#=
-Derivatives in a sigma-coordinate system (pseudo-code, not yet implemented):
-    ∂x₁(u, ∂ζ_∂x₁) = ∂x₁(u)|_σ + ∂ζ_∂x₁ * ∂ζ(u)
-    ∂x₂(u, ∂ζ_∂x₂) = ∂x₂(u)|_σ + ∂ζ_∂x₂ * ∂ζ(u)
-    ∂x₃(u, ∂ζ_∂x₃) = ∂ζ_∂x₃ * ∂ζ(u)
-    ∂t(u,  ∂ζ_∂t)  = ∂t(u)|_σ  + ∂ζ_∂t  * ∂ζ(u)
-=#
+# @dev TODO: horizontal/time derivatives in a sigma-coordinate system are not yet
+# implemented; they would take the form:
+#    ∂x₁(u, ∂ζ_∂x₁) = ∂x₁(u)|_σ + ∂ζ_∂x₁ * ∂ζ(u)
+#    ∂x₂(u, ∂ζ_∂x₂) = ∂x₂(u)|_σ + ∂ζ_∂x₂ * ∂ζ(u)
+#    ∂x₃(u, ∂ζ_∂x₃) = ∂ζ_∂x₃ * ∂ζ(u)
+#    ∂t(u,  ∂ζ_∂t)  = ∂t(u)|_σ  + ∂ζ_∂t  * ∂ζ(u)

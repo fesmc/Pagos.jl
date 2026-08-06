@@ -142,12 +142,8 @@ Base.propertynames(::StaggeredGrid) = (
     _StaggeredGridProperties...,
 )
 
-# A `Connectivity` that Chmy declares but never dispatches on is not inert — it falls
-# through dispatch instead of short-circuiting it. `BoundaryConditions.batch_impl` has
-# methods for `Bounded` and `Connected` only, and `bc!` batches over *every* axis, so a
-# single `Periodic` (or `Flat`) axis turns `bc!` into a `MethodError` for every field on
-# the grid, the `Bounded` axes included. Rejecting it here trades a silent failure at the
-# first boundary condition for a loud one at construction.
+# See "Only `Bounded` and `Connected` are usable connectivities" in the `StaggeredGrid`
+# docstring for why `Periodic`/`Flat` are rejected here rather than at first use.
 _check_connectivity(::Bounded, ::AbstractString) = nothing
 _check_connectivity(::Connected, ::AbstractString) = nothing
 _check_connectivity(conn::Connectivity, dim::AbstractString) = error(

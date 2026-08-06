@@ -5,39 +5,28 @@
 # Three boolean cell-centred (`aa`) fields describe where a computation is meaningful:
 #
 #  - `is_ice`            — the cell holds ice (`H > H_min`).
-#  - `is_ice_neighbour`  — the cell is ice-*free* but touches an ice cell: the one-cell
-#                          ring the margin can advance into. Conceptually complementary to
-#                          `TopographicMasks.is_margin` (the ring *inside* the ice) — but
-#                          note `is_margin` is a pre-existing struct field that nothing in
-#                          `src/` computes yet, so treat that pairing as a naming intent,
-#                          not a working relationship, until `is_margin` gets a producer.
-#  - `is_ice_allowed`    — a hard geometric constraint on where ice may exist at all.
-#                          Not physical; imposed when a run must not grow ice outside a
-#                          prescribed domain. Never derived from the state — it is set by
-#                          the user and left alone by [`icemasks!`](@ref).
+#  - `is_ice_neighbour`  — ice-free but touches ice: the one-cell ring the margin can
+#                          advance into.
+#  - `is_ice_allowed`    — a hard, user-imposed geometric constraint on where ice may
+#                          exist; never derived from the state, left alone by
+#                          [`icemasks!`](@ref).
 #
-# Two distinct reasons to mask, and only the first is load-bearing:
+# @dev: `TopographicMasks.is_margin` is named to pair with `is_ice_neighbour` (the ring
+# *inside* the ice), but nothing in `src/` computes it yet — treat the pairing as naming
+# intent, not a working relationship, until it gets a producer.
 #
-#  1. **Containment.** Several constitutive quantities are not merely uninteresting on
-#     ice-free cells, they are `NaN` — and the `NaN` *spreads into the ice*. The viscosity
-#     is zero where there is no ice, `hlerp` averages reciprocals, so `τ_xy` at an ice-free
-#     face is `NaN`, and the effective stress at `aa` interpolates that back one cell into
-#     the ice, i.e. exactly onto the margin. Note this cannot be fixed by masking the
-#     *strain rate*: `NaN * 0 == NaN`, so the kernel that touches the viscosity has to be
-#     masked itself.
-#  2. **Work avoidance**, which is the weaker motive here. These kernels are
-#     bandwidth-bound and the mask is an extra load; on a GPU a divergent branch inside a
-#     warp costs about the max of both paths, so the saving is real only where a whole warp
-#     is uniformly ice-free. The construct that would genuinely save work at ice-sheet
-#     coverage fractions is a compacted index list, not a branch. Masking is applied here
-#     for correctness; do not expect a speedup from it without measuring.
+# Masking matters for correctness, not just performance: several constitutive quantities
+# are `NaN` off-ice (viscosity is zero there, and `hlerp` averages reciprocals), and the
+# `NaN` spreads one cell into the ice through interpolation. Masking the strain rate instead
+# doesn't help, since `NaN * 0 == NaN` — the kernel that touches viscosity has to be masked
+# itself. Work avoidance is a secondary, weaker motive: these kernels are bandwidth-bound and
+# a GPU warp only saves time when uniformly ice-free, so don't expect a speedup from masking
+# alone without measuring.
 #
-# Chmy's own `FieldMask`/masked operators are deliberately *not* used: they cover only the
-# derivative family (`left`/`right`/`δ`/`∂`/`∂²`/`∂k∂`/`divg`/`lapl`), and there is **no
-# masked `lerp`/`hlerp`/`itp`** — so they cannot address the interpolation that produces the
-# `NaN` above. They also carry a different semantics (multiply the operand by a mask weight
-# before differencing, rather than skip), want eight float fields per mask on a 3D grid, and
-# have no test coverage upstream in 0.1.26.
+# Chmy's own `FieldMask`/masked operators are not used here: they cover only the derivative
+# family (no masked `lerp`/`hlerp`/`itp`, so they can't address the `NaN` above), multiply by
+# a mask weight rather than skip, cost eight float fields per mask in 3D, and have no test
+# coverage upstream (0.1.26).
 
 """
 $(TYPEDSIGNATURES)
@@ -88,17 +77,14 @@ struct IceMask{F<:Tuple,A} <: AbstractIceMask
 end
 Adapt.@adapt_structure IceMask
 
-# `active` is constrained to `<: Tuple` so that this varargs form, and not the struct's own
-# two-positional-argument constructor, is what `IceMask(is_ice, is_ice_neighbour)` reaches.
-# Without the constraint the second field silently becomes `allowed` instead of a second
-# `active` field — which is a mask that quietly means something else entirely.
+# `active` is constrained to `<: Tuple` so `IceMask(is_ice, is_ice_neighbour)` reaches this
+# varargs constructor rather than the struct's own two-positional one — without it, the
+# second field would silently become `allowed`, a mask that means something else entirely.
 IceMask(active::AbstractArray...; allowed = nothing) = IceMask(active, allowed)
 
-# The cells a node at horizontal location `(lx, ly)` is built from. This is Chmy's
-# staggering convention — vertex `i` sits between centres `i - 1` and `i` — written out
-# once, here, rather than re-derived at each call site. The vertical location is
-# irrelevant: the masks are `grid2d` fields with no z dependence, so they are always read
-# at `k = 1`.
+# The cells a node at horizontal location `(lx, ly)` is built from, per Chmy's staggering
+# convention (vertex `i` sits between centres `i - 1` and `i`). Vertical location doesn't
+# matter: the masks are `grid2d` fields with no z dependence, always read at `k = 1`.
 @inline _mask_cells(::Center, ::Center, i, j) = ((i, j),)
 @inline _mask_cells(::Vertex, ::Center, i, j) = ((i - 1, j), (i, j))
 @inline _mask_cells(::Center, ::Vertex, i, j) = ((i, j - 1), (i, j))
@@ -117,9 +103,8 @@ IceMask(active::AbstractArray...; allowed = nothing) = IceMask(active, allowed)
     _cell_set(fs, first(cells)) & _all_cells_set(fs, Base.tail(cells))
 @inline _all_cells_set(fs, ::Tuple{}) = true
 
-# The recursion is a separate function from the `nothing` shortcut: sharing one name makes
-# `(::Nothing, ::Tuple{})` match both the shortcut and the base case, with neither more
-# specific — an ambiguity rather than a no-op.
+# Kept separate from the `nothing` shortcut: sharing one name would make
+# `(::Nothing, ::Tuple{})` match both, an ambiguity rather than a no-op.
 @inline _all_allowed(::Nothing, cells) = true
 @inline _all_allowed(f, cells) = _all_true(f, cells)
 
@@ -232,40 +217,27 @@ icemasks!(topo::TopographicState, rt::Runtime; kwargs...) =
 # Where the momentum balance is well-posed
 ###############################################################
 #
-# Detached floating ice — an iceberg — has no basal drag and no membrane connection to the
-# rest of the sheet, so *nothing* balances its driving stress. A free body under a net
-# force has no steady velocity, and the SSA/DIVA system restricted to it is singular in its
-# rigid-translation modes. That is not a discretization defect and no solver setting fixes
-# it: the problem posed there has no answer to converge to. What each solver class does with
-# it merely differs — a direct solve returns some bounded number (Yelmo's own restart gives
-# 0.6–189 m/yr on the Antarctic bergs), while an explicit pseudo-transient iteration drifts
-# linearly forever, and the resulting residual plateau masquerades as a solver failure over
-# the whole domain (`roadmaps/PT-autotune.md`, Phase 1.5).
-#
-# Three reasons this earns a mask rather than a note in a docstring:
+# Detached floating ice (an iceberg) has no basal drag and no membrane connection to the
+# rest of the sheet, so nothing balances its driving stress: the SSA/DIVA system restricted
+# to it is singular in its rigid-translation modes, and no solver setting fixes that — the
+# problem posed there has no answer to converge to. This earns a dedicated mask rather than
+# a docstring caveat for three reasons:
 #
 #  1. **It poisons global norms.** The stopping criterion is a max-norm, so a handful of
-#     runaway faces set `err` for 200k well-behaved ones. On the AIS example this pinned the
-#     scaled residual at 3.8e-3 — 48 cells, 0.02% of the ice, 0.0008% of the volume.
-#  2. **It will poison the autotuner.** Duretz Eq. 21 estimates λ_min from a Rayleigh
+#     runaway faces can set `err` for the whole domain — on the AIS example this pinned the
+#     scaled residual at 3.8e-3 from just 0.02% of the ice.
+#  2. **It would poison the autotuner.** Duretz Eq. 21 estimates λ_min from a Rayleigh
 #     quotient; a rigid-translation null mode drives λ_min → 0 and hence the damping
-#     `c = c_damp·2√λ_min` → 0 for the *entire* domain. A few bergs would silently detune
-#     every solve. This is why the mask lands before Phase 2, not after.
-#  3. **It costs nothing to act on.** Masks are already a per-call argument, so the momentum
-#     solve takes `IceMask(is_momentum_solved)` while advection keeps taking
-#     `IceMask(is_ice, is_ice_neighbour)` — bergs still advect and calve, they just stop
-#     being asked to satisfy a force balance. No solver code changes.
+#     `c_damp` → 0 for the entire domain (`roadmaps/PT-autotune.md`, Phase 1.5).
+#  3. **It costs nothing to act on.** Masks are already a per-call argument: momentum takes
+#     `IceMask(is_momentum_solved)` while advection keeps `IceMask(is_ice, is_ice_neighbour)`
+#     — bergs still advect and calve, they just stop being asked to satisfy a force balance.
 #
-# Connectivity is **4-way, and that is a discretization fact rather than a convention**. A
-# corner-only contact does reach `N_xy`, which lives at `ab` — but
-# `_membrane_stress_staggered!` gates that term on `node_fully_active`, so a diagonally
-# touching berg transmits exactly zero stress in *this* discretization. 4-connectivity is
-# what the operator implies; 8 would mark ice as load-bearing that carries no load.
+# Connectivity is 4-way because that's what this discretization implies, not a convention: a
+# corner-only contact does reach `N_xy` (at `ab`), but `_membrane_stress_staggered!` gates
+# that term on `node_fully_active`, so a diagonally touching berg carries zero stress here.
 
-# Growth is monotone (false → true only, never back), which is what makes the in-place
-# update safe without a ping-pong buffer: a thread that reads a stale `false` simply does
-# not grow this sweep and grows on the next one. The fixed point is identical either way —
-# only the number of sweeps varies, and reading fresher neighbours makes it *smaller*.
+# See [`momentum_mask!`](@ref) for why the in-place update below is race-safe.
 @kernel inbounds = true function _grow_momentum_mask!(m, is_ice, O)
     I = @index(Global, NTuple)
     I = I + O
@@ -312,10 +284,12 @@ seed is `is_ice & is_grounded`.
 Unlike every other mask here, connectivity is a *global* property and cannot be settled by
 one local stencil pass. This is iterative label propagation — seed, then repeatedly grow
 into ice neighbours until nothing changes — rather than a serial flood fill, so it stays one
-`Launcher` sweep per iteration and runs unchanged on GPU. The cost is `O(sweeps)` boolean
-passes, paid once per change of ice extent (not per PT iteration, and not per time step
-unless the extent moved): against the thousands of PT iterations of a single solve it does
-not register.
+`Launcher` sweep per iteration and runs unchanged on GPU. Growth is monotone (false → true
+only), which makes the in-place update race-safe without a ping-pong buffer: a thread
+reading a stale `false` just grows on the next sweep instead. The cost is `O(sweeps)`
+boolean passes, paid once per change of ice extent (not per PT iteration, and not per time
+step unless the extent moved): against the thousands of PT iterations of a single solve it
+does not register.
 
 Termination is two *consecutive* unchanged interior counts, not one. The `Launcher` sweeps
 one halo ring beyond the interior, so the halo can be one sweep ahead of the interior;

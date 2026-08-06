@@ -39,8 +39,8 @@ where ``A(T')`` is the rate factor and ``f(\\sigma_e)`` is the creep function.
  - `creep::C`: creep function model (``<:`` [`AbstractCreep`](@ref)).
 """
 struct RateCreepFlowLaw{
-    RF,     # <: AbstractRateFactor,
-    C,     # <: AbstractCreep,
+    RF,
+    C,
 } <: AbstractFlowLaw
     rate_factor::RF
     creep::C

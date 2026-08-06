@@ -248,11 +248,8 @@ abstract type AbstractBasalBetaGroundingZone end
 $(TYPEDSIGNATURES)
 """
 @kwdef struct FgroundBasalBetaGroundingZone{T} <: AbstractBasalBetaGroundingZone
-    # TODO: this struct had no fields at all even though `basal_beta_gz!` below reads
-    # `bbgz.β_min` — pre-existing, untested bug (nothing in test/ exercises
-    # basal_friction.jl), found while migrating off `@tullio`. `0.0` is a neutral
-    # placeholder (no additional floor beyond `saturate_basal_beta`'s own branches);
-    # set a real minimum once one is known.
+    # @dev TODO: `0.0` is a neutral placeholder (no additional floor beyond
+    # `saturate_basal_beta`'s own branches) — set a real minimum once one is known.
     β_min::T = 0.0
 end
 
@@ -344,7 +341,7 @@ function basal_beta_gz(
     return beta * f_scale
 end
 
-# TODO: apply saturation to all cases
+# @dev TODO: apply saturation to all cases, not just `FgroundBasalBetaGroundingZone`.
 function saturate_basal_beta(β, f_ground, β_min)
     if f_ground == 1
         return max(β, β_min)
@@ -434,7 +431,7 @@ function f_sediment(H_sediment, ss::NoSedimentScaling)
     return 0
 end
 
-# TODO: check if this is correct!
+# @dev TODO: check if this is correct!
 function f_sediment(H_sediment, ss::LinearSedimentScaling)
     if H_sediment < ss.H_sed_min
         return 0
@@ -483,16 +480,16 @@ function c_bed_ref(
     (; n_sd, f_sd, w_sd, samples) = brs
     for q in 1:n_sd
         λ_bed = lambda_bed(z_bed + f_sd[q] * z_bed_σ, z_sl, bt.z0, bt.z1, bt)
-        # TODO: `cf_min` was referenced here without being defined anywhere; floored at
-        # zero as a placeholder (non-negative friction) until an actual minimum is wired in.
+        # @dev TODO: floored at zero as a placeholder (non-negative friction) until an
+        # actual minimum `cf_min` is wired in.
         samples[q] = max(cf_ref * λ_bed, zero(cf_ref))
     end
 
     return sum(samples .* w_sd) * (1 - f_sediment(H_sediment, ss))
 end
 
-# TODO: Check lambda bed. When comparing the linear and exponential case
-# I feel like they are not consistent with each other.
+# @dev TODO: check `lambda_bed` — the linear and exponential cases don't look consistent
+# with each other.
 function lambda_bed(z_bed, z_sl, z0, z1, bt::LinearElevationCbedRef)
     z_rel = z_sl - z_bed
     return saturate(
@@ -585,12 +582,11 @@ function basal_shear_stress!(
     c_basal,
     friction::BasalFriction,
 )
-    # NOTE: untested (nothing in test/ exercises basal_friction.jl) and possibly already
-    # broken pre-migration — `basal_shear_stress(::Any, ::Any, ::BasalFriction)` has no
-    # dedicated scalar method, only the generic array-wrapper (line ~554) and the
+    # @dev: `basal_shear_stress(::Any, ::Any, ::BasalFriction)` has no dedicated scalar
+    # method — only the generic array-wrapper above and the
     # `PseudoPlasticPowerBasalBeta`/`CoulombBasalBeta` methods, neither of which matches a
-    # scalar call with a `BasalFriction`. Translated faithfully (same call, same behavior
-    # either way); not a regression introduced by the Tullio→KA swap.
+    # scalar call with a `BasalFriction`. Untested (nothing in test/ exercises
+    # basal_friction.jl); possibly already broken.
     pointwise!(basal_shear_stress, τ_basal, (v_basal, c_basal), (friction,))
     return nothing
 end

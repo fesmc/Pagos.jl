@@ -1,9 +1,8 @@
 ###############################################################
 # Field layout: the Arakawa C-grid node classes
 ###############################################################
-#
-# Chmy expresses staggering as a per-axis location, so the Yelmo node classes the field
-# names already gesture at (`taud_acx`, `β_acx`, ...) become location tuples:
+# Chmy expresses staggering as a per-axis location; Yelmo's node names map to location
+# tuples:
 #
 #   | Yelmo node | horizontal location  | typical fields                              |
 #   |------------|----------------------|---------------------------------------------|
@@ -12,16 +11,14 @@
 #   | `acy`      | `(Center, Vertex)`   | v, taud_acy, β_acy, q_y                     |
 #   | `ab`       | `(Vertex, Vertex)`   | ε̇_xy, σ_xy, corner viscosity               |
 #
-# Vertically, layer midpoints (`ζ_aa`) are z-`Center` and layer interfaces (`ζ_ac`) are
+# Vertically, layer midpoints (`ζ_aa`) are z-`Center`, layer interfaces (`ζ_ac`) are
 # z-`Vertex`; the `_AC` suffix below marks the interface variants (vertical shear ε̇_xz,
-# ε̇_yz, the vertical velocity w and everything differentiated with respect to z).
+# ε̇_yz, w, and anything differentiated w.r.t. z).
 #
-# The locations are not free choices: they follow from the operators. `∂x` maps
-# `Vertex → Center` along x and leaves the other axes alone, so e.g. `∂u/∂y` with
-# `u` at `acx` lands on `ab`, exactly where ε̇_xy lives, and `∂w/∂x` with `w` at
-# `aa_ac` lands on `acx_ac`, exactly where ε̇_xz lives. The assignment below is the
-# unique one consistent with the C-grid (and agrees with Chmy's own `TensorField{3}`
-# component locations).
+# Locations follow from the operators, not free choice: `∂x` maps `Vertex → Center` along
+# x, so `∂u/∂y` with `u` at `acx` lands on `ab` (where ε̇_xy lives), and `∂w/∂x` with `w`
+# at `aa_ac` lands on `acx_ac` (where ε̇_xz lives) — the unique assignment consistent with
+# the C-grid, matching Chmy's own `TensorField{3}` component locations.
 
 const NODE_AA = (Center(), Center(), Center())
 const NODE_ACX = (Vertex(), Center(), Center())
@@ -58,7 +55,7 @@ $(TYPEDSIGNATURES)
 """
 struct TopographicMasks{AA}
     is_ice::AA
-    is_ice_neighbour::AA        # ice-free but touching ice: the ring the margin advances into
+    is_ice_neighbour::AA
     is_ice_allowed::AA
     is_grounded::AA
     is_floating::AA
@@ -215,40 +212,32 @@ Adapt.@adapt_structure MechanicTopographyState
 """
 $(TYPEDSIGNATURES)
 
-`rate_factor_depthaveraged` is a prescribed input, exactly like `viscosity_depthaveraged`
-itself — nothing in `MechanicState` derives it from temperature (`ThermodynamicState` is a
-separate, unconnected sibling; see `roadmaps/PT-autotune.md`, Phase 1). It exists so the
+Material properties feeding the momentum balance. `viscosity`/`viscosity_depthaveraged` are
+the 3D and depth-averaged ice viscosity. `rate_factor`/`rate_factor_depthaveraged` are
+prescribed inputs, not derived from temperature (`ThermodynamicState` is a separate,
+unconnected sibling; see `roadmaps/PT-autotune.md`, Phase 1); they exist only for the
 pseudo-transient solver's Glen-law viscosity continuation
-([`GlenViscosityContinuation`](@ref)) has a rate factor to read; solvers that never enable
-continuation (the default) never read it.
+([`GlenViscosityContinuation`](@ref)), and `rate_factor` is filled by broadcasting
+`rate_factor_depthaveraged` down the column in the isothermal case. `viscosity_integral_1`/
+`viscosity_integral_2` are DIVA's generalized viscosity integrals `F_m = ∫_b^s
+(1/µ)((s-z)/H)^m dz` (Robinson et al. 2022, Eq. 15), written by `viscosity_integrals!` and
+kept here next to the viscosity they integrate rather than in `FrictionState`; zero on any
+state that never runs DIVA.
 """
 struct MechanicMaterialState{AA2,AA3}
     viscosity_depthaveraged::AA2
     viscosity::AA3
     rate_factor_depthaveraged::AA2
-
-    # The column rate factor `A(z)`, feeding Glen's law for the 3D viscosity `µ(z)` that
-    # DIVA needs. A prescribed input, exactly like `rate_factor_depthaveraged` — nothing
-    # here derives it from temperature, since `ThermodynamicState` is still an unconnected
-    # sibling (`roadmaps/chmy.md`, Phase 3, decision 9). Filling it by broadcasting the
-    # depth-averaged value down the column is the isothermal case, and is what the tests do.
     rate_factor::AA3
-
-    # DIVA's generalized viscosity integrals `F_m = ∫_b^s (1/µ)((s-z)/H)^m dz` (Robinson
-    # et al. 2022, Eq. 15), written by `viscosity_integrals!`. They live here, next to the
-    # viscosity they integrate, rather than in `FrictionState` next to the `beta_eff` they
-    # feed: grouped by what they are, not by who reads them — the same argument that keeps
-    # `viscosity` itself apart from the friction that scales it. Zero on any state that
-    # never runs DIVA (`roadmaps/chmy.md`, Phase 3, decision 3).
     viscosity_integral_1::AA2
     viscosity_integral_2::AA2
 end
 Adapt.@adapt_structure MechanicMaterialState
 
-# `beta`, `beta_eff` and `c_bed` are evaluated at `aa`, where the effective pressure and
-# the basal velocity magnitude they depend on live. The C-grid needs β on the velocity
-# faces (`β_acx`, `β_acy`); whether those become stored fields or an inline `lerp` inside
-# the momentum kernel is a Phase 3 decision (see `roadmaps/chmy.md`).
+# beta, beta_eff, c_bed live at `aa`, where the effective pressure and basal velocity
+# magnitude they depend on are evaluated. Whether β on the velocity faces (β_acx/acy)
+# becomes stored fields or an inline `lerp` in the momentum kernel is a Phase 3 decision
+# (see `roadmaps/chmy.md`).
 struct FrictionState{AA}
     beta::AA
     beta_eff::AA
@@ -256,12 +245,10 @@ struct FrictionState{AA}
 end
 Adapt.@adapt_structure FrictionState
 
-# The depth-integrated mass flux q = H ū is what the continuity equation differentiates,
-# and `∂H/∂t = -divg(q)` is only conservative if the two components sit on the cell faces
-# the divergence reads (`acx`/`acy`) — a single `aa` flux would have to be re-staggered
-# inside the divergence, which is exactly the half-cell shift the C-grid exists to avoid.
-# `grline` is a grounding-line diagnostic, not a term in the continuity equation, so it
-# stays a cell-centred scalar at `aa`.
+# The flux q = Hū must sit on the cell faces the continuity equation's divergence reads
+# (acx/acy) for `∂H/∂t = -divg(q)` to stay conservative — a cell-centred `aa` flux would
+# need re-staggering inside the divergence. `grline` is a grounding-line diagnostic, not a
+# continuity term, so it stays at `aa`.
 struct FluxState{ACX2,ACY2,AA2}
     x::ACX2
     y::ACY2
@@ -276,17 +263,10 @@ struct StressState{ACX2,ACY2,AA2,AB2,AA3,AB3,ACXZ3,ACYZ3}
     base_y::ACY2
     base_vertical::AA2
 
-    # The depth-integrated membrane stress the SSA/DIVA momentum balance differentiates:
-    # `membrane_xx = 2µ̄H(2ūx + v̄y)`, `membrane_xy = µ̄H(ūy + v̄x)`,
-    # `membrane_yy = 2µ̄H(ūx + 2v̄y)` (Robinson et al. 2022, Eq. 14). Depth-integrated, so
-    # 2D — `aa` for the normal components, `ab` for the shear one, exactly where the
-    # gradients that build them already live.
-    #
-    # These used to be written into `strainrate.xx`/`xy`/`yy`, which are `AA3`/`AB3`: legal
-    # only while `nz == 1` collapsed the two shapes, and misnamed besides (the old
-    # `strainrate!` docstring says so itself — the quantity is a stress, not a strain
-    # rate). Moving it here fixes both at once, and returns `strainrate.xx`/`xy`/`yy` to
-    # meaning only the true strain rate (`roadmaps/chmy.md`, Phase 3, decision 2).
+    # Depth-integrated membrane stress the SSA/DIVA momentum balance differentiates:
+    # membrane_xx = 2µ̄H(2ūx + v̄y), membrane_xy = µ̄H(ūy + v̄x),
+    # membrane_yy = 2µ̄H(ūx + 2v̄y) (Robinson et al. 2022, Eq. 14) — `aa` for the normal
+    # components, `ab` for the shear one, where the gradients that build them live.
     membrane_xx::AA2
     membrane_xy::AB2
     membrane_yy::AA2
@@ -318,17 +298,11 @@ struct StrainRateState{AA2,AA3,AB3,ACXZ3,ACYZ3}
     zy::ACYZ3
     zz::AA3
 
-    # The two effective strain rates are *different quantities*, not one quantity at two
-    # resolutions, which is why they get separate fields rather than one shared `AA3`.
-    #
-    # `effective` is DIVA's (Robinson et al. 2022, Eq. 13): it carries the vertical-shear
-    # terms `¼(u_z² + v_z²)`, so it genuinely differs layer by layer, and it feeds the 3D
-    # `material.viscosity`. `effective_depthaveraged` is the SSA one (Eq. 12) — the same
-    # expression with the shear terms dropped — a single number per column, feeding
-    # `material.viscosity_depthaveraged`.
-    #
-    # One `AA3` field served both only while `nz == 1` collapsed `AA2` and `AA3` onto the
-    # same shape (`roadmaps/chmy.md`, Phase 3, decision 20).
+    # `effective` and `effective_depthaveraged` are different quantities, not one value at
+    # two resolutions. `effective` is DIVA's (Robinson et al. 2022, Eq. 13): it carries the
+    # vertical-shear terms ¼(u_z² + v_z²), differs layer by layer, and feeds the 3D
+    # `material.viscosity`. `effective_depthaveraged` is the SSA one (Eq. 12), the same
+    # expression with the shear terms dropped, feeding `material.viscosity_depthaveraged`.
     effective::AA3
     effective_depthaveraged::AA2
 end
