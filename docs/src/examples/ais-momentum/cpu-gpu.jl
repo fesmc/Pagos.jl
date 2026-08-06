@@ -19,6 +19,19 @@ compile on first use (`GPUCompiler`), and that one-time cost is comparable in si
 treatment — that confound is flagged instead of fixed — because CPU JIT is a much smaller
 fraction of a CPU solve's wall-clock.)
 
+The warm-up must run *past* `SOLVER_KWARGS`'s tuning cadence
+(`AutotunedDynamicRelaxation(cadence = 50)`), not just past a handful of iterations:
+`_arm_tuning`/`_tune!` and their `mapreduce`s first execute at iteration 50, so a
+`maxiter = 5` warm-up leaves them uncompiled and their ~4 s of `GPUCompiler` time lands
+inside the *timed* solve instead — a 44 ms/iter artifact masquerading as GPU cost on a loop
+that is really ~2.5 ms/iter once warm. `maxiter = 55` below clears the cadence with margin.
+
+CUDA is imported and the device touched *before* `include("helpers.jl")`, not after:
+`helpers.jl` ends in `set_theme!(theme_latexfonts())`, and CairoMakie's font initialisation
+leaves the process unable to initialize the CUDA driver afterward
+(`CUDA_ERROR_NOT_INITIALIZED`) — which would otherwise make `CUDA.functional()` false below
+and silently skip the entire GPU comparison.
+
 The warm-up runs **in place on `mech_gpu`** rather than on a second throwaway state: an 8 GB
 card holds one adapted `MechanicState` (~3.3 GB) comfortably but not two at once, and
 `GC.gc(); CUDA.reclaim()` on a discarded GPU state does not reliably return its memory to the
@@ -27,8 +40,18 @@ warming up on `mech_gpu` itself and resetting its velocity to zero before the ti
 gets the same benefit without ever holding two full states at once.
 =#
 resolution_km = 8
-include(joinpath(@__DIR__, "helpers.jl"))
+
+# `helpers.jl` activates this project and loads CairoMakie; do that first, then pin up the
+# CUDA context before CairoMakie's font setup can interfere with it (see note above).
+using Pkg
+Pkg.activate(joinpath(@__DIR__, "../../.."))
 using CUDA
+if CUDA.functional()
+    CUDA.zeros(1)
+    CUDA.synchronize()
+end
+
+include(joinpath(@__DIR__, "helpers.jl"))
 
 diva = run_solve(DIVAMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...)
 println("DIVA, CPU: ", (; diva.converged, diva.iterations, diva.elapsed, diva.residual))
@@ -70,10 +93,12 @@ if CUDA.functional()
     GC.gc()
     CUDA.reclaim()
 
-    # Warm-up: cheap throwaway solve (loose abstol, low maxiter) to force kernel compilation
+    # Warm-up: cheap throwaway solve (abstol = 0, fixed maxiter) to force kernel compilation
     # off the clock — runs in place on mech_gpu (see note above); velocity resets to zero
-    # before the real, timed solve reuses the same state.
-    solve_on!(mech_gpu, grid_gpu, rt_gpu, mask_gpu; SOLVER_KWARGS..., maxiter = 5, abstol = 0.0)
+    # before the real, timed solve reuses the same state. maxiter = 55 clears
+    # SOLVER_KWARGS's tuning cadence of 50 (see note above) so _arm_tuning/_tune! compile
+    # here rather than during the timed solve.
+    solve_on!(mech_gpu, grid_gpu, rt_gpu, mask_gpu; SOLVER_KWARGS..., maxiter = 55, abstol = 0.0)
     setdata!(mech_gpu.velocity.depthaverage_x, 0.0)
     setdata!(mech_gpu.velocity.depthaverage_y, 0.0)
     println("GPU warm-up done (kernels compiled, not timed).")
@@ -104,7 +129,7 @@ if CUDA.functional()
         "speedup = $(round(diva.elapsed / diva_gpu.elapsed, sigdigits = 3))x   |   " *
         "RMSE = $(round(sqrt(mean(abs2, diff_gpu_vals)), sigdigits = 3)) m/yr",
         fontsize = 12)
-    save("$figdir/cpu-gpu.png", fig4)
+    save("$figdir/cpu-gpu-$(resolution_km)km.png", fig4)
     fig4
 else
     println("CUDA.functional() == false — skipping the CPU vs GPU comparison.")
