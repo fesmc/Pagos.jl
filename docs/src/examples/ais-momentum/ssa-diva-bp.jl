@@ -47,12 +47,12 @@ diva = run_solve(DIVAMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...)
 println("DIVA: ", (; diva.converged, diva.iterations, diva.elapsed, diva.residual))
 
 bp   = run_solve(BlatterPattynMomentumBalance(), grid, rt, mask;
-    abstol = 1e-3, maxiter = 2000, ncheck = 10, printout_every = 10,
-    pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.8),
+    abstol = 4e-2, maxiter = 2000, ncheck = 10, printout_every = 10,
+    pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.5),
     convergence = ScaledResidual(),
     friction_update = ActiveFrictionUpdate(),
     tuning = AutotunedDynamicRelaxation(cadence = 1),
-    vertical_treatment = ExplicitVertical())
+    vertical_treatment = ImplicitVertical(grid))
 println("BP:   ", (; bp.converged, bp.iterations, bp.elapsed, bp.residual))
 
 #=
