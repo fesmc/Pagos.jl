@@ -75,15 +75,41 @@ end
 pagos_slices = RUN_PAGOS ? [p.slice for p in pagosA] : nothing
 
 #=
+`helpers.jl` explains why a hand-rolled periodic loop is needed here too, and why it can
+reuse the library's own [`pseudo_rate!`](@ref) unmodified where BP's could not: DIVA's
+per-iteration step has no terrain-following correction to interleave a halo refresh into.
+Solved with the default [`GershgorinPseudoTimeStep`](@ref) tuning of `Δτ`, the same bound
+`run_pagos_bp` uses, extended with the basal-drag term `diva_update!`'s `β_eff` feeds it.
+=#
+pagosA_diva = nothing
+if RUN_PAGOS
+    println("\nPagos DIVA (periodic halo, Gershgorin-tuned PT) on ",
+            USE_GPU ? "GPU" : "CPU", ":")
+    pagosA_diva = Vector{Any}(undef, length(LENGTHS_KM))
+    for (i, L) in enumerate(LENGTHS_KM)
+        r = run_pagos_diva(:A, L); G = pagos_fields(r)
+        j = argmin(abs.(G.y .- SLICE_Y))
+        pagosA_diva[i] = (; n = r.nx, G.x, G.y, G.vx, G.vy, G.vz, G.txz, G.tyz, G.dp,
+                            slice = (; G.x, vx = G.vx[:, j], vz = G.vz[:, j],
+                                       txz = G.txz[:, j], dp = G.dp[:, j]),
+                            y_slice = G.y[j], x_fastest = true, r.converged, r.err)
+        @printf("  L = %3d km   nx = %d, nz = %d   %7.1fs  %6d iters  err = %.1e %s\n",
+                L, r.nx, r.nz, r.elapsed, r.iters_used, r.err, r.converged ? "ok" : "!!")
+    end
+end
+pagos_diva_slices = RUN_PAGOS ? [p.slice for p in pagosA_diva] : nothing
+
+#=
 ## Profiles at `ŷ ≈ 0.25`
 
 The shaded band is the full-Stokes min–max envelope at each domain length; the solid line is
-Pagos BP. The slice is where `sin(ω y) = 1`, so the bed bumps are cut at their full 500 m
-amplitude.
+Pagos BP, the dashed line Pagos DIVA. The slice is where `sin(ω y) = 1`, so the bed bumps are
+cut at their full 500 m amplitude.
 =#
 figA = profile_figure(refsA, pagos_slices,
                       "ISMIP-HOM A — bumpy bed, no slip; slice at y/L ≈ 0.25",
-                      length(MODELS); flips = flipsA, dpmask = dpmaskA)
+                      length(MODELS); flips = flipsA, dpmask = dpmaskA,
+                      pagos2 = pagos_diva_slices)
 save(joinpath(figdir, "ismip-hom-a.png"), figA)
 figA
 

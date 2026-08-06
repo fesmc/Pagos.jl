@@ -133,7 +133,7 @@ MODELS = @isdefined(MODELS) ? MODELS : ["rhi3", "oga", "aas2", "rhi1"]
 const LENGTHS_KM = [160, 80, 40, 20, 10]
 const SLICE_Y = 0.25
 
-figdir = joinpath(@__DIR__, "..", "figs")
+figdir = joinpath(@__DIR__, "figs")
 mkpath(figdir)
 
 #=
@@ -485,6 +485,175 @@ function run_pagos_bp(experiment, L_km; nx = PAGOS_NX[experiment], nz = PAGOS_NZ
 end
 
 #=
+## Running Pagos' DIVA solver on the same experiments
+
+`roadmaps/chmy.md` Phase 3. DIVA is depth-integrated exactly like SSA, so — unlike BP — the
+library's own per-iteration step, [`pseudo_rate!`](@ref), needs no surgery for periodicity:
+the depth-averaged velocity gradients, membrane stress and basal update it assembles are all
+either local reads or direct neighbour differences, the same node algebra
+[`pseudo_rate!(..., ::MomentumBalance3D, ...)`](@ref) already relies on inside `bp_iterate!`.
+What breaks under periodicity is only what [`pseudo_transient!`](@ref) does *outside*
+`pseudo_rate!`: the `bc!(…, Neumann())` calls on `velocity.depthaverage_x`/`y` (the same
+`Chmy.BoundaryConditions.batch_impl` gap documented above `bp_iterate!`), and the
+caller-driven DIVA depth-integrated-viscosity chain ([`diva_update!`](@ref)), whose
+`µ̄`/`β_eff` outputs are read one node beyond their own launch range and so need the periodic
+seam refreshed explicitly — exactly like BP's viscosity halo.
+
+So [`pseudo_rate!`](@ref) is called unmodified — it is exported precisely so callers can do
+this — and only the two things `pseudo_transient!` does around it are replaced: `bc!` becomes
+[`periodic_halo!`](@ref), and `diva_update!`'s outputs get an explicit halo refresh before
+anything downstream reads them across the seam.
+
+!!! note "Which fields need the seam refreshed, and why membrane stress itself does not"
+    `depthaverage_velocitygradients!` writes `x_dy`/`y_dx` (at `ab`) from `depthaverage_x`/`y`
+    (periodic already, via the velocity halo below); [`membranestress!`](@ref) then reads
+    them at their *own* node, no interpolation, so it needs nothing further. `diva_update!`'s
+    `effective_strainrate_diva!`, however, `lerp`s them onto `aa` — a neighbour of an
+    already-one-ring-extended field, the same "gradient of a gradient" reach that forces BP's
+    terrain correction to halo `x_dz`/`y_dz` — so `depthaverage_x_dy`/`y_dx` need an explicit
+    refresh before the *next* `diva_update!` call reads them. `viscosity_depthaveraged` and
+    `beta_eff` are `hlerp`/`lerp`ed the same way — in `membranestress!`, in
+    `update_basalstress!` and in the Gershgorin bound — so both are haloed right after
+    `diva_update!` writes them, before `pseudo_rate!` runs.
+=#
+function diva_iterate!(mech, solver, rt, momentum, cst, nx, ny; iters, gamma, theta_v,
+                       glen::Bool, dt_refresh, ncheck, rtol, scale,
+                       trace = nothing, stagnation = true)
+    ux, uy = mech.velocity.depthaverage_x, mech.velocity.depthaverage_y
+    err, errprev, used = Inf, Inf, 0
+    for iter in 1:iters
+        used = iter
+        if glen
+            diva_update!(mech, solver, rt)
+            periodic_halo!(mech.material.viscosity_depthaveraged, nx, ny)
+            periodic_halo!(mech.friction.beta_eff, nx, ny)
+            iter % dt_refresh == 0 && pseudo_dt!(solver, mech, cst, rt)
+        end
+        pseudo_rate!(mech, cst, rt, momentum, solver; gamma)
+        ## Read by the *next* `diva_update!` (see the note above), not by anything in this
+        ## iteration — so the refresh can wait until after `pseudo_rate!` has written them.
+        periodic_halo!(mech.velocity.depthaverage_x_dy, nx, ny)
+        periodic_halo!(mech.velocity.depthaverage_y_dx, nx, ny)
+        copyto!(asarray(solver.velocity_x_old), asarray(ux))
+        copyto!(asarray(solver.velocity_y_old), asarray(uy))
+        pseudo_vel!(asarray(ux), asarray(solver.velocity_x_old),
+                    asarray(solver.velocity_x_dt), asarray(solver.dtau_x), theta_v)
+        pseudo_vel!(asarray(uy), asarray(solver.velocity_y_old),
+                    asarray(solver.velocity_y_dt), asarray(solver.dtau_y), theta_v)
+        periodic_halo!(ux, nx, ny); periodic_halo!(uy, nx, ny)
+        if iter % ncheck == 0
+            err = max(maximum(abs, interior(solver.residual_x)),
+                      maximum(abs, interior(solver.residual_y))) / scale
+            trace === nothing || push!(trace, (iter, err))
+            (isfinite(err) && err > rtol) || break
+            ## Same stagnation guard as `bp_iterate!`, for the same frozen-bed reason.
+            (stagnation && abs(err - errprev) < 1e-4 * err && iter > 4000) && break
+            errprev = err
+        end
+    end
+    return err, used
+end
+
+#=
+!!! note "The caller fills `friction.beta` (bare), not `beta_eff`"
+    Unlike BP and SSA, DIVA *derives* `β_eff` from the bare friction coefficient `β` and the
+    viscosity integral `F₂` (Eqs. 19–20 of Robinson et al. 2022) — handing it a pre-filled
+    `beta_eff` would let it silently skip the depth-integrated correction ISMIP-HOM is meant
+    to exercise. The same numeric value as `BETA_NOSLIP` still gives the no-slip limit: at
+    the operating viscosity `F₂ = H/(3µ) ~ 2e-4`, so `β_eff → 1/F₂ ~ 5e3` once `β ≫ 1/F₂`,
+    the frozen-bed asymptote (Eq. 20) — bounded by the column's own shear resistance rather
+    than by how large `β` is set, which is the physically correct no-slip behaviour.
+
+!!! note "Warm start: a `β_eff` from the guessed `µ`, without calling `diva_update!`"
+    The frozen-viscosity warmup stage still needs a `β_eff` to iterate the velocity against,
+    but must not run the real Glen continuation on the `u = 0` strain rate — the same
+    cold-start trap `run_pagos_bp` avoids by holding `µ` fixed. So the warmup `β_eff` is
+    derived by hand from the guessed constant `µ` ([`viscosity_integrals!`](@ref) then
+    [`beta_eff_diva!`](@ref), skipping [`update_viscosity!`](@ref) entirely), then held fixed
+    exactly like BP's `µ` until the second stage switches `glen` on.
+=#
+function run_pagos_diva(experiment, L_km; nx = PAGOS_NX[experiment], nz = PAGOS_NZ,
+                        beta0 = BETA_NOSLIP, warmup = 2000, iters = 60000, gamma = 0.6,
+                        theta_v = 0.6, theta_mu = 0.05, reg = 1e-8, dt_refresh = 20,
+                        ncheck = 250, rtol = 1e-5, cfl = 0.9,
+                        trace = nothing, stagnation = true)
+    L = L_km * 1e3; ω = 2π / L
+    ny = experiment === :A ? nx : 4          # exp B has no y dependence
+    dx = L / nx
+    layering = CorrectedVerticalLayering(T_PAGOS, QuadraticSigmaTransform(T_PAGOS, nz))
+
+    ## Build and fill on the CPU — see "CPU or GPU" above — then move the whole state at once.
+    grid_cpu = StaggeredGrid(T_PAGOS, L, ny * dx, dx, dx, layering)
+    mech_cpu = MechanicState(grid_cpu)
+    bump = experiment === :A ? (x, y) -> sin(ω * x) * sin(ω * y) : (x, y) -> sin(ω * x)
+    fill_xy!(mech_cpu.topography.thickness, grid_cpu.grid2d, (x, y) -> 1000 - 500 * bump(x, y))
+    fill_xy!(mech_cpu.topography.surface,   grid_cpu.grid2d, (x, y) -> -x * SLOPE)
+    fill_xy!(mech_cpu.friction.beta,        grid_cpu.grid2d, (x, y) -> beta0)
+    fill_xy!(mech_cpu.material.rate_factor, grid_cpu.grid,   (x, y) -> A_GLEN)
+    fill_xy!(mech_cpu.material.viscosity,   grid_cpu.grid,   (x, y) -> MU_GUESS)
+    fill_xy!(mech_cpu.material.viscosity_depthaveraged, grid_cpu.grid2d, (x, y) -> MU_GUESS)
+    setdata!(mech_cpu.velocity.depthaverage_x, zero(T_PAGOS))
+    setdata!(mech_cpu.velocity.depthaverage_y, zero(T_PAGOS))
+
+    grid = USE_GPU ?
+        StaggeredGrid(Arch(CUDABackend()), T_PAGOS, L, ny * dx, dx, dx, layering) : grid_cpu
+    mech = USE_GPU ? Pagos.Adapt.adapt(CuArray, mech_cpu) : mech_cpu
+    rt = Runtime(grid); cst = Constants{T_PAGOS}()
+    momentum = DIVAMomentumBalance()
+    periodic_halo!(mech.velocity.depthaverage_x, nx, ny)
+    periodic_halo!(mech.velocity.depthaverage_y, nx, ny)
+
+    ## `PseudoTransientSolver(grid; …)`, not `(grid, momentum; …)`: DIVA's work arrays live on
+    ## `grid.grid2d` like SSA's, not on the column grid BP's constructor builds them on.
+    solver = PseudoTransientSolver(grid;
+        viscosity_continuation = DIVAViscosityContinuation(T_PAGOS; n_glen = 3, theta_mu,
+                                                            strainrate_reg = reg),
+        friction_update = ActiveFrictionUpdate(),
+        pseudo_timestep = GershgorinPseudoTimeStep(; cfl))
+
+    drivingstress!(mech, cst, rt)
+    ## Warmup β_eff from the guessed constant µ — see the note above.
+    viscosity_integrals!(mech.material.viscosity_integral_1,
+                        mech.material.viscosity_integral_2, mech, rt)
+    beta_eff_diva!(mech, rt)
+    periodic_halo!(mech.friction.beta_eff, nx, ny)
+    ## Same normalizer concept as `run_pagos_bp`'s `scale`, adapted to DIVA's per-*area*
+    ## residual (`dotvel!` divides by `ρH`, not `ρ`): the domain-mean thickness stands in for
+    ## the per-node `lerp`'d `H` `_driving_rate!` would use, which is more machinery than a
+    ## convergence-gate normalizer needs — the ±500 m bed bumps mostly average out of a 1000 m
+    ## mean, and `rtol` only has to be within an order of magnitude of "converged" to be useful.
+    scale = maximum(abs, interior(mech.stress.driving_x)) /
+            (cst.density_ice * mean(interior(mech.topography.thickness)))
+    pseudo_dt!(solver, mech, cst, rt)
+
+    t0 = time()
+    diva_iterate!(mech, solver, rt, momentum, cst, nx, ny; iters = warmup, gamma, theta_v,
+                 glen = false, dt_refresh, ncheck, rtol = 1e-8, scale)
+    err, iters_used = diva_iterate!(mech, solver, rt, momentum, cst, nx, ny; iters, gamma,
+                                    theta_v, glen = true, dt_refresh, ncheck, rtol, scale,
+                                    trace, stagnation)
+    elapsed = time() - t0
+
+    ## Post-solve diagnostics: reconstruct the 3D profile ([`velocities3D!`](@ref), Eq. 16) so
+    ## surface `vx`/`vz` and bed `Δp` compare against the same quantities BP reports —
+    ## `pagos_fields` below reads `mech.velocity.x`/`y`/`x_dx`/`y_dy` and
+    ## `mech.material.viscosity` regardless of which momentum balance produced them. The halo
+    ## choreography mirrors `bp_iterate!`'s exactly, run once here rather than every iteration.
+    velocities3D!(mech, rt, momentum)
+    periodic_halo!(mech.velocity.x, nx, ny); periodic_halo!(mech.velocity.y, nx, ny)
+    velocitygradients!(mech.velocity, mech.topography.thickness, rt)
+    periodic_halo!(mech.velocity.x_dz, nx, ny); periodic_halo!(mech.velocity.y_dz, nx, ny)
+    terrain_metric_correction!(mech.velocity, mech.topography.thickness,
+                               mech.topography.surface, rt)
+    periodic_halo!(mech.velocity.x_dx, nx, ny); periodic_halo!(mech.velocity.y_dy, nx, ny)
+    periodic_halo!(mech.velocity.x_dy, nx, ny); periodic_halo!(mech.velocity.y_dx, nx, ny)
+    verticalvelocity!(mech, rt)
+
+    return (; grid, rt, mech, nx, ny, nz, L, err, iters_used, elapsed,
+              converged = err <= rtol)
+end
+
+#=
 Diagnostics, mapped onto the reference submissions' own output convention (§ "File format"):
 everything is reported at cell centres on the normalized abscissa `x̂ = x/L`. Every field is
 pulled to the host with `Array` first — one bulk transfer each, for the same reason the fill
@@ -640,11 +809,23 @@ magnitude and share only their abscissa, so a twin axis would be unreadable *and
 invite false slope comparisons.
 
 `refs[i]` is the vector of reference profiles at `LENGTHS_KM[i]`; `pagos[i]` is the single
-Pagos profile there, or `nothing` to plot the reference ensemble alone.
+Pagos profile there, or `nothing` to plot the reference ensemble alone. `pagos2` is a second
+Pagos curve (DIVA, run alongside BP) plotted **dashed** rather than with a second colour
+channel — colour is already spent on domain length, so a second model reuses it and encodes
+its identity in linestyle instead, exactly the fill-vs-line split the module docs above
+describe for the reference band vs. `pagos`.
+
+`FS_ALPHA` is shared with the Legend swatches below so the two never drift apart; it sits
+above the fully-transparent end of the range precisely because five overlapping bands at very
+low alpha wash out to indistinguishable pale colour — this value is picked to keep the
+per-length band readable while still letting the Pagos lines on top show through.
 =#
+const FS_ALPHA = 0.38
+
 function profile_figure(refs, pagos, suptitle, nmodels;
                         flips = fill(ones(nmodels), length(LENGTHS_KM)),
-                        dpmask = trues(nmodels))
+                        dpmask = trues(nmodels), pagos2 = nothing,
+                        pagos_label = "Pagos BP", pagos2_label = "Pagos DIVA")
     fig = Figure(size = (1250, 820))
     Label(fig[0, 1:3], suptitle; fontsize = 19, font = :bold, padding = (0, 0, 6, 0))
     for (p, (key, lab)) in enumerate(PANEL_KEYS)
@@ -661,7 +842,7 @@ function profile_figure(refs, pagos, suptitle, nmodels;
             members = key === :dp ? refs[i][dpmask] : refs[i]
             flip = key === :dp ? flips[i][dpmask] : ones(length(members))
             lo, hi = fs_envelope(members, key; flip)
-            band!(ax, XQ, lo, hi; color = (LCOLORS[i], 0.25))
+            band!(ax, XQ, lo, hi; color = (LCOLORS[i], FS_ALPHA))
         end
         if pagos !== nothing
             for (i, _) in enumerate(LENGTHS_KM)
@@ -669,12 +850,24 @@ function profile_figure(refs, pagos, suptitle, nmodels;
                        color = LCOLORS[i], linewidth = 2)
             end
         end
+        if pagos2 !== nothing
+            for (i, _) in enumerate(LENGTHS_KM)
+                lines!(ax, pagos2[i].x, getproperty(pagos2[i], key);
+                       color = LCOLORS[i], linewidth = 2, linestyle = :dash)
+            end
+        end
         xlims!(ax, 0, 1)
     end
+    model_elements = [PolyElement(color = (:gray30, FS_ALPHA)),
+                      LineElement(color = :gray30, linewidth = 2)]
+    model_labels = ["full-Stokes spread\n($nmodels submissions)", pagos_label]
+    if pagos2 !== nothing
+        push!(model_elements, LineElement(color = :gray30, linewidth = 2, linestyle = :dash))
+        push!(model_labels, pagos2_label)
+    end
     Legend(fig[1:2, 3],
-           [[PolyElement(color = (c, 0.25)) for c in LCOLORS],
-            [PolyElement(color = (:gray30, 0.25)), LineElement(color = :gray30, linewidth = 2)]],
-           [LLABELS, ["full-Stokes spread\n($nmodels submissions)", "Pagos BP"]],
+           [[PolyElement(color = (c, FS_ALPHA)) for c in LCOLORS], model_elements],
+           [LLABELS, model_labels],
            ["domain length\nL (km)", "model"]; framevisible = false)
     colsize!(fig.layout, 3, Relative(0.15))
     return fig
