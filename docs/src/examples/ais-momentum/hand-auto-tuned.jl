@@ -19,7 +19,6 @@ diva_fixed = run_solve(DIVAMomentumBalance(), grid, rt, mask;
                        (; SOLVER_KWARGS..., tuning = FixedTuning(), maxiter = 1000)...)
 println("DIVA, FixedTuning() default: ",
        (; diva_fixed.converged, diva_fixed.iterations, diva_fixed.elapsed, diva_fixed.residual))
-ram()
 
 @printf("FixedTuning() default vs AutotunedDynamicRelaxation(), DIVA: %d vs %d iterations, %.3gs vs %.3gs (%.2gx)\n",
        diva_fixed.iterations, diva.iterations, diva_fixed.elapsed, diva.elapsed,

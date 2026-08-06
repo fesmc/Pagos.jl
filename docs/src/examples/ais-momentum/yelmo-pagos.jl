@@ -65,7 +65,6 @@ diff_srf_vals = filter(!isnan, speed_pagos_srf .- speed_yelmo_srf)
 @printf("Pagos DIVA vs Yelmo, surface speed (on-ice, %d cells): RMSE = %.4g m/yr, mean|Δ| = %.4g m/yr, max|Δ| = %.4g m/yr\n",
        length(diff_srf_vals), sqrt(mean(abs2, diff_srf_vals)), mean(abs, diff_srf_vals),
        maximum(abs, diff_srf_vals))
-ram()
 
 fig5 = Figure(size = (1150, 620))
 crange5 = (0, quantile(filter(!isnan, speed_yelmo_srf), 0.995))

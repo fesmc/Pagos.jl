@@ -18,7 +18,6 @@ rt32   = Runtime(grid32)
 
 diva32 = run_solve(DIVAMomentumBalance(), grid32, rt32, mask; SOLVER_KWARGS...)
 println("DIVA Float32: ", (; diva32.converged, diva32.iterations, diva32.elapsed, diva32.residual))
-ram()
 
 diff32 = on_ice(Float32.(diva.speed) .- diva32.speed)
 diff32_vals = filter(!isnan, diff32)
