@@ -52,7 +52,18 @@ function basal_friction!(dyn_now, dyn_ref, topo_now, bf::BasalFriction)
     (; τ_basal, v_basal, β_basal, c_bed, N_eff) = dyn_now
     (; c_bed_ref) = dyn_ref
     (; z_bed, z_bed_σ, z_sl) = topo_now
-    basal_friction!(τ_basal, v_basal, β_basal, c_bed, c_bed_ref, N_eff, z_bed, z_bed_σ, z_sl, bf)
+    basal_friction!(
+        τ_basal,
+        v_basal,
+        β_basal,
+        c_bed,
+        c_bed_ref,
+        N_eff,
+        z_bed,
+        z_bed_σ,
+        z_sl,
+        bf,
+    )
     return nothing
 end
 
@@ -200,27 +211,15 @@ end
 """
 $(TYPEDSIGNATURES)
 """
-function basal_beta(
-    c_bed,
-    v_basal,
-    bb::PrescribedBasalBeta,
-)
+function basal_beta(c_bed, v_basal, bb::PrescribedBasalBeta)
     return bb.beta
 end
-function basal_beta(
-    c_bed,
-    v_basal,
-    bb::PseudoPlasticPowerBasalBeta,
-)
+function basal_beta(c_bed, v_basal, bb::PseudoPlasticPowerBasalBeta)
     (; v_0, v_reg, q) = bb
     v_basal_norm = norm(v_basal) + v_reg
     return c_bed * (v_basal_norm / v_0) ^ q / v_basal_norm
 end
-function basal_beta(
-    c_bed,
-    v_basal,
-    bb::CoulombBasalBeta,
-)
+function basal_beta(c_bed, v_basal, bb::CoulombBasalBeta)
     (; v_0, v_reg, q) = bb
     v_basal_norm = norm(v_basal) + v_reg
     return c_bed * (v_basal_norm / (v_basal_norm + v_0)) ^ q / v_basal_norm
@@ -229,12 +228,7 @@ end
 """
 $(TYPEDSIGNATURES)
 """
-function basal_beta!(
-    β_basal,
-    c_bed,
-    v_basal,
-    bb::AbstractBasalBeta,
-)
+function basal_beta!(β_basal, c_bed, v_basal, bb::AbstractBasalBeta)
     pointwise!(basal_beta, β_basal, (c_bed, v_basal), (bb,))
     return nothing
 end
@@ -256,8 +250,7 @@ end
 """
 $(TYPEDSIGNATURES)
 """
-struct FractionBasalBetaGroundingZone <: AbstractBasalBetaGroundingZone
-end
+struct FractionBasalBetaGroundingZone <: AbstractBasalBetaGroundingZone end
 
 """
 $(TYPEDSIGNATURES)
@@ -276,12 +269,7 @@ end
 """
 $(TYPEDSIGNATURES)
 """
-function basal_beta_gz(
-    beta,
-    mask_gz,
-    f_grounded,
-    bbgz::FgroundBasalBetaGroundingZone,
-)
+function basal_beta_gz(beta, mask_gz, f_grounded, bbgz::FgroundBasalBetaGroundingZone)
     @assert 0 <= f_grounded <= 1 "Grounding line fraction f_grounded must be in [0, 1]"
     if mask_gz
         return f_grounded * beta
@@ -290,12 +278,7 @@ function basal_beta_gz(
     end
 end
 
-function basal_beta_gz(
-    beta,
-    mask_gz,
-    f_gzone,
-    bbgz::FractionBasalBetaGroundingZone,
-)
+function basal_beta_gz(beta, mask_gz, f_gzone, bbgz::FractionBasalBetaGroundingZone)
     @assert 0 <= f_gzone <= 1 "Grounding zone fraction f_gzone must be in [0, 1]"
     if mask_gz
         return beta * f_gzone
@@ -304,12 +287,7 @@ function basal_beta_gz(
     end
 end
 
-function basal_beta_gz(
-    beta,
-    mask_gz,
-    H_grounded,
-    bbgz::HgroundBasalBetaGroundingZone,
-)
+function basal_beta_gz(beta, mask_gz, H_grounded, bbgz::HgroundBasalBetaGroundingZone)
 
     if mask_gz
         f_scale = max(min(H_grounded, bbgz.H_grounded_lim) / bbgz.H_grounded_lim, 0)
@@ -327,7 +305,7 @@ function basal_beta_gz(
     ρ_seawater_div_ρ_ice,
     bbgz::ZstarBasalBetaGroundingZone,
 )
-    
+
     if z_bed >= z_sl
         f_scale = H_eff
     else
@@ -404,7 +382,7 @@ function StddevBedRoughnessSampling(T, n_sigma, n_sd)
     samples = Vector{T}(undef, n_sd)
 
     if n_sd > 1
-        for q in 1:n_sd
+        for q = 1:n_sd
             f_sd[q] = f_sd_min + (f_sd_max - f_sd_min) * (q - 1) / (n_sd - 1)
             w_sd[q] = exp(-0.5 * f_sd[q] ^ 2) / sqrt(2 * π)
         end
@@ -475,10 +453,10 @@ function c_bed_ref(
     brs::StddevBedRoughnessSampling,
     bt::ABT,
     ss::ASS,
-) where {ABT<:AbstractCbedRef, ASS<:AbstractSedimentScaling}
+) where {ABT<:AbstractCbedRef,ASS<:AbstractSedimentScaling}
 
     (; n_sd, f_sd, w_sd, samples) = brs
-    for q in 1:n_sd
+    for q = 1:n_sd
         λ_bed = lambda_bed(z_bed + f_sd[q] * z_bed_σ, z_sl, bt.z0, bt.z1, bt)
         # @dev TODO: floored at zero as a placeholder (non-negative friction) until an
         # actual minimum `cf_min` is wired in.
@@ -492,20 +470,12 @@ end
 # with each other.
 function lambda_bed(z_bed, z_sl, z0, z1, bt::LinearElevationCbedRef)
     z_rel = z_sl - z_bed
-    return saturate(
-        (z_rel - z0) / (z1 - z0),
-        0.0,
-        1.0,
-    )
+    return saturate((z_rel - z0) / (z1 - z0), 0.0, 1.0)
 end
 
 function lambda_bed(z_bed, z_sl, z0, z1, bt::ExponentialElevationCbedRef)
     z_rel = z_sl - z_bed
-    return saturate(
-        1.0 - exp(- (z_rel - z0) / (z1 - z0)),
-        0.0,
-        1.0,
-    )
+    return saturate(1.0 - exp(- (z_rel - z0) / (z1 - z0)), 0.0, 1.0)
 end
 
 #######################################################################
@@ -517,7 +487,7 @@ struct AngularCbed <: AbstractCbed end
 struct LinearCbed <: AbstractCbed end
 
 function c_bed(c_bed_ref, N_eff, cb::AngularCbed)
-    return tan( deg2rad(c_bed_ref) ) * N_eff
+    return tan(deg2rad(c_bed_ref)) * N_eff
 end
 
 function c_bed(c_bed_ref, N_eff, cb::LinearCbed)
@@ -558,14 +528,11 @@ function basal_shear_stress(
 ) where {V<:AbstractVector{<:Real}}
     (; v_0, v_reg, q) = friction
     v_basal_norm = norm(v_basal) + v_reg
-    return - c_basal * (v_basal_norm / (v_basal_norm + v_0)) ^ q * v_basal / v_basal_norm
+    return - c_basal * (v_basal_norm / (v_basal_norm + v_0)) ^ q * v_basal /
+           v_basal_norm
 end
 
-function basal_shear_stress(
-    v_basal,
-    c_basal,
-    friction,
-)
+function basal_shear_stress(v_basal, c_basal, friction)
     τ_basal = similar(v_basal)
     basal_shear_stress!(τ_basal, v_basal, c_basal, friction)
     return τ_basal
@@ -576,12 +543,7 @@ $(TYPEDSIGNATURES)
 
 Same as [`basal_shear_stress`](@ref) but operates in place.
 """
-function basal_shear_stress!(
-    τ_basal,
-    v_basal,
-    c_basal,
-    friction::BasalFriction,
-)
+function basal_shear_stress!(τ_basal, v_basal, c_basal, friction::BasalFriction)
     # @dev: `basal_shear_stress(::Any, ::Any, ::BasalFriction)` has no dedicated scalar
     # method — only the generic array-wrapper above and the
     # `PseudoPlasticPowerBasalBeta`/`CoulombBasalBeta` methods, neither of which matches a

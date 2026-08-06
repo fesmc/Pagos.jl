@@ -3,46 +3,112 @@ $(TYPEDSIGNATURES)
 
 Compute the strain rate tensor in place.
 """
-function strainrate!(strainrate, velocity, material, topo, momentum::AbstractMomentumBalance)
+function strainrate!(
+    strainrate,
+    velocity,
+    material,
+    topo,
+    momentum::AbstractMomentumBalance,
+)
     backend = get_backend(strainrate.xx)
     kernel! = _strainrate_kernel!(backend)
-    kernel!(strainrate, velocity, material, topo, momentum; ndrange = length(strainrate.xx))
+    kernel!(
+        strainrate,
+        velocity,
+        material,
+        topo,
+        momentum;
+        ndrange = length(strainrate.xx),
+    )
     return nothing
 end
 
 # Per-element fallback: triggers when a momentum balance has no specialized method below,
 # i.e. the real extension point. Guarding the launcher instead would never catch this.
-function strainrate!(strainrate, velocity, material, topo, momentum::AbstractMomentumBalance, I)
+function strainrate!(
+    strainrate,
+    velocity,
+    material,
+    topo,
+    momentum::AbstractMomentumBalance,
+    I,
+)
     throw(ArgumentError("Unsupported momentum balance type: $(typeof(momentum))"))
 end
 
-function strainrate!(strainrate, velocity, material, topo, momentum::SIAMomentumBalance, I)
+function strainrate!(
+    strainrate,
+    velocity,
+    material,
+    topo,
+    momentum::SIAMomentumBalance,
+    I,
+)
     # For SIA: depth-averaged viscosity, thickness, strainrate.xz/yz, velocity.*_bar_dz are all 2D
-    strainrate.xz[I] = material.viscosity_depthaveraged[I] * topo.thickness[I] * velocity.depthaverage_x_dz[I]
-    strainrate.yz[I] = material.viscosity_depthaveraged[I] * topo.thickness[I] * velocity.depthaverage_y_dz[I]
+    strainrate.xz[I] =
+        material.viscosity_depthaveraged[I] *
+        topo.thickness[I] *
+        velocity.depthaverage_x_dz[I]
+    strainrate.yz[I] =
+        material.viscosity_depthaveraged[I] *
+        topo.thickness[I] *
+        velocity.depthaverage_y_dz[I]
 end
 
-function strainrate!(strainrate, velocity, material, topo, momentum::MomentumBalance2D, I)
+function strainrate!(
+    strainrate,
+    velocity,
+    material,
+    topo,
+    momentum::MomentumBalance2D,
+    I,
+)
     # For SSA/DIVA: depth-averaged viscosity, thickness, strainrate.xx/xy/yy, velocity.*_d* are all 2D
-    strainrate.xx[I] = 2 * material.viscosity_depthaveraged[I] * topo.thickness[I] * (2 * velocity.x_dx[I] + velocity.y_dy[I])
-    strainrate.xy[I] = material.viscosity_depthaveraged[I] * topo.thickness[I] * (velocity.x_dy[I] + velocity.y_dx[I])
-    strainrate.yy[I] = 2 * material.viscosity_depthaveraged[I] * topo.thickness[I] * (velocity.x_dx[I] + 2 * velocity.y_dy[I])
+    strainrate.xx[I] =
+        2 *
+        material.viscosity_depthaveraged[I] *
+        topo.thickness[I] *
+        (2 * velocity.x_dx[I] + velocity.y_dy[I])
+    strainrate.xy[I] =
+        material.viscosity_depthaveraged[I] *
+        topo.thickness[I] *
+        (velocity.x_dy[I] + velocity.y_dx[I])
+    strainrate.yy[I] =
+        2 *
+        material.viscosity_depthaveraged[I] *
+        topo.thickness[I] *
+        (velocity.x_dx[I] + 2 * velocity.y_dy[I])
 end
 
-function strainrate!(strainrate, velocity, material, topo, momentum::BlatterPattynMomentumBalance, I)
+function strainrate!(
+    strainrate,
+    velocity,
+    material,
+    topo,
+    momentum::BlatterPattynMomentumBalance,
+    I,
+)
     # For Blatter-Pattyn: 3D viscosity, strainrate.xx/xy/yy/xz/yz, velocity.*_d* are all 3D
-    strainrate.xx[I] = 2 * material.viscosity[I] * (2 * velocity.x_dx[I] + velocity.y_dy[I])
+    strainrate.xx[I] =
+        2 * material.viscosity[I] * (2 * velocity.x_dx[I] + velocity.y_dy[I])
     strainrate.xy[I] = material.viscosity[I] * (velocity.x_dy[I] + velocity.y_dx[I])
-    strainrate.yy[I] = 2 * material.viscosity[I] * (velocity.x_dx[I] + 2 * velocity.y_dy[I])
+    strainrate.yy[I] =
+        2 * material.viscosity[I] * (velocity.x_dx[I] + 2 * velocity.y_dy[I])
     strainrate.xz[I] = material.viscosity[I] * velocity.x_dz[I]
     strainrate.yz[I] = material.viscosity[I] * velocity.y_dz[I]
 end
 
-@kernel function _strainrate_kernel!(strainrate, velocity, material, topo, momentum::AbstractMomentumBalance)
+@kernel function _strainrate_kernel!(
+    strainrate,
+    velocity,
+    material,
+    topo,
+    momentum::AbstractMomentumBalance,
+)
     I = @index(Global, Linear)
     @inbounds begin
         strainrate!(strainrate, velocity, material, topo, momentum, I)
-        strainrate_effective!(strainrate, velocity, momentum, I) 
+        strainrate_effective!(strainrate, velocity, momentum, I)
     end
 end
 
@@ -52,19 +118,27 @@ $(TYPEDSIGNATURES)
 Compute the effective strain rate in place.
 """
 # Per-element fallback: triggers when a momentum balance has no specialized method below.
-function strainrate_effective!(strainrate, velocity, momentum::AbstractMomentumBalance, I)
+function strainrate_effective!(
+    strainrate,
+    velocity,
+    momentum::AbstractMomentumBalance,
+    I,
+)
     throw(ArgumentError("Unsupported momentum balance type: $(typeof(momentum))"))
 end
 
 function strainrate_effective!(strainrate, velocity, momentum::SIAMomentumBalance, I)
-    strainrate.effective[I] = sqrt(1 / 4 * (velocity.depthaverage_x_dz[I] + velocity.depthaverage_y_dz[I]) ^ 2)
+    strainrate.effective[I] = sqrt(
+        1 / 4 * (velocity.depthaverage_x_dz[I] + velocity.depthaverage_y_dz[I]) ^ 2,
+    )
 end
 
 function strainrate_effective!(strainrate, velocity, momentum::SSAMomentumBalance, I)
     strainrate.effective[I] = sqrt(
-        velocity.x_dx[I]^2 + velocity.y_dy[I]^2 +
+        velocity.x_dx[I]^2 +
+        velocity.y_dy[I]^2 +
         velocity.x_dx[I] * velocity.y_dy[I] +
-        1 / 4 * (velocity.x_dy[I] + velocity.y_dx[I]) ^ 2
+        1 / 4 * (velocity.x_dy[I] + velocity.y_dx[I]) ^ 2,
     )
 end
 
@@ -72,13 +146,19 @@ end
 # groups by whether ε̇_e includes the vertical-shear terms ¼(u_z² + v_z²) (DIVA and BP share
 # this, Robinson et al. 2022 Eq. 13) rather than by unknown dimensionality (SSA doesn't,
 # despite being in the same 2D group as DIVA).
-function strainrate_effective!(strainrate, velocity, momentum::MB, I) where MB<:Union{DIVAMomentumBalance, BlatterPattynMomentumBalance}
+function strainrate_effective!(
+    strainrate,
+    velocity,
+    momentum::MB,
+    I,
+) where {MB<:Union{DIVAMomentumBalance,BlatterPattynMomentumBalance}}
     strainrate.effective[I] = sqrt(
-        velocity.x_dx[I]^2 + velocity.y_dy[I]^2 +
+        velocity.x_dx[I]^2 +
+        velocity.y_dy[I]^2 +
         velocity.x_dx[I] * velocity.y_dy[I] +
         1 / 4 * (velocity.x_dy[I] + velocity.y_dx[I]) ^ 2 +
         1 / 4 * velocity.x_dz[I]^2 +
-        1 / 4 * velocity.y_dz[I]^2
+        1 / 4 * velocity.y_dz[I]^2,
     )
 end
 
@@ -95,7 +175,11 @@ function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance
     return nothing
 end
 
-@kernel function _raw_strainrate_kernel!(strainrate, velocity, momentum::AbstractMomentumBalance)
+@kernel function _raw_strainrate_kernel!(
+    strainrate,
+    velocity,
+    momentum::AbstractMomentumBalance,
+)
     I = @index(Global, Linear)
     @inbounds begin
         raw_strainrate!(strainrate, velocity, momentum, I)
@@ -109,7 +193,12 @@ end
 # disambiguate this 4-argument per-element method from the 4-argument staggered
 # `raw_strainrate!(sr, vel, momentum, rt::Runtime)` further down — left untyped, the two
 # would match the same call with neither more specific.
-function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance, I::Integer)
+function raw_strainrate!(
+    strainrate,
+    velocity,
+    momentum::AbstractMomentumBalance,
+    I::Integer,
+)
     dxx = velocity.x_dx[I]
     dyy = velocity.y_dy[I]
     strainrate.xx[I] = dxx
@@ -121,8 +210,7 @@ function raw_strainrate!(strainrate, velocity, momentum::AbstractMomentumBalance
 end
 
 # Full-column: ε̇_zz read directly from the resolved vertical velocity gradient.
-function raw_strainrate!(strainrate, velocity, momentum::MomentumBalance3D,
-                         I::Integer)
+function raw_strainrate!(strainrate, velocity, momentum::MomentumBalance3D, I::Integer)
     strainrate.xx[I] = velocity.x_dx[I]
     strainrate.yy[I] = velocity.y_dy[I]
     strainrate.zz[I] = velocity.z_dz[I]                        # ∂w/∂z directly
@@ -140,7 +228,9 @@ already written by [`raw_strainrate!`](@ref) in the same kernel pass.
 function raw_strainrate_effective!(strainrate, momentum::AbstractMomentumBalance, I)
     strainrate.effective[I] = sqrt(
         (strainrate.xx[I]^2 + strainrate.yy[I]^2 + strainrate.zz[I]^2) / 2 +
-        strainrate.xy[I]^2 + strainrate.xz[I]^2 + strainrate.yz[I]^2
+        strainrate.xy[I]^2 +
+        strainrate.xz[I]^2 +
+        strainrate.yz[I]^2,
     )
 end
 
@@ -155,7 +245,16 @@ The grid spacing in x and y-direction is given by `dx` and `dy`.
 """
 function velocitygradients!(velocity::VelocityState, dx, dy)
     (; x, y) = velocity
-    return velocitygradients!(velocity.x_dx, velocity.x_dy, velocity.y_dx, velocity.y_dy, x, y, dx, dy)
+    return velocitygradients!(
+        velocity.x_dx,
+        velocity.x_dy,
+        velocity.y_dx,
+        velocity.y_dy,
+        x,
+        y,
+        dx,
+        dy,
+    )
 end
 
 function velocitygradients!(v_x_dx, v_x_dy, v_y_dx, v_y_dy, v_dx, v_dy, dx, dy)
@@ -199,7 +298,14 @@ end
 # since an `Inf` here would propagate into the whole tensor.
 @inline _dz_over_H(dζ, H) = H > zero(H) ? dζ / H : zero(dζ)
 
-@kernel inbounds = true function _velocity_gradients!(velocity, H, mask, grid, grid2d, O)
+@kernel inbounds = true function _velocity_gradients!(
+    velocity,
+    H,
+    mask,
+    grid,
+    grid2d,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
@@ -208,8 +314,8 @@ end
 
     # `node_active` only consults the horizontal part of the node class, so the `_AC`
     # (z-`Vertex`) variants share activity with `NODE_ACX`/`NODE_ACY`.
-    act_aa  = node_active(mask, NODE_AA, i, j)
-    act_ab  = node_active(mask, NODE_AB, i, j)
+    act_aa = node_active(mask, NODE_AA, i, j)
+    act_ab = node_active(mask, NODE_AB, i, j)
     act_acx = node_active(mask, NODE_ACX, i, j)
     act_acy = node_active(mask, NODE_ACY, i, j)
 
@@ -222,12 +328,13 @@ end
 
     # H is a `grid2d` field, so it is indexed at k = 1 regardless of the sweep's k, and
     # staggered onto the same horizontal face as the derivative it scales.
-    velocity.x_dz[I...] = act_acx ?
-        _dz_over_H(∂z_σ(u, grid, I...), lerp(H, NODE_ACX, grid2d, i, j, 1)) : Z
-    velocity.y_dz[I...] = act_acy ?
-        _dz_over_H(∂z_σ(v, grid, I...), lerp(H, NODE_ACY, grid2d, i, j, 1)) : Z
-    velocity.z_dz[I...] = act_aa ?
-        _dz_over_H(∂z_σ(w, grid, I...), H[i, j, 1]) : Z
+    velocity.x_dz[I...] =
+        act_acx ? _dz_over_H(∂z_σ(u, grid, I...), lerp(H, NODE_ACX, grid2d, i, j, 1)) :
+        Z
+    velocity.y_dz[I...] =
+        act_acy ? _dz_over_H(∂z_σ(v, grid, I...), lerp(H, NODE_ACY, grid2d, i, j, 1)) :
+        Z
+    velocity.z_dz[I...] = act_aa ? _dz_over_H(∂z_σ(w, grid, I...), H[i, j, 1]) : Z
 end
 
 """
@@ -252,10 +359,17 @@ Distinguished from the collocated method by taking a [`Runtime`](@ref) instead o
     function's docstring). SSA/DIVA never call it: their gradients are depth-averaged and
     carry no `ζ` dependence to correct.
 """
-function velocitygradients!(velocity::VelocityState, H, rt::Runtime,
-                            mask::AbstractIceMask = NoMask())
-    rt.launch(rt.arch, rt.grid,
-              _velocity_gradients! => (velocity, H, mask, rt.grid, rt.grid2d))
+function velocitygradients!(
+    velocity::VelocityState,
+    H,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _velocity_gradients! => (velocity, H, mask, rt.grid, rt.grid2d),
+    )
     return nothing
 end
 
@@ -294,8 +408,15 @@ end
 # an unbounded new coupling in the operator is more than the explicit iteration can absorb
 # right now.
 
-@kernel inbounds = true function _terrain_metric_correction!(velocity, H, s, mask,
-                                                              grid, grid2d, O)
+@kernel inbounds = true function _terrain_metric_correction!(
+    velocity,
+    H,
+    s,
+    mask,
+    grid,
+    grid2d,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, k = I
@@ -319,14 +440,28 @@ end
     if node_active(mask, NODE_AA, i, j)
         ## `∂x` of an `aa` field lands at `acx`; averaging the two faces of the cell is the
         ## centred difference at `aa`.
-        cx = (∂x(s, grid2d, i, j, 1) + ∂x(s, grid2d, i + 1, j, 1)) / 2 -
-             w * (∂x(H, grid2d, i, j, 1) + ∂x(H, grid2d, i + 1, j, 1)) / 2
-        cy = (∂y(s, grid2d, i, j, 1) + ∂y(s, grid2d, i, j + 1, 1)) / 2 -
-             w * (∂y(H, grid2d, i, j, 1) + ∂y(H, grid2d, i, j + 1, 1)) / 2
+        cx =
+            (∂x(s, grid2d, i, j, 1) + ∂x(s, grid2d, i + 1, j, 1)) / 2 -
+            w * (∂x(H, grid2d, i, j, 1) + ∂x(H, grid2d, i + 1, j, 1)) / 2
+        cy =
+            (∂y(s, grid2d, i, j, 1) + ∂y(s, grid2d, i, j + 1, 1)) / 2 -
+            w * (∂y(H, grid2d, i, j, 1) + ∂y(H, grid2d, i, j + 1, 1)) / 2
         ## acx_ac → aa: average the two `x` faces and the two `ζ` interfaces of the cell.
-        uz = q4(velocity.x_dz, (i, j, k), (i + 1, j, k), (i, j, k + 1), (i + 1, j, k + 1))
+        uz = q4(
+            velocity.x_dz,
+            (i, j, k),
+            (i + 1, j, k),
+            (i, j, k + 1),
+            (i + 1, j, k + 1),
+        )
         ## acy_ac → aa: the same in `y`.
-        vz = q4(velocity.y_dz, (i, j, k), (i, j + 1, k), (i, j, k + 1), (i, j + 1, k + 1))
+        vz = q4(
+            velocity.y_dz,
+            (i, j, k),
+            (i, j + 1, k),
+            (i, j, k + 1),
+            (i, j + 1, k + 1),
+        )
         velocity.x_dx[I...] -= cx * uz
         velocity.y_dy[I...] -= cy * vz
     end
@@ -334,14 +469,28 @@ end
     if node_active(mask, NODE_AB, i, j)
         ## At `ab` the same two gradients are needed one node over: `∂x(s)` is at `acx`, so
         ## it is averaged in *y*; `∂y(s)` is at `acy`, so it is averaged in *x*.
-        cx = (∂x(s, grid2d, i, j - 1, 1) + ∂x(s, grid2d, i, j, 1)) / 2 -
-             w * (∂x(H, grid2d, i, j - 1, 1) + ∂x(H, grid2d, i, j, 1)) / 2
-        cy = (∂y(s, grid2d, i - 1, j, 1) + ∂y(s, grid2d, i, j, 1)) / 2 -
-             w * (∂y(H, grid2d, i - 1, j, 1) + ∂y(H, grid2d, i, j, 1)) / 2
+        cx =
+            (∂x(s, grid2d, i, j - 1, 1) + ∂x(s, grid2d, i, j, 1)) / 2 -
+            w * (∂x(H, grid2d, i, j - 1, 1) + ∂x(H, grid2d, i, j, 1)) / 2
+        cy =
+            (∂y(s, grid2d, i - 1, j, 1) + ∂y(s, grid2d, i, j, 1)) / 2 -
+            w * (∂y(H, grid2d, i - 1, j, 1) + ∂y(H, grid2d, i, j, 1)) / 2
         ## acx_ac → ab: `x` already sits on the vertex, so only `y` and `ζ` are averaged.
-        uz = q4(velocity.x_dz, (i, j - 1, k), (i, j, k), (i, j - 1, k + 1), (i, j, k + 1))
+        uz = q4(
+            velocity.x_dz,
+            (i, j - 1, k),
+            (i, j, k),
+            (i, j - 1, k + 1),
+            (i, j, k + 1),
+        )
         ## acy_ac → ab: `y` already on the vertex; average `x` and `ζ`.
-        vz = q4(velocity.y_dz, (i - 1, j, k), (i, j, k), (i - 1, j, k + 1), (i, j, k + 1))
+        vz = q4(
+            velocity.y_dz,
+            (i - 1, j, k),
+            (i, j, k),
+            (i - 1, j, k + 1),
+            (i, j, k + 1),
+        )
         velocity.x_dy[I...] -= cy * uz
         velocity.y_dx[I...] -= cx * vz
     end
@@ -367,10 +516,18 @@ not move a uniform-slab result.
     The matching correction to the *outer* stress divergence is not applied — see the source
     note above for the conservative form it takes and why it is a separate change.
 """
-function terrain_metric_correction!(velocity::VelocityState, H, s, rt::Runtime,
-                                    mask::AbstractIceMask = NoMask())
-    rt.launch(rt.arch, rt.grid,
-              _terrain_metric_correction! => (velocity, H, s, mask, rt.grid, rt.grid2d))
+function terrain_metric_correction!(
+    velocity::VelocityState,
+    H,
+    s,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _terrain_metric_correction! => (velocity, H, s, mask, rt.grid, rt.grid2d),
+    )
     return nothing
 end
 
@@ -426,7 +583,12 @@ end
 # `acx` field lands on `aa`, `∂y` on `ab`), but every field is depth-integrated, so this runs
 # on `grid2d` with no thickness argument — the sigma scaling `H` exists for in the column
 # kernel has no counterpart here.
-@kernel inbounds = true function _depthaverage_velocity_gradients!(velocity, mask, grid, O)
+@kernel inbounds = true function _depthaverage_velocity_gradients!(
+    velocity,
+    mask,
+    grid,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
@@ -464,10 +626,16 @@ z.
     `ū` is genuinely 2D for SSA and DIVA alike, and leaving `velocity.x`/`y` free lets DIVA
     use them for the reconstructed 3D profile (`roadmaps/chmy.md`, Phase 3, decision 1).
 """
-function depthaverage_velocitygradients!(velocity::VelocityState, rt::Runtime,
-                                         mask::AbstractIceMask = NoMask())
-    rt.launch2d(rt.arch, rt.grid2d,
-                _depthaverage_velocity_gradients! => (velocity, mask, rt.grid2d))
+function depthaverage_velocitygradients!(
+    velocity::VelocityState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _depthaverage_velocity_gradients! => (velocity, mask, rt.grid2d),
+    )
     return nothing
 end
 
@@ -495,12 +663,12 @@ end
     if node_active(mask, NODE_AA, i, j) && Hij > zero(T)
         acc = zero(T)
         w[i, j, 1] = acc
-        for k in 1:nz
+        for k = 1:nz
             acc -= (dux[i, j, k] + dvy[i, j, k]) * Δz(grid, Center(), i, j, k) * Hij
-            w[i, j, k + 1] = acc
+            w[i, j, k+1] = acc
         end
     else
-        for k in 1:(nz + 1)
+        for k = 1:(nz+1)
             w[i, j, k] = zero(T)
         end
     end
@@ -520,12 +688,19 @@ Feeds `velocity.z_dx`/`z_dy`/`z_dz` on the *next* call to [`velocitygradients!`]
 function already differentiates `velocity.z` (see `_velocity_gradients!`'s `z_dx`/`z_dy`/
 `z_dz` lines), so nothing here duplicates that; it exists only to fill the `w` those read.
 """
-function verticalvelocity!(velocity::VelocityState, H, rt::Runtime,
-                           mask::AbstractIceMask = NoMask())
+function verticalvelocity!(
+    velocity::VelocityState,
+    H,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
     nz = size(rt.grid, Center())[3]
-    rt.launch2d(rt.arch, rt.grid2d,
-                _verticalvelocity! =>
-                    (velocity.z, velocity.x_dx, velocity.y_dy, H, nz, mask, rt.grid))
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _verticalvelocity! =>
+            (velocity.z, velocity.x_dx, velocity.y_dy, H, nz, mask, rt.grid),
+    )
     return nothing
 end
 
@@ -540,8 +715,13 @@ verticalvelocity!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMa
 # `yx`/`zx`/`zy` are the symmetric duplicates of `xy`/`xz`/`yz` and live at the same node
 # classes. The collocated kernels leave them untouched; filling them costs three stores and
 # removes a "why is `strainrate.yx` zero" trap for anything that reads the full tensor.
-@inline function _raw_strainrate_at!(sr, vel, ::AbstractMomentumBalance, mask,
-                                     I::Vararg{Integer, 3})
+@inline function _raw_strainrate_at!(
+    sr,
+    vel,
+    ::AbstractMomentumBalance,
+    mask,
+    I::Vararg{Integer,3},
+)
     if node_active(mask, NODE_AA, I[1], I[2])
         dxx = vel.x_dx[I...]
         dyy = vel.y_dy[I...]
@@ -550,38 +730,49 @@ verticalvelocity!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMa
         sr.zz[I...] = -(dxx + dyy)                   # incompressibility (continuity)
     else
         Z = zero(eltype(sr.xx))
-        sr.xx[I...] = Z; sr.yy[I...] = Z; sr.zz[I...] = Z
+        sr.xx[I...] = Z
+        sr.yy[I...] = Z
+        sr.zz[I...] = Z
     end
     _raw_strainrate_shear!(sr, vel, mask, I...)
     return nothing
 end
 
-@inline function _raw_strainrate_at!(sr, vel, ::MomentumBalance3D, mask,
-                                     I::Vararg{Integer, 3})
+@inline function _raw_strainrate_at!(
+    sr,
+    vel,
+    ::MomentumBalance3D,
+    mask,
+    I::Vararg{Integer,3},
+)
     if node_active(mask, NODE_AA, I[1], I[2])
         sr.xx[I...] = vel.x_dx[I...]
         sr.yy[I...] = vel.y_dy[I...]
         sr.zz[I...] = vel.z_dz[I...]                 # ∂w/∂z directly
     else
         Z = zero(eltype(sr.xx))
-        sr.xx[I...] = Z; sr.yy[I...] = Z; sr.zz[I...] = Z
+        sr.xx[I...] = Z
+        sr.yy[I...] = Z
+        sr.zz[I...] = Z
     end
     _raw_strainrate_shear!(sr, vel, mask, I...)
     return nothing
 end
 
-@inline function _raw_strainrate_shear!(sr, vel, mask, I::Vararg{Integer, 3})
+@inline function _raw_strainrate_shear!(sr, vel, mask, I::Vararg{Integer,3})
     i, j = I[1], I[2]
     Z = zero(eltype(sr.xy))
-    exy = node_active(mask, NODE_AB, i, j) ?
-          (vel.x_dy[I...] + vel.y_dx[I...]) / 2 : Z          # both at ab
-    exz = node_active(mask, NODE_ACX_AC, i, j) ?
-          (vel.x_dz[I...] + vel.z_dx[I...]) / 2 : Z          # both at acx_ac
-    eyz = node_active(mask, NODE_ACY_AC, i, j) ?
-          (vel.y_dz[I...] + vel.z_dy[I...]) / 2 : Z          # both at acy_ac
-    sr.xy[I...] = exy; sr.yx[I...] = exy
-    sr.xz[I...] = exz; sr.zx[I...] = exz
-    sr.yz[I...] = eyz; sr.zy[I...] = eyz
+    exy = node_active(mask, NODE_AB, i, j) ? (vel.x_dy[I...] + vel.y_dx[I...]) / 2 : Z          # both at ab
+    exz =
+        node_active(mask, NODE_ACX_AC, i, j) ? (vel.x_dz[I...] + vel.z_dx[I...]) / 2 : Z          # both at acx_ac
+    eyz =
+        node_active(mask, NODE_ACY_AC, i, j) ? (vel.y_dz[I...] + vel.z_dy[I...]) / 2 : Z          # both at acy_ac
+    sr.xy[I...] = exy
+    sr.yx[I...] = exy
+    sr.xz[I...] = exz
+    sr.zx[I...] = exz
+    sr.yz[I...] = eyz
+    sr.zy[I...] = eyz
     return nothing
 end
 
@@ -600,8 +791,9 @@ end
         exy = lerp(sr.xy, NODE_AA, grid, I...)
         exz = lerp(sr.xz, NODE_AA, grid, I...)
         eyz = lerp(sr.yz, NODE_AA, grid, I...)
-        sr.effective[I...] = sqrt((sr.xx[I...]^2 + sr.yy[I...]^2 + sr.zz[I...]^2) / 2 +
-                                  exy^2 + exz^2 + eyz^2)
+        sr.effective[I...] = sqrt(
+            (sr.xx[I...]^2 + sr.yy[I...]^2 + sr.zz[I...]^2) / 2 + exy^2 + exz^2 + eyz^2,
+        )
     else
         sr.effective[I...] = zero(eltype(sr.effective))
     end
@@ -624,11 +816,18 @@ it reads `ε̇_xy` at neighbouring `ab` nodes, which the same pass may not have 
 Call [`raw_strainrate_effective!`](@ref) after this, or use the state-level method which
 sequences all three steps.
 """
-function raw_strainrate!(strainrate::StrainRateState, velocity::VelocityState,
-                         momentum::AbstractMomentumBalance, rt::Runtime,
-                         mask::AbstractIceMask = NoMask())
-    rt.launch(rt.arch, rt.grid,
-              _raw_strainrate_staggered! => (strainrate, velocity, momentum, mask))
+function raw_strainrate!(
+    strainrate::StrainRateState,
+    velocity::VelocityState,
+    momentum::AbstractMomentumBalance,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _raw_strainrate_staggered! => (strainrate, velocity, momentum, mask),
+    )
     return nothing
 end
 
@@ -642,10 +841,16 @@ Must run *after* [`raw_strainrate!`](@ref) — it is a stencil, not a pointwise 
 `interior(strainrate.effective)` is meaningful: the halo ring of the sweep reads
 off-diagonal cells one further out than `raw_strainrate!`'s own sweep reached.
 """
-function raw_strainrate_effective!(strainrate::StrainRateState, rt::Runtime,
-                                  mask::AbstractIceMask = NoMask())
-    rt.launch(rt.arch, rt.grid,
-              _raw_strainrate_effective_staggered! => (strainrate, mask, rt.grid))
+function raw_strainrate_effective!(
+    strainrate::StrainRateState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _raw_strainrate_effective_staggered! => (strainrate, mask, rt.grid),
+    )
     return nothing
 end
 
@@ -655,8 +860,12 @@ $(TYPEDSIGNATURES)
 State-level Chmy-native [`raw_strainrate!`](@ref): velocity gradients, then tensor
 components, then the second invariant, in the order they depend on each other.
 """
-function raw_strainrate!(mech::MechanicState, momentum::AbstractMomentumBalance,
-                         rt::Runtime, mask::AbstractIceMask = NoMask())
+function raw_strainrate!(
+    mech::MechanicState,
+    momentum::AbstractMomentumBalance,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
     velocitygradients!(mech.velocity, mech.topography.thickness, rt, mask)
     raw_strainrate!(mech.strainrate, mech.velocity, momentum, rt, mask)
     raw_strainrate_effective!(mech.strainrate, rt, mask)
@@ -680,15 +889,24 @@ end
 # The strict mask (`node_fully_active`) applies only to that `ab` term, for the identical
 # NaN-avoidance reason as `deviatoric_stress!`: `hlerp` of `η = 0` is `NaN`, not `0`.
 
-@kernel inbounds = true function _membrane_stress_staggered!(sxx, sxy, syy, η, H, vel,
-                                                              mask, grid, O)
+@kernel inbounds = true function _membrane_stress_staggered!(
+    sxx,
+    sxy,
+    syy,
+    η,
+    H,
+    vel,
+    mask,
+    grid,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
     Z = zero(eltype(sxx))
 
     if node_active(mask, NODE_AA, i, j)
-        ηH  = 2 * η[I...] * H[I...]
+        ηH = 2 * η[I...] * H[I...]
         dux = vel.depthaverage_x_dx[I...]
         dvy = vel.depthaverage_y_dy[I...]
         sxx[I...] = ηH * (2 * dux + dvy)
@@ -698,8 +916,11 @@ end
         syy[I...] = Z
     end
 
-    sxy[I...] = node_fully_active(mask, NODE_AB, i, j) ?
-        2 * hlerp(η, NODE_AB, grid, I...) * lerp(H, NODE_AB, grid, I...) *
+    sxy[I...] =
+        node_fully_active(mask, NODE_AB, i, j) ?
+        2 *
+        hlerp(η, NODE_AB, grid, I...) *
+        lerp(H, NODE_AB, grid, I...) *
         (vel.depthaverage_x_dy[I...] + vel.depthaverage_y_dx[I...]) / 2 : Z
 end
 
@@ -725,15 +946,29 @@ Depth-integrated throughout, so it runs on `rt.grid2d`.
     `stress.membrane_xy` rather than `0`; pass an [`IceMask`](@ref) once the material state
     has ice-free cells.
 """
-function membranestress!(stress::StressState, velocity::VelocityState,
-                         material::MechanicMaterialState, topo::MechanicTopographyState,
-                         momentum::MomentumBalance2D,
-                         rt::Runtime, mask::AbstractIceMask = NoMask())
-    rt.launch2d(rt.arch, rt.grid2d,
-              _membrane_stress_staggered! =>
-                  (stress.membrane_xx, stress.membrane_xy, stress.membrane_yy,
-                   material.viscosity_depthaveraged, topo.thickness, velocity,
-                   mask, rt.grid2d))
+function membranestress!(
+    stress::StressState,
+    velocity::VelocityState,
+    material::MechanicMaterialState,
+    topo::MechanicTopographyState,
+    momentum::MomentumBalance2D,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _membrane_stress_staggered! => (
+            stress.membrane_xx,
+            stress.membrane_xy,
+            stress.membrane_yy,
+            material.viscosity_depthaveraged,
+            topo.thickness,
+            velocity,
+            mask,
+            rt.grid2d,
+        ),
+    )
     return nothing
 end
 
@@ -745,11 +980,20 @@ State-level [`membranestress!`](@ref) for the SSA/DIVA momentum balance: writes
 `mech.topography` and `mech.velocity` (which must already carry the depth-averaged velocity
 gradients, see [`depthaverage_velocitygradients!`](@ref)).
 """
-membranestress!(mech::MechanicState,
-                momentum::MomentumBalance2D,
-                rt::Runtime, mask::AbstractIceMask = NoMask()) =
-    membranestress!(mech.stress, mech.velocity, mech.material, mech.topography,
-                    momentum, rt, mask)
+membranestress!(
+    mech::MechanicState,
+    momentum::MomentumBalance2D,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+) = membranestress!(
+    mech.stress,
+    mech.velocity,
+    mech.material,
+    mech.topography,
+    momentum,
+    rt,
+    mask,
+)
 
 ###############################################################
 # Chmy-native, C-grid staggered Blatter-Pattyn membrane stress
@@ -778,8 +1022,18 @@ membranestress!(mech::MechanicState,
 # itself does — applying the strict rule there would delete BP's vertical operator along the
 # whole margin ring. `_mu_acxz`/`_mu_acyz` carry that argument in full.
 
-@kernel inbounds = true function _membrane_stress_staggered_bp!(sxx, sxy, sxz, syy, syz, μ,
-                                                                 vel, mask, grid, O)
+@kernel inbounds = true function _membrane_stress_staggered_bp!(
+    sxx,
+    sxy,
+    sxz,
+    syy,
+    syz,
+    μ,
+    vel,
+    mask,
+    grid,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
@@ -796,7 +1050,8 @@ membranestress!(mech::MechanicState,
         syy[I...] = Z
     end
 
-    sxy[I...] = node_fully_active(mask, NODE_AB, i, j) ?
+    sxy[I...] =
+        node_fully_active(mask, NODE_AB, i, j) ?
         hlerp(μ, NODE_AB, grid, I...) * (vel.x_dy[I...] + vel.y_dx[I...]) : Z
     # `_mu_acxz`/`_mu_acyz` (`src/mechanics/pseudotransient.jl`), shared with the Gershgorin
     # bound rather than restated here: the two must apply the *same* `µ` to the same
@@ -837,13 +1092,29 @@ Runs on `rt.grid`, the column grid — every operand is a genuine 3D field.
     The one-sided `acx_ac`/`acy_ac` path never inverts an ice-free cell's `µ` and so is safe
     either way.
 """
-function membranestress!(stress::StressState, velocity::VelocityState,
-                         material::MechanicMaterialState, momentum::MomentumBalance3D,
-                         rt::Runtime, mask::AbstractIceMask = NoMask())
-    rt.launch(rt.arch, rt.grid,
-              _membrane_stress_staggered_bp! =>
-                  (stress.xx, stress.xy, stress.xz, stress.yy, stress.yz,
-                   material.viscosity, velocity, mask, rt.grid))
+function membranestress!(
+    stress::StressState,
+    velocity::VelocityState,
+    material::MechanicMaterialState,
+    momentum::MomentumBalance3D,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _membrane_stress_staggered_bp! => (
+            stress.xx,
+            stress.xy,
+            stress.xz,
+            stress.yy,
+            stress.yz,
+            material.viscosity,
+            velocity,
+            mask,
+            rt.grid,
+        ),
+    )
     return nothing
 end
 
@@ -854,10 +1125,12 @@ State-level [`membranestress!`](@ref) for the Blatter-Pattyn momentum balance: w
 `mech.stress.xx`/`xy`/`xz`/`yy`/`yz` from `mech.material` and `mech.velocity` (which must
 already carry the column velocity gradients, see [`velocitygradients!`](@ref)).
 """
-membranestress!(mech::MechanicState,
-                momentum::MomentumBalance3D,
-                rt::Runtime, mask::AbstractIceMask = NoMask()) =
-    membranestress!(mech.stress, mech.velocity, mech.material, momentum, rt, mask)
+membranestress!(
+    mech::MechanicState,
+    momentum::MomentumBalance3D,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+) = membranestress!(mech.stress, mech.velocity, mech.material, momentum, rt, mask)
 
 ###############################################################
 # Chmy-native, C-grid staggered SSA/DIVA effective strain rate
@@ -871,8 +1144,13 @@ membranestress!(mech::MechanicState,
 # Not reusable from `raw_strainrate_effective!`: that one reads `strainrate.xy` at `ab` as
 # already written by `raw_strainrate!`, and works on column fields throughout.
 
-@kernel inbounds = true function _effective_strainrate_ssa_staggered!(eff, velocity, mask,
-                                                                       grid, O)
+@kernel inbounds = true function _effective_strainrate_ssa_staggered!(
+    eff,
+    velocity,
+    mask,
+    grid,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
@@ -902,11 +1180,18 @@ resolutions.
 Requires the depth-averaged velocity gradients to already be current — call
 [`depthaverage_velocitygradients!`](@ref) first, exactly as [`membranestress!`](@ref) does.
 """
-function effective_strainrate_ssa!(strainrate::StrainRateState, velocity::VelocityState,
-                                   rt::Runtime, mask::AbstractIceMask = NoMask())
-    rt.launch2d(rt.arch, rt.grid2d,
-              _effective_strainrate_ssa_staggered! =>
-                  (strainrate.effective_depthaveraged, velocity, mask, rt.grid2d))
+function effective_strainrate_ssa!(
+    strainrate::StrainRateState,
+    velocity::VelocityState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _effective_strainrate_ssa_staggered! =>
+            (strainrate.effective_depthaveraged, velocity, mask, rt.grid2d),
+    )
     return nothing
 end
 
@@ -922,8 +1207,17 @@ end
 # a 2D scratch field: a handful of flops against a field allocation, and it keeps the kernel
 # a pure function of state. Consequently DIVA never reads `velocity.x_dz`.
 
-@kernel inbounds = true function _effective_strainrate_diva!(eff, velocity, μ, τbx, τby,
-                                                              mask, grid, grid2d, O)
+@kernel inbounds = true function _effective_strainrate_diva!(
+    eff,
+    velocity,
+    μ,
+    τbx,
+    τby,
+    mask,
+    grid,
+    grid2d,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, k = I
@@ -939,7 +1233,7 @@ end
         horizontal = dxx^2 + dyy^2 + dxx * dyy + ((dxy + dyx) / 2)^2
 
         # Vertical shear (Eq. 21), with H already cancelled — see the note above.
-        w  = one(T) - zcenter(grid, k)               # (s - z)/H at the layer midpoint
+        w = one(T) - zcenter(grid, k)               # (s - z)/H at the layer midpoint
         μk = μ[i, j, k]
         uz = μk > Z ? lerp(τbx, NODE_AA, grid2d, i, j, 1) * w / μk : Z
         vz = μk > Z ? lerp(τby, NODE_AA, grid2d, i, j, 1) * w / μk : Z
@@ -981,13 +1275,28 @@ Requires the depth-averaged velocity gradients ([`depthaverage_velocitygradients
 and the basal stress ([`basalstress!`](@ref)) to be current, and `material.viscosity` to
 hold the previous iterate's `µ(z)`.
 """
-function effective_strainrate_diva!(strainrate::StrainRateState, velocity::VelocityState,
-                                    material::MechanicMaterialState, stress::StressState,
-                                    rt::Runtime, mask::AbstractIceMask = NoMask())
-    rt.launch(rt.arch, rt.grid,
-              _effective_strainrate_diva! =>
-                  (strainrate.effective, velocity, material.viscosity,
-                   stress.base_x, stress.base_y, mask, rt.grid, rt.grid2d))
+function effective_strainrate_diva!(
+    strainrate::StrainRateState,
+    velocity::VelocityState,
+    material::MechanicMaterialState,
+    stress::StressState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _effective_strainrate_diva! => (
+            strainrate.effective,
+            velocity,
+            material.viscosity,
+            stress.base_x,
+            stress.base_y,
+            mask,
+            rt.grid,
+            rt.grid2d,
+        ),
+    )
     return nothing
 end
 
@@ -996,10 +1305,18 @@ $(TYPEDSIGNATURES)
 
 State-level [`effective_strainrate_diva!`](@ref).
 """
-effective_strainrate_diva!(mech::MechanicState, rt::Runtime,
-                           mask::AbstractIceMask = NoMask()) =
-    effective_strainrate_diva!(mech.strainrate, mech.velocity, mech.material, mech.stress,
-                               rt, mask)
+effective_strainrate_diva!(
+    mech::MechanicState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+) = effective_strainrate_diva!(
+    mech.strainrate,
+    mech.velocity,
+    mech.material,
+    mech.stress,
+    rt,
+    mask,
+)
 
 ###############################################################
 # Chmy-native Blatter-Pattyn effective strain rate (per layer)
@@ -1026,11 +1343,10 @@ effective_strainrate_diva!(mech::MechanicState, rt::Runtime,
         dyy = velocity.y_dy[I...]
         dxy = lerp(velocity.x_dy, NODE_AA, grid, I...)
         dyx = lerp(velocity.y_dx, NODE_AA, grid, I...)
-        uz  = lerp(velocity.x_dz, NODE_AA, grid, I...)
-        vz  = lerp(velocity.y_dz, NODE_AA, grid, I...)
-        eff[I...] = sqrt(
-            dxx^2 + dyy^2 + dxx * dyy + ((dxy + dyx) / 2)^2 + (uz^2 + vz^2) / 4
-        )
+        uz = lerp(velocity.x_dz, NODE_AA, grid, I...)
+        vz = lerp(velocity.y_dz, NODE_AA, grid, I...)
+        eff[I...] =
+            sqrt(dxx^2 + dyy^2 + dxx * dyy + ((dxy + dyx) / 2)^2 + (uz^2 + vz^2) / 4)
     else
         eff[I...] = zero(eltype(eff))
     end
@@ -1054,10 +1370,17 @@ velocity directly rather than reconstructing it afterwards.
 
 Requires `velocitygradients!` to have already run (all nine gradient fields current).
 """
-function effective_strainrate_bp!(strainrate::StrainRateState, velocity::VelocityState,
-                                  rt::Runtime, mask::AbstractIceMask = NoMask())
-    rt.launch(rt.arch, rt.grid,
-              _effective_strainrate_bp! => (strainrate.effective, velocity, mask, rt.grid))
+function effective_strainrate_bp!(
+    strainrate::StrainRateState,
+    velocity::VelocityState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _effective_strainrate_bp! => (strainrate.effective, velocity, mask, rt.grid),
+    )
     return nothing
 end
 
@@ -1066,6 +1389,8 @@ $(TYPEDSIGNATURES)
 
 State-level [`effective_strainrate_bp!`](@ref).
 """
-effective_strainrate_bp!(mech::MechanicState, rt::Runtime,
-                         mask::AbstractIceMask = NoMask()) =
-    effective_strainrate_bp!(mech.strainrate, mech.velocity, rt, mask)
+effective_strainrate_bp!(
+    mech::MechanicState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+) = effective_strainrate_bp!(mech.strainrate, mech.velocity, rt, mask)

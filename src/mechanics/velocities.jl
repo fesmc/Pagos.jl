@@ -88,7 +88,7 @@ thickness `dsigma` and the midpoint value of `(s - z)/H` are derived from it her
 GPU-compatible.
 """
 function aggregate_viscosity_integral!(Fm, mu, H, m, sigma, l)
-    dsigma = l == 1 ? sigma[l] : sigma[l] - sigma[l - 1]
+    dsigma = l == 1 ? sigma[l] : sigma[l] - sigma[l-1]
     s_minus_z_over_H = 1 - sigma[l] + dsigma / 2
     backend = get_backend(Fm)
     kernel! = _aggregate_viscosity_integral!(backend)
@@ -109,7 +109,15 @@ function layer_velocity!(v, l, vb, beta, F1)
     return nothing
 end
 
-@kernel function _aggregate_viscosity_integral!(Fm, mu, H, m, s_minus_z_over_H, dsigma, l)
+@kernel function _aggregate_viscosity_integral!(
+    Fm,
+    mu,
+    H,
+    m,
+    s_minus_z_over_H,
+    dsigma,
+    l,
+)
     i, j = @index(Global, NTuple)
     @inbounds Fm[i, j] += (s_minus_z_over_H ^ m * dsigma * H[i, j]) / mu[i, j, l]
 end
@@ -148,9 +156,9 @@ end
     if node_active(mask, NODE_AA, i, j) && Hij > Z
         f1 = Z
         f2 = Z
-        for k in 1:nz
-            w  = one(T) - zcenter(grid, k)              # (s - z)/H at the layer midpoint
-            r  = Δz(grid, Center(), i, j, k) * Hij / μ[i, j, k]   # dz / µ
+        for k = 1:nz
+            w = one(T) - zcenter(grid, k)              # (s - z)/H at the layer midpoint
+            r = Δz(grid, Center(), i, j, k) * Hij / μ[i, j, k]   # dz / µ
             f1 += w * r
             f2 += w * w * r
         end
@@ -210,11 +218,20 @@ viscosity `F₁ = H/(2µ)` comes out exact to roundoff **on any layering**, howe
     interpolation here, so an unfilled halo costs only the halo ring of `F1`/`F2`, not the
     interior.
 """
-function viscosity_integrals!(F1, F2, viscosity, H, rt::Runtime,
-                              mask::AbstractIceMask = NoMask())
+function viscosity_integrals!(
+    F1,
+    F2,
+    viscosity,
+    H,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
     nz = size(rt.grid, Center())[3]
-    rt.launch2d(rt.arch, rt.grid2d,
-                _viscosity_integrals! => (F1, F2, viscosity, H, nz, mask, rt.grid))
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _viscosity_integrals! => (F1, F2, viscosity, H, nz, mask, rt.grid),
+    )
     return nothing
 end
 
@@ -226,10 +243,20 @@ State-level [`viscosity_integrals!`](@ref): fill `F1`/`F2` from `mech.material.v
 
 `F1`/`F2` take no home in [`MechanicState`](@ref) yet, so they stay explicit arguments.
 """
-viscosity_integrals!(F1, F2, mech::MechanicState, rt::Runtime,
-                     mask::AbstractIceMask = NoMask()) =
-    viscosity_integrals!(F1, F2, mech.material.viscosity, mech.topography.thickness,
-                         rt, mask)
+viscosity_integrals!(
+    F1,
+    F2,
+    mech::MechanicState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+) = viscosity_integrals!(
+    F1,
+    F2,
+    mech.material.viscosity,
+    mech.topography.thickness,
+    rt,
+    mask,
+)
 
 ###############################################################
 # Column → depth-average reduction
@@ -247,7 +274,7 @@ viscosity_integrals!(F1, F2, mech::MechanicState, rt::Runtime,
     T = eltype(out)
     acc = zero(T)
     if node_active(mask, NODE_AA, i, j)
-        for k in 1:nz
+        for k = 1:nz
             acc += f[i, j, k] * Δz(grid, Center(), i, j, k)
         end
     end
@@ -320,7 +347,13 @@ through ordinary IEEE arithmetic rather than a branch on a tunable "large β" th
     zeroed `F₂` degrades to SSA rather than to nonsense, which is the sane failure mode if
     the integrals were never computed.
 """
-function beta_eff_diva!(beta_eff, beta, F2, rt::Runtime, mask::AbstractIceMask = NoMask())
+function beta_eff_diva!(
+    beta_eff,
+    beta,
+    F2,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
     rt.launch2d(rt.arch, rt.grid2d, _beta_eff_diva! => (beta_eff, beta, F2, mask))
     return nothing
 end
@@ -332,8 +365,13 @@ State-level [`beta_eff_diva!`](@ref): writes `mech.friction.beta_eff` from
 `mech.friction.beta` and `mech.material.viscosity_integral_2`.
 """
 beta_eff_diva!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMask()) =
-    beta_eff_diva!(mech.friction.beta_eff, mech.friction.beta,
-                   mech.material.viscosity_integral_2, rt, mask)
+    beta_eff_diva!(
+        mech.friction.beta_eff,
+        mech.friction.beta,
+        mech.material.viscosity_integral_2,
+        rt,
+        mask,
+    )
 
 ###############################################################
 # Chmy-native, C-grid staggered 3D velocity reconstruction
@@ -361,8 +399,20 @@ beta_eff_diva!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMask(
 # One thread per column, matching `viscosity_integrals!`: the running sum is inherently
 # serial, so there's nothing to parallelize within a column.
 
-@kernel inbounds = true function _velocities3D_diva!(vx, vy, ubar_x, ubar_y, β, F2, μ, H,
-                                                      nz, mask, grid, O)
+@kernel inbounds = true function _velocities3D_diva!(
+    vx,
+    vy,
+    ubar_x,
+    ubar_y,
+    β,
+    F2,
+    μ,
+    H,
+    nz,
+    mask,
+    grid,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
@@ -377,19 +427,19 @@ beta_eff_diva!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMask(
         g(σ) = σ - σ^2 / 2
         running = Z                       # F₁ accumulated up to the *previous* interface
         prev = zvertex(grid, 1)
-        for k in 1:nz
-            mid  = zcenter(grid, k)
+        for k = 1:nz
+            mid = zcenter(grid, k)
             next = zvertex(grid, k + 1)
             invμ = inv(μ[i, j, k])
             partial = (g(mid) - g(prev)) * Hij * invμ
-            full    = (g(next) - g(prev)) * Hij * invμ
+            full = (g(next) - g(prev)) * Hij * invμ
             vx[i, j, k] = ubx * (one(T) + βij * (running + partial))
             vy[i, j, k] = uby * (one(T) + βij * (running + partial))
             running += full
             prev = next
         end
     else
-        for k in 1:nz
+        for k = 1:nz
             vx[i, j, k] = Z
             vy[i, j, k] = Z
         end
@@ -400,8 +450,17 @@ end
 # computed full-column `F₁`/`F₂` (`material.viscosity_integral_1`/`_2`) rather than reading
 # off the top of `_velocities3D_diva!`'s profile, which sits at the last layer's midpoint,
 # not at ζ = 1. No column loop needed.
-@kernel inbounds = true function _surfacevelocity_diva!(vsx, vsy, ubar_x, ubar_y, β, F1, F2,
-                                                         mask, O)
+@kernel inbounds = true function _surfacevelocity_diva!(
+    vsx,
+    vsy,
+    ubar_x,
+    ubar_y,
+    β,
+    F1,
+    F2,
+    mask,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
@@ -442,24 +501,49 @@ above.
     Trivially true whenever [`DIVAMomentumBalance`](@ref) itself is usable at all — see
     [`pseudo_transient!`](@ref)'s `nz == 1` guard.
 """
-function velocities3D!(mech::MechanicState, rt::Runtime, ::DIVAMomentumBalance,
-                       mask::AbstractIceMask = NoMask())
+function velocities3D!(
+    mech::MechanicState,
+    rt::Runtime,
+    ::DIVAMomentumBalance,
+    mask::AbstractIceMask = NoMask(),
+)
     (; velocity, friction, material, topography) = mech
     nz = size(rt.grid, Center())[3]
     # `rt.launch2d`, not `rt.launch`: the vertical dependency is a serial running sum, so
     # this wants one thread per *column* (as `viscosity_integrals!` already established),
     # not one thread per `(i,j,k)` triple — the latter would have every thread in a column
     # redundantly re-run the same full-column loop.
-    rt.launch2d(rt.arch, rt.grid2d,
-              _velocities3D_diva! =>
-                  (velocity.x, velocity.y, velocity.depthaverage_x, velocity.depthaverage_y,
-                   friction.beta, material.viscosity_integral_2, material.viscosity, topography.thickness,
-                   nz, mask, rt.grid))
-    rt.launch2d(rt.arch, rt.grid2d,
-                _surfacevelocity_diva! =>
-                    (velocity.surface_x, velocity.surface_y, velocity.depthaverage_x,
-                     velocity.depthaverage_y, friction.beta, material.viscosity_integral_1,
-                     material.viscosity_integral_2, mask))
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _velocities3D_diva! => (
+            velocity.x,
+            velocity.y,
+            velocity.depthaverage_x,
+            velocity.depthaverage_y,
+            friction.beta,
+            material.viscosity_integral_2,
+            material.viscosity,
+            topography.thickness,
+            nz,
+            mask,
+            rt.grid,
+        ),
+    )
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _surfacevelocity_diva! => (
+            velocity.surface_x,
+            velocity.surface_y,
+            velocity.depthaverage_x,
+            velocity.depthaverage_y,
+            friction.beta,
+            material.viscosity_integral_1,
+            material.viscosity_integral_2,
+            mask,
+        ),
+    )
     return nothing
 end
 
@@ -473,7 +557,7 @@ end
     T = eltype(vx)
     ux = node_active(mask, NODE_AA, i, j) ? ubar_x[i, j, 1] : zero(T)
     uy = node_active(mask, NODE_AA, i, j) ? ubar_y[i, j, 1] : zero(T)
-    for k in 1:nz
+    for k = 1:nz
         vx[i, j, k] = ux
         vy[i, j, k] = uy
     end
@@ -488,14 +572,26 @@ every layer/at the surface — no shear, no viscosity integrals read. Exists so 
 `velocity.x`/`y`/`surface_x`/`y` are always populated after a solve, regardless of which
 [`MomentumBalance2D`](@ref) balance produced it.
 """
-function velocities3D!(mech::MechanicState, rt::Runtime, ::SSAMomentumBalance,
-                       mask::AbstractIceMask = NoMask())
+function velocities3D!(
+    mech::MechanicState,
+    rt::Runtime,
+    ::SSAMomentumBalance,
+    mask::AbstractIceMask = NoMask(),
+)
     (; velocity) = mech
     nz = size(rt.grid, Center())[3]
-    rt.launch2d(rt.arch, rt.grid2d,
-              _velocities3D_ssa! =>
-                  (velocity.x, velocity.y, velocity.depthaverage_x, velocity.depthaverage_y,
-                   nz, mask))
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _velocities3D_ssa! => (
+            velocity.x,
+            velocity.y,
+            velocity.depthaverage_x,
+            velocity.depthaverage_y,
+            nz,
+            mask,
+        ),
+    )
     copyto!(asarray(velocity.surface_x), asarray(velocity.depthaverage_x))
     copyto!(asarray(velocity.surface_y), asarray(velocity.depthaverage_y))
     return nothing

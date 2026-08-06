@@ -27,11 +27,19 @@ This assumes the `strain_rate_d*` fields of `mech` are already populated.
 """
 function deviatoric_stress!(mech::MechanicState, mat::MaterialState)
     deviatoric_stress!(
-        mech.stress.xx, mech.stress.yy, mech.stress.zz,
-        mech.stress.xy, mech.stress.xz, mech.stress.yz, mech.stress.effective,
+        mech.stress.xx,
+        mech.stress.yy,
+        mech.stress.zz,
+        mech.stress.xy,
+        mech.stress.xz,
+        mech.stress.yz,
+        mech.stress.effective,
         mat.eta_ice,
-        mech.strainrate.xx, mech.strainrate.yy,
-        mech.strainrate.xy, mech.strainrate.xz, mech.strainrate.yz,
+        mech.strainrate.xx,
+        mech.strainrate.yy,
+        mech.strainrate.xy,
+        mech.strainrate.xz,
+        mech.strainrate.yz,
     )
     return nothing
 end
@@ -54,11 +62,13 @@ addresses a *different physical point* in each of them. Because the shortest fie
 trusting the failure to be visible.
 """
 deviatoric_stress!(mech::MechanicState{<:Chmy.AbstractField}, mat::MaterialState) =
-    error("this collocated `deviatoric_stress!` cannot be applied to a `Field`-based " *
-          "state: its fused kernel assumes every tensor component has the same shape, " *
-          "which is false on the C-grid (they sit at four different node classes), and " *
-          "it would silently mix locations rather than error. Use the staggered method " *
-          "`deviatoric_stress!(mech, mat, rt::Runtime)` instead.")
+    error(
+        "this collocated `deviatoric_stress!` cannot be applied to a `Field`-based " *
+        "state: its fused kernel assumes every tensor component has the same shape, " *
+        "which is false on the C-grid (they sit at four different node classes), and " *
+        "it would silently mix locations rather than error. Use the staggered method " *
+        "`deviatoric_stress!(mech, mat, rt::Runtime)` instead.",
+    )
 
 ###############################################################
 # Chmy-native, C-grid staggered deviatoric stress
@@ -70,7 +80,14 @@ deviatoric_stress!(mech::MechanicState{<:Chmy.AbstractField}, mat::MaterialState
 # instead doesn't help (`NaN * 0 == NaN`) — so each off-diagonal term is guarded by the
 # strict `node_fully_active` rule (every contributing cell icy), not the permissive rule the
 # fluxes and gradients use.
-@kernel inbounds = true function _deviatoric_stress_staggered!(stress, sr, η, mask, grid, O)
+@kernel inbounds = true function _deviatoric_stress_staggered!(
+    stress,
+    sr,
+    η,
+    mask,
+    grid,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
@@ -80,28 +97,40 @@ deviatoric_stress!(mech::MechanicState{<:Chmy.AbstractField}, mat::MaterialState
     # either has ice or it does not.
     if node_active(mask, NODE_AA, i, j)
         twoη = 2 * η[I...]
-        txx  = twoη * sr.xx[I...]
-        tyy  = twoη * sr.yy[I...]
+        txx = twoη * sr.xx[I...]
+        tyy = twoη * sr.yy[I...]
         stress.xx[I...] = txx
         stress.yy[I...] = tyy
         stress.zz[I...] = -(txx + tyy)               # traceless deviatoric identity
     else
-        stress.xx[I...] = Z; stress.yy[I...] = Z; stress.zz[I...] = Z
+        stress.xx[I...] = Z
+        stress.yy[I...] = Z
+        stress.zz[I...] = Z
     end
 
-    txy = node_fully_active(mask, NODE_AB, i, j) ?
-          2 * hlerp(η, NODE_AB, grid, I...) * sr.xy[I...] : Z
-    txz = node_fully_active(mask, NODE_ACX_AC, i, j) ?
-          2 * hlerp(η, NODE_ACX_AC, grid, I...) * sr.xz[I...] : Z
-    tyz = node_fully_active(mask, NODE_ACY_AC, i, j) ?
-          2 * hlerp(η, NODE_ACY_AC, grid, I...) * sr.yz[I...] : Z
-    stress.xy[I...] = txy; stress.yx[I...] = txy
-    stress.xz[I...] = txz; stress.zx[I...] = txz
-    stress.yz[I...] = tyz; stress.zy[I...] = tyz
+    txy =
+        node_fully_active(mask, NODE_AB, i, j) ?
+        2 * hlerp(η, NODE_AB, grid, I...) * sr.xy[I...] : Z
+    txz =
+        node_fully_active(mask, NODE_ACX_AC, i, j) ?
+        2 * hlerp(η, NODE_ACX_AC, grid, I...) * sr.xz[I...] : Z
+    tyz =
+        node_fully_active(mask, NODE_ACY_AC, i, j) ?
+        2 * hlerp(η, NODE_ACY_AC, grid, I...) * sr.yz[I...] : Z
+    stress.xy[I...] = txy
+    stress.yx[I...] = txy
+    stress.xz[I...] = txz
+    stress.zx[I...] = txz
+    stress.yz[I...] = tyz
+    stress.zy[I...] = tyz
 end
 
-@kernel inbounds = true function _deviatoric_stress_effective_staggered!(stress, mask,
-                                                                        grid, O)
+@kernel inbounds = true function _deviatoric_stress_effective_staggered!(
+    stress,
+    mask,
+    grid,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
@@ -109,8 +138,12 @@ end
         txy = lerp(stress.xy, NODE_AA, grid, I...)
         txz = lerp(stress.xz, NODE_AA, grid, I...)
         tyz = lerp(stress.yz, NODE_AA, grid, I...)
-        stress.effective[I...] = sqrt((stress.xx[I...]^2 + stress.yy[I...]^2 +
-                                       stress.zz[I...]^2) / 2 + txy^2 + txz^2 + tyz^2)
+        stress.effective[I...] = sqrt(
+            (stress.xx[I...]^2 + stress.yy[I...]^2 + stress.zz[I...]^2) / 2 +
+            txy^2 +
+            txz^2 +
+            tyz^2,
+        )
     else
         stress.effective[I...] = zero(eltype(stress.effective))
     end
@@ -139,13 +172,23 @@ off-diagonal neighbours and so cannot share the first pass. Only
     zeros, so the viscosity must be filled (by a flow law, or explicitly) before this is
     called — with a strictly positive value, which any physical ice viscosity is.
 """
-function deviatoric_stress!(mech::MechanicState, mat::MaterialState, rt::Runtime,
-                            mask::AbstractIceMask = NoMask())
-    rt.launch(rt.arch, rt.grid,
-              _deviatoric_stress_staggered! =>
-                  (mech.stress, mech.strainrate, mat.eta_ice, mask, rt.grid))
-    rt.launch(rt.arch, rt.grid,
-              _deviatoric_stress_effective_staggered! => (mech.stress, mask, rt.grid))
+function deviatoric_stress!(
+    mech::MechanicState,
+    mat::MaterialState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _deviatoric_stress_staggered! =>
+            (mech.stress, mech.strainrate, mat.eta_ice, mask, rt.grid),
+    )
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _deviatoric_stress_effective_staggered! => (mech.stress, mask, rt.grid),
+    )
     return nothing
 end
 
@@ -158,30 +201,73 @@ strain-rate components (`exx, eyy, exy, exz, eyz`). All arrays must share the sa
 and reside on the same backend. `deviatoric_stress!(mech, mat)` is a thin wrapper that
 unpacks the corresponding fields of `mech`/`mat` and calls this method.
 """
-function deviatoric_stress!(sxx, syy, szz, sxy, sxz, syz, seff, η, exx, eyy, exy, exz, eyz)
+function deviatoric_stress!(
+    sxx,
+    syy,
+    szz,
+    sxy,
+    sxz,
+    syz,
+    seff,
+    η,
+    exx,
+    eyy,
+    exy,
+    exz,
+    eyz,
+)
     backend = get_backend(sxx)
     kernel! = _deviatoric_stress_kernel!(backend)
-    kernel!(sxx, syy, szz, sxy, sxz, syz, seff, η, exx, eyy, exy, exz, eyz;
-        ndrange = length(sxx))
+    kernel!(
+        sxx,
+        syy,
+        szz,
+        sxy,
+        sxz,
+        syz,
+        seff,
+        η,
+        exx,
+        eyy,
+        exy,
+        exz,
+        eyz;
+        ndrange = length(sxx),
+    )
     return nothing
 end
 # @dev TODO this typically does not need to be computed where we don't have any ice and could be easily handled via a mask passed to the kernel. Check performance!
 
 @kernel function _deviatoric_stress_kernel!(
-    sxx, syy, szz, sxy, sxz, syz, seff,
-    η, exx, eyy, exy, exz, eyz,
+    sxx,
+    syy,
+    szz,
+    sxy,
+    sxz,
+    syz,
+    seff,
+    η,
+    exx,
+    eyy,
+    exy,
+    exz,
+    eyz,
 )
     I = @index(Global, Linear)
     @inbounds begin
         twoη = 2 * η[I]
-        txx  = twoη * exx[I]
-        tyy  = twoη * eyy[I]
-        txy  = twoη * exy[I]
-        txz  = twoη * exz[I]
-        tyz  = twoη * eyz[I]
-        tzz  = -(txx + tyy)                      # traceless deviatoric identity
-        sxx[I] = txx; syy[I] = tyy; szz[I] = tzz
-        sxy[I] = txy; sxz[I] = txz; syz[I] = tyz
+        txx = twoη * exx[I]
+        tyy = twoη * eyy[I]
+        txy = twoη * exy[I]
+        txz = twoη * exz[I]
+        tyz = twoη * eyz[I]
+        tzz = -(txx + tyy)                      # traceless deviatoric identity
+        sxx[I] = txx
+        syy[I] = tyy
+        szz[I] = tzz
+        sxy[I] = txy
+        sxz[I] = txz
+        syz[I] = tyz
         seff[I] = sqrt((txx^2 + tyy^2 + tzz^2) / 2 + txy^2 + txz^2 + tyz^2)
     end
 end
@@ -194,8 +280,16 @@ end
 Compute the shear stress components `shear_x` and `shear_y` from the components
 of the scaled strain rate tensor.
 """
-function shearstress!(shear_x, shear_y, strainrate_xx, strainrate_xy, strainrate_yy,
-    prealloc, dx, dy)
+function shearstress!(
+    shear_x,
+    shear_y,
+    strainrate_xx,
+    strainrate_xy,
+    strainrate_yy,
+    prealloc,
+    dx,
+    dy,
+)
 
     ∂x!(prealloc, strainrate_xx, dx)
     shear_x .= prealloc
@@ -236,16 +330,26 @@ end
 # in series" argument for a harmonic mean, and `lerp` carries no `NaN` risk since `β = 0`
 # just means no drag from that side of the face.
 
-@kernel inbounds = true function _basalstress_staggered!(base_x, base_y, β, v_x, v_y,
-                                                          mask, grid, O)
+@kernel inbounds = true function _basalstress_staggered!(
+    base_x,
+    base_y,
+    β,
+    v_x,
+    v_y,
+    mask,
+    grid,
+    O,
+)
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
     Z = zero(eltype(base_x))
-    base_x[I...] = node_active(mask, NODE_ACX, i, j) ?
-                   lerp(β, NODE_ACX, grid, I...) * v_x[I...] : Z
-    base_y[I...] = node_active(mask, NODE_ACY, i, j) ?
-                   lerp(β, NODE_ACY, grid, I...) * v_y[I...] : Z
+    base_x[I...] =
+        node_active(mask, NODE_ACX, i, j) ? lerp(β, NODE_ACX, grid, I...) * v_x[I...] :
+        Z
+    base_y[I...] =
+        node_active(mask, NODE_ACY, i, j) ? lerp(β, NODE_ACY, grid, I...) * v_y[I...] :
+        Z
 end
 
 """
@@ -259,10 +363,20 @@ not harmonic like the viscosity.
 Distinguished from the collocated method by taking a [`Runtime`](@ref). Depth-integrated
 throughout, so it runs on `rt.grid2d`.
 """
-function basalstress!(base_x, base_y, β, v_x, v_y, rt::Runtime,
-                      mask::AbstractIceMask = NoMask())
-    rt.launch2d(rt.arch, rt.grid2d,
-              _basalstress_staggered! => (base_x, base_y, β, v_x, v_y, mask, rt.grid2d))
+function basalstress!(
+    base_x,
+    base_y,
+    β,
+    v_x,
+    v_y,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _basalstress_staggered! => (base_x, base_y, β, v_x, v_y, mask, rt.grid2d),
+    )
     return nothing
 end
 
@@ -273,8 +387,15 @@ State-level Chmy-native [`basalstress!`](@ref): writes `mech.stress.base_x`/`bas
 `mech.friction.beta_eff` and `mech.velocity.base_x`/`base_y`.
 """
 basalstress!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMask()) =
-    basalstress!(mech.stress.base_x, mech.stress.base_y, mech.friction.beta_eff,
-                mech.velocity.base_x, mech.velocity.base_y, rt, mask)
+    basalstress!(
+        mech.stress.base_x,
+        mech.stress.base_y,
+        mech.friction.beta_eff,
+        mech.velocity.base_x,
+        mech.velocity.base_y,
+        rt,
+        mask,
+    )
 
 """
 $(TYPEDSIGNATURES)
@@ -315,10 +436,12 @@ end
     I = I + O
     i, j, _ = I
     Z = zero(eltype(τx))
-    τx[I...] = node_active(mask, NODE_ACX, i, j) ?
-               ρg * lerp(H, NODE_ACX, grid, I...) * ∂x(s, grid, I...) : Z
-    τy[I...] = node_active(mask, NODE_ACY, i, j) ?
-               ρg * lerp(H, NODE_ACY, grid, I...) * ∂y(s, grid, I...) : Z
+    τx[I...] =
+        node_active(mask, NODE_ACX, i, j) ?
+        ρg * lerp(H, NODE_ACX, grid, I...) * ∂x(s, grid, I...) : Z
+    τy[I...] =
+        node_active(mask, NODE_ACY, i, j) ?
+        ρg * lerp(H, NODE_ACY, grid, I...) * ∂y(s, grid, I...) : Z
 end
 
 """
@@ -333,10 +456,12 @@ gradient inline rather than reading these fields, so it stays a single memory sw
 carries no ordering dependency on this function. Call this one when the gradients
 themselves are wanted (diagnostics, an SIA diffusivity), not as a prerequisite.
 """
-function surface_gradient!(dsdx, dsdy, s, rt::Runtime,
-                           mask::AbstractIceMask = NoMask())
-    rt.launch2d(rt.arch, rt.grid2d,
-                _surface_gradient! => (dsdx, dsdy, s, mask, rt.grid2d))
+function surface_gradient!(dsdx, dsdy, s, rt::Runtime, mask::AbstractIceMask = NoMask())
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _surface_gradient! => (dsdx, dsdy, s, mask, rt.grid2d),
+    )
     return nothing
 end
 
@@ -346,10 +471,17 @@ $(TYPEDSIGNATURES)
 State-level [`surface_gradient!`](@ref): writes `topo.elevation.surface_dx`/`surface_dy`
 from `topo.elevation.surface`.
 """
-surface_gradient!(topo::TopographicState, rt::Runtime,
-                 mask::AbstractIceMask = NoMask()) =
-    surface_gradient!(topo.elevation.surface_dx, topo.elevation.surface_dy,
-                      topo.elevation.surface, rt, mask)
+surface_gradient!(
+    topo::TopographicState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+) = surface_gradient!(
+    topo.elevation.surface_dx,
+    topo.elevation.surface_dy,
+    topo.elevation.surface,
+    rt,
+    mask,
+)
 
 """
 $(TYPEDSIGNATURES)
@@ -372,11 +504,22 @@ Distinguished from the collocated method by taking a [`Runtime`](@ref) instead o
 `ρ_ice * g` is converted to the output eltype before entering the kernel, so a Float32
 pipeline stays in Float32 (see `roadmaps/chmy.md`, Float32 discipline).
 """
-function drivingstress!(τx, τy, s, H, ρ_ice, g, rt::Runtime,
-                        mask::AbstractIceMask = NoMask())
+function drivingstress!(
+    τx,
+    τy,
+    s,
+    H,
+    ρ_ice,
+    g,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
     ρg = convert(eltype(τx), ρ_ice * g)
-    rt.launch2d(rt.arch, rt.grid2d,
-                _drivingstress! => (τx, τy, s, H, ρg, mask, rt.grid2d))
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _drivingstress! => (τx, τy, s, H, ρg, mask, rt.grid2d),
+    )
     return nothing
 end
 
@@ -387,11 +530,21 @@ State-level [`drivingstress!`](@ref): reads the geometry from `mech.topography` 
 mechanics component's own surface/thickness copies) and writes
 `mech.stress.driving_x`/`driving_y`.
 """
-drivingstress!(mech::MechanicState, c::Constants, rt::Runtime,
-               mask::AbstractIceMask = NoMask()) =
-    drivingstress!(mech.stress.driving_x, mech.stress.driving_y,
-                   mech.topography.surface, mech.topography.thickness,
-                   c.density_ice, c.gravity, rt, mask)
+drivingstress!(
+    mech::MechanicState,
+    c::Constants,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+) = drivingstress!(
+    mech.stress.driving_x,
+    mech.stress.driving_y,
+    mech.topography.surface,
+    mech.topography.thickness,
+    c.density_ice,
+    c.gravity,
+    rt,
+    mask,
+)
 
 ###############################################################
 # Chmy-native, C-grid staggered Blatter-Pattyn (un-integrated) driving stress
@@ -423,11 +576,22 @@ a 3D field.
 Same sign convention as the depth-integrated method: stores `+ρgH∇s` scaled *without* `H`,
 i.e. `+ρg∇s`, matching what [`dotvel!`](@ref) subtracts.
 """
-function drivingstress!(τx, τy, s, ρ_ice, g, rt::Runtime, ::MomentumBalance3D,
-                        mask::AbstractIceMask = NoMask())
+function drivingstress!(
+    τx,
+    τy,
+    s,
+    ρ_ice,
+    g,
+    rt::Runtime,
+    ::MomentumBalance3D,
+    mask::AbstractIceMask = NoMask(),
+)
     ρg = convert(eltype(τx), ρ_ice * g)
-    rt.launch2d(rt.arch, rt.grid2d,
-                _drivingstress_bp! => (τx, τy, s, ρg, mask, rt.grid2d))
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _drivingstress_bp! => (τx, τy, s, ρg, mask, rt.grid2d),
+    )
     return nothing
 end
 
@@ -438,7 +602,19 @@ State-level [`drivingstress!`](@ref) for the Blatter-Pattyn momentum balance: re
 geometry from `mech.topography` and writes `mech.stress.driving_x`/`driving_y` — the same
 fields the depth-integrated method writes, since both are genuinely 2D.
 """
-drivingstress!(mech::MechanicState, c::Constants, rt::Runtime, momentum::MomentumBalance3D,
-               mask::AbstractIceMask = NoMask()) =
-    drivingstress!(mech.stress.driving_x, mech.stress.driving_y, mech.topography.surface,
-                   c.density_ice, c.gravity, rt, momentum, mask)
+drivingstress!(
+    mech::MechanicState,
+    c::Constants,
+    rt::Runtime,
+    momentum::MomentumBalance3D,
+    mask::AbstractIceMask = NoMask(),
+) = drivingstress!(
+    mech.stress.driving_x,
+    mech.stress.driving_y,
+    mech.topography.surface,
+    c.density_ice,
+    c.gravity,
+    rt,
+    momentum,
+    mask,
+)

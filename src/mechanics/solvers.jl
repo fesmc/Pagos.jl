@@ -17,8 +17,7 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via energy minimization.
 """
-struct OptimMomentumSolver <: AbstractMomentumSolver
-end
+struct OptimMomentumSolver <: AbstractMomentumSolver end
 
 # @dev TODO: not yet implemented.
 """
@@ -26,8 +25,7 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via an iterative linear solver (e.g., CG, GMRES).
 """
-struct IterativeMomentumSolver <: AbstractMomentumSolver
-end
+struct IterativeMomentumSolver <: AbstractMomentumSolver end
 
 # @dev TODO: not yet implemented.
 """
@@ -35,8 +33,7 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via wavelet methods.
 """
-struct WaveletMomentumSolver <: AbstractMomentumSolver
-end
+struct WaveletMomentumSolver <: AbstractMomentumSolver end
 
 # @dev TODO: not yet implemented.
 """
@@ -44,8 +41,7 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via convolutional neural network (IGM style).
 """
-struct ConvolutionalMomentumSolver <: AbstractMomentumSolver
-end
+struct ConvolutionalMomentumSolver <: AbstractMomentumSolver end
 
 # @dev TODO: not yet implemented.
 """
@@ -53,8 +49,7 @@ $(TYPEDSIGNATURES)
 
 Solve the ice dynamics via a transient solver (e.g., explicit time-stepping).
 """
-struct TransientMomentumSolver <: AbstractMomentumSolver
-end
+struct TransientMomentumSolver <: AbstractMomentumSolver end
 
 """
 $(TYPEDSIGNATURES)
@@ -125,8 +120,11 @@ struct GlenViscosityContinuation{T<:AbstractFloat} <: AbstractViscosityContinuat
     strainrate_reg::T
 end
 
-function GlenViscosityContinuation(T::Type{<:AbstractFloat} = Float64;
-    n_glen = 3, theta_mu = 0.1, strainrate_reg,
+function GlenViscosityContinuation(
+    T::Type{<:AbstractFloat} = Float64;
+    n_glen = 3,
+    theta_mu = 0.1,
+    strainrate_reg,
 )
     return GlenViscosityContinuation{T}(T(n_glen), T(theta_mu), T(strainrate_reg))
 end
@@ -177,8 +175,11 @@ struct DIVAViscosityContinuation{T<:AbstractFloat} <: AbstractViscosityContinuat
     strainrate_reg::T
 end
 
-function DIVAViscosityContinuation(T::Type{<:AbstractFloat} = Float64;
-    n_glen = 3, theta_mu = 0.1, strainrate_reg,
+function DIVAViscosityContinuation(
+    T::Type{<:AbstractFloat} = Float64;
+    n_glen = 3,
+    theta_mu = 0.1,
+    strainrate_reg,
 )
     return DIVAViscosityContinuation{T}(T(n_glen), T(theta_mu), T(strainrate_reg))
 end
@@ -208,8 +209,11 @@ struct BPViscosityContinuation{T<:AbstractFloat} <: AbstractViscosityContinuatio
     strainrate_reg::T
 end
 
-function BPViscosityContinuation(T::Type{<:AbstractFloat} = Float64;
-    n_glen = 3, theta_mu = 0.1, strainrate_reg,
+function BPViscosityContinuation(
+    T::Type{<:AbstractFloat} = Float64;
+    n_glen = 3,
+    theta_mu = 0.1,
+    strainrate_reg,
 )
     return BPViscosityContinuation{T}(T(n_glen), T(theta_mu), T(strainrate_reg))
 end
@@ -281,9 +285,12 @@ expensive; larger values amortize the cost).
 struct PeriodicDIVUpdate <: AbstractDIVUpdate
     n_update::Int
     function PeriodicDIVUpdate(n_update::Integer = 1)
-        n_update ≥ 1 || throw(ArgumentError(
-            "PeriodicDIVUpdate requires n_update ≥ 1, got $n_update. Use NoDIVUpdate() to " *
-            "disable in-loop refreshes entirely."))
+        n_update ≥ 1 || throw(
+            ArgumentError(
+                "PeriodicDIVUpdate requires n_update ≥ 1, got $n_update. Use NoDIVUpdate() to " *
+                "disable in-loop refreshes entirely.",
+            ),
+        )
         return new(Int(n_update))
     end
 end
@@ -535,8 +542,11 @@ struct AutotunedDynamicRelaxation{T<:AbstractFloat} <: AbstractPTTuning
     cadence::Int
 end
 
-AutotunedDynamicRelaxation(T::Type{<:AbstractFloat} = Float64; c_damp = 0.8, cadence = 50) =
-    AutotunedDynamicRelaxation{T}(T(c_damp), Int(cadence))
+AutotunedDynamicRelaxation(
+    T::Type{<:AbstractFloat} = Float64;
+    c_damp = 0.8,
+    cadence = 50,
+) = AutotunedDynamicRelaxation{T}(T(c_damp), Int(cadence))
 
 """
 $(TYPEDSIGNATURES)
@@ -549,11 +559,14 @@ _check_tuning(::AbstractPTTuning, ::AbstractPseudoTimeStep) = nothing
 
 _check_tuning(::AutotunedDynamicRelaxation, ::GershgorinPseudoTimeStep) = nothing
 
-_check_tuning(::AutotunedDynamicRelaxation, pt::AbstractPseudoTimeStep) = throw(ArgumentError(
-    "AutotunedDynamicRelaxation requires pseudo_timestep = GershgorinPseudoTimeStep(...), " *
-    "got $(typeof(pt)). The autotuner's spectral estimates are normalized by the " *
-    "Gershgorin row sum (λ_max ≤ 1 by construction); no such normalization holds for " *
-    "another Δτ rule, so the derived Δτ and damping would be wrong by an unknown factor."))
+_check_tuning(::AutotunedDynamicRelaxation, pt::AbstractPseudoTimeStep) = throw(
+    ArgumentError(
+        "AutotunedDynamicRelaxation requires pseudo_timestep = GershgorinPseudoTimeStep(...), " *
+        "got $(typeof(pt)). The autotuner's spectral estimates are normalized by the " *
+        "Gershgorin row sum (λ_max ≤ 1 by construction); no such normalization holds for " *
+        "another Δτ rule, so the derived Δτ and damping would be wrong by an unknown factor.",
+    ),
+)
 
 """
 $(TYPEDSIGNATURES)
@@ -684,7 +697,7 @@ solver = PseudoTransientSolver(grid, BlatterPattynMomentumBalance();
     construction of the step, so the `M`-inner product is a reduction over two fields the loop
     already holds, and no vertical operator is applied a second time.
 """
-struct ImplicitVertical{MX, MY} <: AbstractVerticalTreatment
+struct ImplicitVertical{MX,MY} <: AbstractVerticalTreatment
     thomas_x::MX
     thomas_y::MY
 end
@@ -694,8 +707,10 @@ function ImplicitVertical(grid::StaggeredGrid; halo = 1)
     (; arch) = grid
     g = grid.grid
     T = eltype(g)
-    return ImplicitVertical(_field(arch, g, NODE_ACX, T, halo),
-                            _field(arch, g, NODE_ACY, T, halo))
+    return ImplicitVertical(
+        _field(arch, g, NODE_ACX, T, halo),
+        _field(arch, g, NODE_ACY, T, halo),
+    )
 end
 
 """
@@ -707,13 +722,16 @@ depth-averaged [`PseudoTransientSolver`](@ref) constructor constrains this.
 """
 _check_vertical_treatment(::ExplicitVertical) = nothing
 
-_check_vertical_treatment(::ImplicitVertical) = throw(ArgumentError(
-    "ImplicitVertical() is a MomentumBalance3D strategy and the depth-averaged " *
-    "PseudoTransientSolver(grid) would never read it. SSA has no vertical operator at all " *
-    "and DIVA integrates its own out analytically (the F₁/F₂ closure), so there is nothing " *
-    "here to treat implicitly. Build the solver with " *
-    "`PseudoTransientSolver(grid, BlatterPattynMomentumBalance(); " *
-    "vertical_treatment = ImplicitVertical(grid))` instead."))
+_check_vertical_treatment(::ImplicitVertical) = throw(
+    ArgumentError(
+        "ImplicitVertical() is a MomentumBalance3D strategy and the depth-averaged " *
+        "PseudoTransientSolver(grid) would never read it. SSA has no vertical operator at all " *
+        "and DIVA integrates its own out analytically (the F₁/F₂ closure), so there is nothing " *
+        "here to treat implicitly. Build the solver with " *
+        "`PseudoTransientSolver(grid, BlatterPattynMomentumBalance(); " *
+        "vertical_treatment = ImplicitVertical(grid))` instead.",
+    ),
+)
 
 """
 $(TYPEDSIGNATURES)
@@ -794,7 +812,18 @@ solver = PseudoTransientSolver(grid; maxiter = 500, abstol = 1e-10)
     part of a `Field`'s type), so a single `M` shared by all four work arrays would reject
     that combination outright — hence the `MX`/`MY` split below.
 """
-struct PseudoTransientSolver{T<:AbstractFloat, MX, MY, PT<:AbstractPseudoTimeStep, CV<:AbstractPTConvergence, VC<:AbstractViscosityContinuation, FU<:AbstractFrictionUpdate, TU<:AbstractPTTuning, DU<:AbstractDIVUpdate, VT<:AbstractVerticalTreatment} <: AbstractMomentumSolver
+struct PseudoTransientSolver{
+    T<:AbstractFloat,
+    MX,
+    MY,
+    PT<:AbstractPseudoTimeStep,
+    CV<:AbstractPTConvergence,
+    VC<:AbstractViscosityContinuation,
+    FU<:AbstractFrictionUpdate,
+    TU<:AbstractPTTuning,
+    DU<:AbstractDIVUpdate,
+    VT<:AbstractVerticalTreatment,
+} <: AbstractMomentumSolver
     abstol::T
     maxiter::Int
     ncheck::Int
@@ -830,7 +859,8 @@ the solver iterates (`velocity.depthaverage_x`/`y`) is depth-integrated for SSA 
 alike. Whether a given momentum balance tolerates the grid is [`_check_momentum_grid`](@ref)'s
 job, at the `pseudo_transient!` call that knows which balance it is.
 """
-function PseudoTransientSolver(grid::StaggeredGrid;
+function PseudoTransientSolver(
+    grid::StaggeredGrid;
     abstol = 1e-8,
     maxiter = 100,
     ncheck = 1,
@@ -853,10 +883,26 @@ function PseudoTransientSolver(grid::StaggeredGrid;
     acx() = _field(arch, g, NODE_ACX, T, halo)
     acy() = _field(arch, g, NODE_ACY, T, halo)
     return PseudoTransientSolver(
-        T(abstol), Int(maxiter), Int(ncheck), Int(printout_every), T(dtau_scaling),
-        acx(), acy(), acx(), acy(), acx(), acy(), acx(), acy(),
-        pseudo_timestep, convergence, viscosity_continuation, friction_update, tuning,
-        div_update, vertical_treatment,
+        T(abstol),
+        Int(maxiter),
+        Int(ncheck),
+        Int(printout_every),
+        T(dtau_scaling),
+        acx(),
+        acy(),
+        acx(),
+        acy(),
+        acx(),
+        acy(),
+        acx(),
+        acy(),
+        pseudo_timestep,
+        convergence,
+        viscosity_continuation,
+        friction_update,
+        tuning,
+        div_update,
+        vertical_treatment,
     )
 end
 
@@ -877,7 +923,9 @@ No `nz > 1` requirement here either, for the same reason as the 2D constructor: 
 `momentum` tolerates the grid is [`_check_momentum_grid`](@ref)'s job, at the
 `pseudo_transient!` call that knows the `Runtime`.
 """
-function PseudoTransientSolver(grid::StaggeredGrid, momentum::MomentumBalance3D;
+function PseudoTransientSolver(
+    grid::StaggeredGrid,
+    momentum::MomentumBalance3D;
     abstol = 1e-8,
     maxiter = 100,
     ncheck = 1,
@@ -900,10 +948,26 @@ function PseudoTransientSolver(grid::StaggeredGrid, momentum::MomentumBalance3D;
     acy() = _field(arch, g, NODE_ACY, T, halo)
     _check_vertical_scratch(vertical_treatment, acx(), acy())
     return PseudoTransientSolver(
-        T(abstol), Int(maxiter), Int(ncheck), Int(printout_every), T(dtau_scaling),
-        acx(), acy(), acx(), acy(), acx(), acy(), acx(), acy(),
-        pseudo_timestep, convergence, viscosity_continuation, friction_update, tuning,
-        div_update, vertical_treatment,
+        T(abstol),
+        Int(maxiter),
+        Int(ncheck),
+        Int(printout_every),
+        T(dtau_scaling),
+        acx(),
+        acy(),
+        acx(),
+        acy(),
+        acx(),
+        acy(),
+        acx(),
+        acy(),
+        pseudo_timestep,
+        convergence,
+        viscosity_continuation,
+        friction_update,
+        tuning,
+        div_update,
+        vertical_treatment,
     )
 end
 
@@ -918,14 +982,20 @@ to a bounds error deep inside a kernel.
 _check_vertical_scratch(::ExplicitVertical, acx, acy) = nothing
 
 function _check_vertical_scratch(vt::ImplicitVertical, acx, acy)
-    (size(vt.thomas_x) == size(acx) && size(vt.thomas_y) == size(acy)) || throw(ArgumentError(
-        "ImplicitVertical's scratch fields are $(size(vt.thomas_x))/$(size(vt.thomas_y)), " *
-        "but this solver's work arrays are $(size(acx))/$(size(acy)). Build the strategy " *
-        "from the same grid (and `halo`) as the solver: " *
-        "`ImplicitVertical(grid)`."))
-    eltype(vt.thomas_x) === eltype(acx) || throw(ArgumentError(
-        "ImplicitVertical's scratch is $(eltype(vt.thomas_x)) but this solver is " *
-        "$(eltype(acx)). Build the strategy from the same grid as the solver."))
+    (size(vt.thomas_x) == size(acx) && size(vt.thomas_y) == size(acy)) || throw(
+        ArgumentError(
+            "ImplicitVertical's scratch fields are $(size(vt.thomas_x))/$(size(vt.thomas_y)), " *
+            "but this solver's work arrays are $(size(acx))/$(size(acy)). Build the strategy " *
+            "from the same grid (and `halo`) as the solver: " *
+            "`ImplicitVertical(grid)`.",
+        ),
+    )
+    eltype(vt.thomas_x) === eltype(acx) || throw(
+        ArgumentError(
+            "ImplicitVertical's scratch is $(eltype(vt.thomas_x)) but this solver is " *
+            "$(eltype(acx)). Build the strategy from the same grid as the solver.",
+        ),
+    )
     return nothing
 end
 
@@ -941,11 +1011,11 @@ Solve the ice dynamics via a direct linear solver (e.g., sparse LU factorization
  4. VT/MT/PI type parameters for vector/matrix/perm arrays so the struct can hold GPU arrays (CuVector, CuSparseMatrix) without code changes. The populate_vectors! kernels are written with KernelAbstractions and run on whichever backend owns lsd.u.
 """
 struct LinearMomentumSolver2D{
-    DYN <: AbstractMomentumBalance,
-    T   <: AbstractFloat,
-    VT  <: AbstractVector,        # float vector type (u, u0, b)
+    DYN<:AbstractMomentumBalance,
+    T<:AbstractFloat,
+    VT<:AbstractVector,        # float vector type (u, u0, b)
     MT,                            # sparse matrix type (SparseMatrixCSC or CuSparseMatrix)
-    PI  <: AbstractVector{Int},   # perm index vector type
+    PI<:AbstractVector{Int},   # perm index vector type
     AI,
 } <: AbstractMomentumSolver
     dynamics::DYN
@@ -978,36 +1048,71 @@ function vertically_integrated_viscosity!(N, H, μ)
     return nothing
 end
 
-function stagger()
-end
+function stagger() end
 
 function fill_pattern!(Ai, Aj, nx, ny, i_idx, j_idx)
     k = 0
-    for i in 1:nx, j in 1:ny
+    for i = 1:nx, j = 1:ny
         im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
         nr = _ij2n_ux(i, j, nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(ip1, j,   nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   j,   nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(im1, j,   nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   jp1, nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   jm1, nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_uy(i,   j,   nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_uy(ip1, j,   nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_uy(ip1, jm1, nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_uy(i,   jm1, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_ux(ip1, j, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_ux(i, j, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_ux(im1, j, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_ux(i, jp1, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_ux(i, jm1, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_uy(i, j, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_uy(ip1, j, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_uy(ip1, jm1, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_uy(i, jm1, nx, ny)
     end
-    for i in 1:nx, j in 1:ny
+    for i = 1:nx, j = 1:ny
         im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
         nr = _ij2n_uy(i, j, nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_uy(i,   jp1, nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_uy(i,   j,   nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_uy(i,   jm1, nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_uy(ip1, j,   nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_uy(im1, j,   nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   jp1, nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(i,   j,   nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(im1, jp1, nx, ny)
-        k+=1; Ai[k]=nr; Aj[k]=_ij2n_ux(im1, j,   nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_uy(i, jp1, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_uy(i, j, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_uy(i, jm1, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_uy(ip1, j, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_uy(im1, j, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_ux(i, jp1, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_ux(i, j, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_ux(im1, jp1, nx, ny)
+        k+=1
+        Ai[k]=nr
+        Aj[k]=_ij2n_ux(im1, j, nx, ny)
     end
     return nothing
 end
@@ -1015,8 +1120,8 @@ end
 function coo_to_nzval_idx(Ai, Aj, A::SparseMatrixCSC)
     perm = Vector{Int}(undef, length(Ai))
     for k in eachindex(Ai)
-        c  = Aj[k]
-        r  = Ai[k]
+        c = Aj[k]
+        r = Ai[k]
         lo = A.colptr[c]
         hi = A.colptr[c+1] - 1
         perm[k] = searchsortedfirst(A.rowval, r, lo, hi, Base.Order.Forward)
@@ -1024,67 +1129,148 @@ function coo_to_nzval_idx(Ai, Aj, A::SparseMatrixCSC)
     return perm
 end
 
-function LinearMomentumSolver2D(grid::RegularGrid, dynamics::DYN, backend = CPU()) where {DYN <: AbstractMomentumBalance}
-    T      = eltype(grid.x)
+function LinearMomentumSolver2D(
+    grid::RegularGrid,
+    dynamics::DYN,
+    backend = CPU(),
+) where {DYN<:AbstractMomentumBalance}
+    T = eltype(grid.x)
     nx, ny = grid.nx, grid.ny
     dx, dy = T(grid.dx), T(grid.dy)
-    dxdx_  = 1 / (dx * dx)
-    dydy_  = 1 / (dy * dy)
-    dxdy_  = 1 / (dx * dy)
+    dxdx_ = 1 / (dx * dx)
+    dydy_ = 1 / (dy * dy)
+    dxdy_ = 1 / (dx * dy)
     n_sprs = 18 * nx * ny  # 9 nonzeros/row × 2 equations (ux, uy)
-    n_u    = 2 * nx * ny
+    n_u = 2 * nx * ny
 
     i_idx = PeriodicIndexing(1, nx)
     j_idx = PeriodicIndexing(1, ny)
 
     # Pattern and permutation are always computed on CPU (one-time cost).
-    Ai_cpu   = zeros(Int, n_sprs)
-    Aj_cpu   = zeros(Int, n_sprs)
+    Ai_cpu = zeros(Int, n_sprs)
+    Aj_cpu = zeros(Int, n_sprs)
     fill_pattern!(Ai_cpu, Aj_cpu, nx, ny, i_idx, j_idx)
-    A_cpu    = sparse(Ai_cpu, Aj_cpu, ones(T, n_sprs), n_u, n_u)
+    A_cpu = sparse(Ai_cpu, Aj_cpu, ones(T, n_sprs), n_u, n_u)
     perm_cpu = coo_to_nzval_idx(Ai_cpu, Aj_cpu, A_cpu)
 
     # Allocate live arrays on the target backend (H→D transfer on GPU, no-op copy on CPU).
-    u    = KernelAbstractions.zeros(backend, T,   n_u)
-    u0   = KernelAbstractions.zeros(backend, T,   n_u)
-    b    = KernelAbstractions.zeros(backend, T,   n_u)
+    u = KernelAbstractions.zeros(backend, T, n_u)
+    u0 = KernelAbstractions.zeros(backend, T, n_u)
+    b = KernelAbstractions.zeros(backend, T, n_u)
     perm = KernelAbstractions.zeros(backend, Int, n_sprs)
     perm .= perm_cpu
 
     # `A_cpu` stays a `SparseMatrixCSC` for the CPU default; for GPU, adapt it before
     # passing to the inner constructor, e.g. `CUDA.CUSPARSE.CuSparseMatrixCSC(A_cpu)`.
-    return LinearMomentumSolver2D(dynamics, nx, ny, dxdx_, dydy_, dxdy_, u, u0, b, A_cpu, perm, i_idx, j_idx, Ref{Any}(nothing))
+    return LinearMomentumSolver2D(
+        dynamics,
+        nx,
+        ny,
+        dxdx_,
+        dydy_,
+        dxdy_,
+        u,
+        u0,
+        b,
+        A_cpu,
+        perm,
+        i_idx,
+        j_idx,
+        Ref{Any}(nothing),
+    )
 end
 
-@kernel function _assemble_ux!(nzval, perm, u0, b, nx, ny,
-                               N, N_ab, ux, taud_acx, β_acx, β_acy,
-                               dxdx_, dydy_, dxdy_, i_idx, j_idx, dynamics)
+@kernel function _assemble_ux!(
+    nzval,
+    perm,
+    u0,
+    b,
+    nx,
+    ny,
+    N,
+    N_ab,
+    ux,
+    taud_acx,
+    β_acx,
+    β_acy,
+    dxdx_,
+    dydy_,
+    dxdy_,
+    i_idx,
+    j_idx,
+    dynamics,
+)
     i, j = @index(Global, NTuple)
     im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
     nr = _ij2n_ux(i, j, nx, ny)
     @inbounds u0[nr] = ux[i, j]
-    @inbounds b[nr]  = taud_acx[i, j]
-    v = loop1_coeffs(im1, i, ip1, jm1, j, jp1, dxdx_, dydy_, dxdy_,
-                     N, N_ab, β_acx, β_acy, dynamics)
+    @inbounds b[nr] = taud_acx[i, j]
+    v = loop1_coeffs(
+        im1,
+        i,
+        ip1,
+        jm1,
+        j,
+        jp1,
+        dxdx_,
+        dydy_,
+        dxdy_,
+        N,
+        N_ab,
+        β_acx,
+        β_acy,
+        dynamics,
+    )
     k0 = 9 * ((i - 1) * ny + (j - 1))
-    @inbounds for s in 1:9
-        nzval[perm[k0 + s]] = v[s]
+    @inbounds for s = 1:9
+        nzval[perm[k0+s]] = v[s]
     end
 end
 
-@kernel function _assemble_uy!(nzval, perm, u0, b, nx, ny,
-                               N, N_ab, uy, taud_acy, β_acx, β_acy,
-                               dxdx_, dydy_, dxdy_, i_idx, j_idx, dynamics)
+@kernel function _assemble_uy!(
+    nzval,
+    perm,
+    u0,
+    b,
+    nx,
+    ny,
+    N,
+    N_ab,
+    uy,
+    taud_acy,
+    β_acx,
+    β_acy,
+    dxdx_,
+    dydy_,
+    dxdy_,
+    i_idx,
+    j_idx,
+    dynamics,
+)
     i, j = @index(Global, NTuple)
     im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
     nr = _ij2n_uy(i, j, nx, ny)
     @inbounds u0[nr] = uy[i, j]
-    @inbounds b[nr]  = taud_acy[i, j]
-    v = loop2_coeffs(im1, i, ip1, jm1, j, jp1, dxdx_, dydy_, dxdy_,
-                     N, N_ab, β_acx, β_acy, dynamics)
+    @inbounds b[nr] = taud_acy[i, j]
+    v = loop2_coeffs(
+        im1,
+        i,
+        ip1,
+        jm1,
+        j,
+        jp1,
+        dxdx_,
+        dydy_,
+        dxdy_,
+        N,
+        N_ab,
+        β_acx,
+        β_acy,
+        dynamics,
+    )
     k0 = 9 * nx * ny + 9 * ((i - 1) * ny + (j - 1))
-    @inbounds for s in 1:9
-        nzval[perm[k0 + s]] = v[s]
+    @inbounds for s = 1:9
+        nzval[perm[k0+s]] = v[s]
     end
 end
 
@@ -1105,24 +1291,61 @@ end
 
 function populate_vectors!(
     lsd::LinearMomentumSolver2D,
-    N, N_ab, ux, uy, taud_acx, taud_acy, β_acx, β_acy,
+    N,
+    N_ab,
+    ux,
+    uy,
+    taud_acx,
+    taud_acy,
+    β_acx,
+    β_acy,
 )
     (; A, perm, u0, b, i_idx, j_idx, nx, ny, dxdx_, dydy_, dxdy_, dynamics) = lsd
-    backend  = get_backend(lsd.u)
-    kern_ux  = _assemble_ux!(backend)
-    kern_uy  = _assemble_uy!(backend)
+    backend = get_backend(lsd.u)
+    kern_ux = _assemble_ux!(backend)
+    kern_uy = _assemble_uy!(backend)
 
     nzval = nonzeros(A)
     kern_ux(
-        nzval, perm, u0, b, nx, ny,
-        N, N_ab, ux, taud_acx, β_acx, β_acy,
-        dxdx_, dydy_, dxdy_, i_idx, j_idx, dynamics;
+        nzval,
+        perm,
+        u0,
+        b,
+        nx,
+        ny,
+        N,
+        N_ab,
+        ux,
+        taud_acx,
+        β_acx,
+        β_acy,
+        dxdx_,
+        dydy_,
+        dxdy_,
+        i_idx,
+        j_idx,
+        dynamics;
         ndrange = (nx, ny),
     )
     kern_uy(
-        nzval, perm, u0, b, nx, ny,
-        N, N_ab, uy, taud_acy, β_acx, β_acy,
-        dxdx_, dydy_, dxdy_, i_idx, j_idx, dynamics;
+        nzval,
+        perm,
+        u0,
+        b,
+        nx,
+        ny,
+        N,
+        N_ab,
+        uy,
+        taud_acy,
+        β_acx,
+        β_acy,
+        dxdx_,
+        dydy_,
+        dxdy_,
+        i_idx,
+        j_idx,
+        dynamics;
         ndrange = (nx, ny),
     )
     return nothing
@@ -1149,7 +1372,7 @@ end
 function velocity!(ux, uy, lsd::LinearMomentumSolver2D)
     u = lsd.u
     (; nx, ny) = lsd
-    @inbounds for i in 1:nx, j in 1:ny
+    @inbounds for i = 1:nx, j = 1:ny
         ux[i, j] = u[_ij2n_ux(i, j, nx, ny)]
         uy[i, j] = u[_ij2n_uy(i, j, nx, ny)]
     end
