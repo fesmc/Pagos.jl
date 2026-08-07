@@ -131,6 +131,51 @@ end
     end
 end
 
+# -----------------------------------------------------------------------
+# Operator properties on NON-uniform coefficients.
+#
+# Every test above solves with uy ≡ 0 on a uniform field, which is exactly
+# the blind spot that let a sign error in loop1_coeffs' uy(i+1,j) entry
+# (-2N[i+1,j]/(ΔxΔy) where the operator wants +2) survive: the term it
+# corrupts multiplies uy, so uy ≡ 0 annihilates it, and a uniform N hides
+# nothing else. These two checks need neither an analytic solution nor a
+# reference implementation — they are properties the continuous SSA/DIVA
+# operator has, so any correct discretization of it must have them too:
+#
+#   1. Self-adjointness: A is symmetric.
+#   2. Rigid translation: with β = 0, a uniform velocity produces no force,
+#      so [ux ≡ 1, uy ≡ 0] and [ux ≡ 0, uy ≡ 1] are both in the null space.
+#
+# Both need spatially varying N/N_ab to bite, hence the smooth fields below.
+# -----------------------------------------------------------------------
+
+using LinearAlgebra: norm, I
+
+@testset "DIVA operator properties — non-uniform coefficients" begin
+    nx, ny, dx = 12, 9, 5.0e3
+    grid = RegularGrid(Float64, (nx - 1) * dx, (ny - 1) * dx, dx, dx)
+
+    N     = [1e8 * (2 + sinpi(2i / nx) * cospi(2j / ny)) for i in 1:nx, j in 1:ny]
+    N_ab  = [1e8 * (2 + cospi(2i / nx) * sinpi(2j / ny)) for i in 1:nx, j in 1:ny]
+    β_acx = zeros(nx, ny)          # no drag: rigid translation must cost nothing
+    β_acy = zeros(nx, ny)
+    z     = zeros(nx, ny)
+
+    lsd = LinearMomentumSolver2D(grid, DIVAMomentumBalance())
+    populate_vectors!(lsd, N, N_ab, z, z, z, z, β_acx, β_acy)
+    A = lsd.A
+    n = nx * ny
+
+    @test norm(A - A', Inf) ≤ 1e-12 * norm(A, Inf)
+
+    for (name, u) in ("ux ≡ 1" => vcat(ones(n), zeros(n)),
+                      "uy ≡ 1" => vcat(zeros(n), ones(n)))
+        @testset "rigid translation $name" begin
+            @test norm(A * u, Inf) ≤ 1e-12 * norm(A, Inf)
+        end
+    end
+end
+
 # The pseudo-transient solver used to be covered here too, against the same analytic slab
 # on a collocated `RegularGrid`. That path is retired; its C-grid successor is tested in
 # `pseudotransient_staggered.jl`, which carries every case this file had (uniform slab,

@@ -715,10 +715,15 @@ function calc_matrix_ssa(ux,uy,N,N_ab,taud_acx,taud_acy,β_acx,β_acy,dx)
                      -1.0/dxdy*N_ab[i,j]);
             
             # uy(i+1,j)
+            # NOTE: the N term is `+2`, not `-2` as this reference originally had. With `-2`
+            # the operator is neither symmetric nor annihilated by a rigid translation
+            # `uy = const`; see the "Linear" section of
+            # docs/src/examples/ais-momentum/linear-tuned-gpu.jl. The live port in
+            # src/legacy/performance/velocities.jl (`loop1_coeffs`) carries the same fix.
             k = k+1;
             Ai[k] = nr;
             Aj[k] = ij2n_uy(ip1,j,nx,ny);
-            Av[k] = (-2.0/dxdy*N[ip1,j]
+            Av[k] = ( 2.0/dxdy*N[ip1,j]
                      +1.0/dxdy*N_ab[i,j]);
             
             # uy(i+1,j-1)

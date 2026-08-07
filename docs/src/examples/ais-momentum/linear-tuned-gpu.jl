@@ -28,52 +28,104 @@ slab. It only ships a `RegularGrid`/periodic-boundary constructor and knows noth
 [`momentum_mask!`](@ref)'s `is_momentum_solved`, so three things below are new code that the
 constructor call itself does not give for free:
 
- 1. **Coefficients.** `N` (`= 2 H μ̄`, at cell centers), `N_ab` (the same quantity harmonically
-    interpolated in viscosity / arithmetically in `H` onto the corners), `β_acx`/`β_acy`
-    (arithmetic face-average of the DIVA-corrected `β_eff` from [`diva_update!`](@ref)) and
-    `τ_x`/`τ_y` (`ρgH_face·∂s/∂x`, matching [`drivingstress!`](@ref)'s sign convention) are
-    built by hand from the same restart fields `helpers.jl` already loaded, on a Float32
-    scratch [`MechanicState`](@ref) whose only job is to run [`diva_update!`](@ref) once.
-    Cross-checked two independent ways — this arithmetic, and calling Pagos' own `lerp`/`hlerp`/
-    [`drivingstress!`](@ref) on the Chmy-native fields with the one-cell index shift their
-    "vertex `i` sits between centres `i-1` and `i`" convention needs to line up with this
-    solver's "face `i` sits between centres `i` and `i+1`" one — and against
-    [`GershgorinPseudoTimeStep`](@ref)'s own row-sum formula, which re-derives the same `N`/`N_ab`
-    coefficients independently. All three agree.
+ 1. **Coefficients.** `N` (`= H μ̄`, at cell centers — the vertically integrated viscosity, as
+    [`vertically_integrated_viscosity!`](@ref) and `test/mechanics/slab.jl` define it; the
+    factor-of-2 variant `2 H μ̄` that once stood here made the whole membrane term twice too
+    stiff), `N_ab` (the same quantity harmonically interpolated in viscosity / arithmetically
+    in `H` onto the corners), `β_acx`/`β_acy` (arithmetic face-average of the DIVA-corrected
+    `β_eff` from [`diva_update!`](@ref)) and `τ_x`/`τ_y` (`ρgH_face·∂s/∂x`, matching
+    [`drivingstress!`](@ref)'s sign convention) are built by hand from the same restart fields
+    `helpers.jl` already loaded, on a Float32 scratch [`MechanicState`](@ref) whose only job is
+    to run [`diva_update!`](@ref) once.
+
+    These are verified against Pagos' own kernels the only way that actually pins them down:
+    evaluate the momentum residual at one arbitrary velocity field both ways — `A·u - b` from
+    the assembled operator, and [`membranestress!`](@ref) + [`drivingstress!`](@ref) +
+    basal stress + [`dotvel!`](@ref) from the PT path — and compare term by term, with the
+    one-cell index shift their "vertex `i` sits between centres `i-1` and `i`" convention needs
+    to line up with this solver's "face `i` sits between centres `i` and `i+1`" one. Driving
+    stress, basal drag *and* membrane divergence then agree to Float32 round-off
+    (correlation `1.00000000`, median `|Δ|/scale ≈ 1e-9`) over all ~210 000 on-ice faces. Note
+    what a *pairwise* cross-check would not have caught: a uniform rescaling of `N` and `N_ab`
+    leaves the operator perfectly correlated with the truth, so agreement in shape is no
+    evidence at all — only the ratio is.
  2. **The mask.** The full periodic system is singular over most of the domain: open ocean has
     no friction and no driving stress (`β = 0`, `τ_d = 0`, pure diffusion with no source), and
     detached icebergs have no basal drag and no membrane connection to anything — see
     [`momentum_mask!`](@ref)'s docstring for why that is unsolvable, not merely uninteresting.
-    The DOFs are restricted to `is_momentum_solved` before factorizing, requiring **both**
-    flanking cells of a face to be solved (the strict, `node_fully_active`-style rule — the
-    permissive "either" rule leaves faces whose row is built almost entirely from an excluded
-    neighbour, which are close enough to singular that `lu` still returns a "solution" dominated
-    by round-off). Excluded DOFs stay at their initial `0`, the same fallback PT uses.
+    The DOFs are restricted to `is_momentum_solved` before factorizing, with a face solved when
+    **either** flanking cell is — the permissive rule, matching `node_active`, which is the one
+    the PT solver applies to the very same mask. Excluded DOFs stay at their initial `0`, the
+    same fallback PT uses.
+
+    This used to be the strict "**both** flanking cells" rule, on the grounds that the
+    permissive one left near-singular rows that `lu` would answer with round-off. That
+    diagnosis was made while `loop1_coeffs` still had the sign error described below, which
+    destroyed exactly the symmetry and null-space structure such a judgement rests on. With the
+    operator fixed the permissive system factorizes cleanly (relative residual `6.6e-7`, no
+    empty rows on the 8 km restart), and the strict rule turns out to have been doing real
+    damage: it pins all 4318 faces with one solved neighbour to zero, which is a no-slip
+    Dirichlet ring around the entire ice margin.
  3. **Extraction.** `LinearMomentumSolver2D`'s own `velocity!(ux, uy, lsd)` unpacks the solved
     vector; a small local average converts the `(nx,ny)` face-valued `ux`/`uy` (face `i` between
     centres `i`, `i+1`) to a cell-centred speed, matching the on-ice masking every other script
     here applies before plotting.
 
-!!! warning "The direct solve does not reproduce the PT solution on this geometry"
-    Validated on a small synthetic DIVA problem with smoothly-varying `H`, viscosity *and*
-    friction (correlation 0.9997, mean ratio 0.998 against a Chmy-native PT solve of the same
-    fields) — the coefficient construction and mask restriction are correct in that setting.
-    On the real 8 km restart, restricted to the identical `is_momentum_solved` DOFs, it diverges
-    substantially from the converged Gershgorin-tuned PT solution: not a handful of outlier
-    cells (an ice-thickness floor on top of the mask, up to 200 m, moves the discrepancy
-    negligibly) but a pervasive one, ~195% median relative difference even after trimming the
-    worst 5% by absolute error. The sparse factorization's own residual is essentially zero
-    throughout — which only means self-consistent, not correct: a tiny `lu` residual is normal
-    for a badly-conditioned system and is no evidence of an accurate solution. Two explanations
-    remain open and are **not** distinguished here: a genuine conditioning problem from directly
-    inverting DIVA across real grounding lines (`β` can jump by orders of magnitude between
-    adjacent cells, unlike the smooth synthetic check) and complex domain connectivity, or a
-    residual bug in `LinearMomentumSolver2D`'s legacy `loop1_coeffs`/`loop2_coeffs` assembly that
-    the uniform-slab test (`test/mechanics/slab.jl`) cannot expose, since most of its terms are
-    insensitive to spatially-varying coefficients on a uniform field. Read the "Linear" panel
-    below as a demonstration of *that gap*, not as a working direct-solve baseline — it is why
-    [`GershgorinPseudoTimeStep`](@ref) is the library default for real geometry rather than a
-    convenience.
+!!! note "The direct solve and PT agree on the bulk; they part company where PT has not converged"
+    This panel used to show a ~195% median relative difference against the converged
+    Gershgorin-tuned PT solution, which two bugs — one in the library, one here — turned out to
+    explain between them:
+
+      * `loop1_coeffs`' `uy(i+1,j)` entry carried `-2·N[i+1,j]/(ΔxΔy)` where the operator wants
+        `+2`. The sign is inherited from `src/legacy/dynamics.jl`, the Yelmo-style reference the
+        assembly was ported from, so it was never introduced by the port — it was copied
+        faithfully. It breaks two properties the true SSA/DIVA operator has: symmetry, and a
+        rigid translation `uy ≡ const` sitting in the null space (the erroneous row instead
+        produces a spurious `-4·N[i+1,j]/(ΔxΔy)` x-force). The uniform-slab test cannot see it,
+        because it only ever solves with `uy ≡ 0`, which annihilates the whole term.
+      * `N`/`N_ab` here were built as `2 H μ̄` instead of `H μ̄`, making the membrane divergence
+        exactly twice too stiff while leaving it perfectly correlated with the truth.
+
+    With both fixed, the assembled operator reproduces Pagos' own residual kernels to Float32
+    round-off (see point 1 above), and the direct solve tracks converged PT closely: median
+    relative difference `0.00%` (median `|Δ| ≈ 6e-6` m/yr), 86% of on-ice cells within 1%.
+
+    Where they used to differ was **the ice margin**, and the cause was this script's DOF rule
+    rather than anything about PT — the strict rule pinned the outermost ring to near-zero
+    (median 32.7 m/yr against PT's 183; on floating cells 40.5 against 433, i.e. 9% of it),
+    while the deep interior was already identical to three digits. Reading the "Linear" panel
+    next to the PT ones, that is exactly the artefact it looked like: a no-slip boundary
+    condition at the coast. Switching to the permissive rule takes the correlation with PT from
+    0.849 to 0.985 and the outermost ring to 73% of it.
+
+    Both numbers are worth checking against Yelmo's own `uxy_bar` on this same restart rather
+    than against PT alone, since neither Pagos solve is the reference: Yelmo gives 160 m/yr at
+    the outermost ring and 328 on the floating part of it. The permissive direct solve (134 /
+    273) sits slightly below Yelmo, the PT solve (183 / 433) slightly above, and the strict rule
+    (33 / 40) is nowhere near either.
+
+    A margin gap does remain in the direct solve — 63% of PT on the outermost floating ring —
+    and there is a concrete second mismatch behind at least part of it: PT zeroes the `ab`
+    corner shear stress unless **all four** surrounding cells are solved
+    (`node_fully_active`, in `_membrane_stress_staggered!`), whereas `N_ab` above is built
+    unmasked. That is not a small difference at the margin, because `helpers.jl` sets the
+    off-ice viscosity to `maximum(visc_bar)`, so the harmonic mean over three ice cells and one
+    ocean cell comes out *larger* than the ice viscosity rather than near zero — spurious
+    lateral resistance exactly where the ice is fastest. Zeroing `N_ab` on those corners is
+    **not** the fix, though: it makes the direct system singular (a shelf face then keeps only
+    its `4N/Δx²` pair, and a β-free shelf regains a translation null mode). PT is untroubled by
+    this because an iterative method never needs the operator to be invertible. Reconciling the
+    two properly is left open.
+
+!!! warning "Zero-viscosity cells make the restricted system singular"
+    The 8 km restart happens to have none, but the 16 km one carries `visc_bar == 0` on 142
+    ice-covered cells (`helpers.jl` only replaces the *off*-ice values). `N = H μ̄` is then `0`
+    there, and a face flanked by two such cells with `β_eff == 0` gets an identically-zero row;
+    a face between two of them with ice in the middle gets an isolated rigid-translation null
+    mode. Both make `lu` throw `SingularException` — correctly. Before the sign fix above this
+    was masked, since the asymmetric operator perturbed those exact null modes away and `lu`
+    returned a confident, meaningless answer instead. Floor `visc_bar` at a positive value on
+    ice before assembling if you move this script to another restart.
 =#
 resolution_km = 8
 
@@ -128,10 +180,10 @@ b_acx = similar(H32); b_acy = similar(H32)
 tx    = similar(H32); ty   = similar(H32)
 for i in 1:nx, j in 1:ny
     im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
-    N[i, j] = 2 * H32[i, j] * visc32[i, j]
+    N[i, j] = H32[i, j] * visc32[i, j]
     eta_ab = 4 / (inv(visc32[i, j]) + inv(visc32[ip1, j]) + inv(visc32[i, jp1]) + inv(visc32[ip1, jp1]))
     H_ab   = (H32[i, j] + H32[ip1, j] + H32[i, jp1] + H32[ip1, jp1]) / 4
-    N_ab[i, j] = 2 * eta_ab * H_ab
+    N_ab[i, j] = eta_ab * H_ab
     b_acx[i, j] = (beff32[i, j] + beff32[ip1, j]) / 2
     b_acy[i, j] = (beff32[i, j] + beff32[i, jp1]) / 2
     Hx = (H32[i, j] + H32[ip1, j]) / 2
@@ -148,14 +200,18 @@ ux0 = zeros(Float32, nx, ny); uy0 = zeros(Float32, nx, ny)
 populate_vectors!(lsd, N, N_ab, ux0, uy0, tx, ty, b_acx, b_acy)
 
 is_solved = interior(topo.mask.is_momentum_solved)[:, :, 1]
+
+# `|`, not `&`: a face is solved when *either* flanking cell is, which is exactly what
+# `node_active` gives the PT solver. The strict `&` rule that used to stand here pins every
+# ice/ocean face to zero — a no-slip ring around the whole margin. See the note below.
 active_dof = falses(2 * nx * ny)
 for i in 1:nx, j in 1:ny
     im1, ip1, jm1, jp1 = stencil(i, j, i_idx, j_idx)
-    active_dof[Pagos._ij2n_ux(i, j, nx, ny)] = is_solved[i, j] & is_solved[ip1, j]
-    active_dof[Pagos._ij2n_uy(i, j, nx, ny)] = is_solved[i, j] & is_solved[i, jp1]
+    active_dof[Pagos._ij2n_ux(i, j, nx, ny)] = is_solved[i, j] | is_solved[ip1, j]
+    active_dof[Pagos._ij2n_uy(i, j, nx, ny)] = is_solved[i, j] | is_solved[i, jp1]
 end
 idx = findall(active_dof)
-@printf("Linear: %d / %d DOFs active (is_momentum_solved, both flanking cells)\n",
+@printf("Linear: %d / %d DOFs active (is_momentum_solved, either flanking cell)\n",
        length(idx), 2 * nx * ny)
 
 A_active = lsd.A[idx, idx]
@@ -268,8 +324,9 @@ end
 #=
 ## Diagnostics
 
-`speed_lin` vs. `diva_gersh.speed` is the divergence flagged in the warning above, not a
-useful accuracy statement about either solve; `diva_gersh.speed` vs. `diva_gpu.speed` is the
+`speed_lin` vs. `diva_gersh.speed` is the direct-solve/PT comparison discussed in the note
+above — the two agree on the bulk and part company in fast-flowing ice, where PT's aggregate
+stopping criterion is the likelier culprit; `diva_gersh.speed` vs. `diva_gpu.speed` is the
 CPU/GPU consistency check `cpu-gpu.jl` already makes, repeated here at Float32.
 =#
 function pairwise_stats(name, a, b)
@@ -327,7 +384,7 @@ end
 fig = Figure(size = (1650, 500), fontsize = 18)
 
 panel!(fig[1, 1], "Linear (masked direct solve)",
-    @sprintf("%.1f s (diverges from PT, see warning)", elapsed_lin), on_ice(speed_lin))
+    @sprintf("%.1f s (direct, no iteration)", elapsed_lin), on_ice(speed_lin))
 panel!(fig[1, 2], "Fixed-tune PT", perf_label(diva_fixed), on_ice(diva_fixed.speed))
 panel!(fig[1, 3], "Gershgorin-tuned PT, CPU", perf_label(diva_gersh), on_ice(diva_gersh.speed))
 hm_gpu = panel!(fig[1, 4], "Gershgorin-tuned PT, GPU", perf_label(diva_gpu), on_ice(diva_gpu.speed))
