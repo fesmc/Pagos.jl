@@ -15,13 +15,13 @@ This page inventories the fields carried by Pagos' state structs (`src/api/state
 
 | Variable | Symbol | Dimension | Instances | Necessary | Used |
 |---|---|---|---|---|---|
-| ice mask | $\mathbb{1}_{\mathrm{ice}}$ | 2D | `TopographicMasks` | ✓ | ✓ |
-| ice-neighbour mask | $\mathbb{1}_{\mathrm{nbr}}$ | 2D | `TopographicMasks` | ✓ | ✓ |
-| allowed-ice mask | $\mathbb{1}_{\mathrm{allowed}}$ | 2D | `TopographicMasks` | ✓ | ✓ |
-| grounded mask | $\mathbb{1}_{\mathrm{grounded}}$ | 2D | `TopographicMasks` | ✓ | ✓ |
-| floating mask | $\mathbb{1}_{\mathrm{floating}}$ | 2D | `TopographicMasks` | ✓ | ✗ |
-| margin mask | $\mathbb{1}_{\mathrm{margin}}$ | 2D | `TopographicMasks` | ✓ | ✗ |
-| momentum-solved mask | $\mathbb{1}_{\mathrm{solved}}$ | 2D | `TopographicMasks` | ✓ | ✓ |
+| ice mask | $\mathbb{1}_{\mathrm{ice}}$ | 2D | `TopographyMasks` | ✓ | ✓ |
+| ice-neighbour mask | $\mathbb{1}_{\mathrm{nbr}}$ | 2D | `TopographyMasks` | ✓ | ✓ |
+| allowed-ice mask | $\mathbb{1}_{\mathrm{allowed}}$ | 2D | `TopographyMasks` | ✓ | ✓ |
+| grounded mask | $\mathbb{1}_{\mathrm{grounded}}$ | 2D | `TopographyMasks` | ✓ | ✓ |
+| floating mask | $\mathbb{1}_{\mathrm{floating}}$ | 2D | `TopographyMasks` | ✓ | ✗ |
+| margin mask | $\mathbb{1}_{\mathrm{margin}}$ | 2D | `TopographyMasks` | ✓ | ✗ |
+| momentum-solved mask | $\mathbb{1}_{\mathrm{solved}}$ | 2D | `TopographyMasks` | ✓ | ✓ |
 | distance to margin | $d_{\mathrm{margin}}$ | 2D | `DistanceState` | ✗ | ✗ |
 | distance to grounding line | $d_{\mathrm{gl}}$ | 2D | `DistanceState` | ✗ | ✗ |
 | grounded fraction | $f_{\mathrm{g}}$ | 2D | `FractionState` | ✓ | ✗ |
