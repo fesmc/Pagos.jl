@@ -28,7 +28,7 @@ PagosMakieExt = ["Makie"]
 [compat]
 Adapt = "4"
 CUDA = "5"
-CUDSS = "0.7"
+CUDSS = "0.6 - 0.7"
 Chmy = "0.1.26"
 DocStringExtensions = "0.9"
 Downloads = "1.6"
