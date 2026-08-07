@@ -49,18 +49,20 @@ dy = (yc[2] - yc[1]) * 1e3
 lx, ly = nx * dx, ny * dy
 
 #=
-## Build the grid, topography state, and ice mask
+## Build the grid, ice masks, and momentum mask
 
 One [`StaggeredGrid`](@ref) with a real column (`nz = 11`, [`QuadraticSigmaTransform`](@ref)),
-shared by every comparison below: [`TopographicState`](@ref) and the mask are built once, since
-nothing about them depends on which momentum balance or element type a given solve uses. The
-`is_momentum_solved` mask excludes the ~48 detached iceberg cells a force balance cannot be posed on.
+shared by every comparison below: the [`TopographyMasks`](@ref) are built once, since nothing
+about them depends on which momentum balance or element type a given solve uses. Only the masks
+are needed here — not a full [`TopographicState`](@ref), which would also carry the unused
+mass-balance and elevation fields `run_solve` never touches. The `is_momentum_solved` mask
+excludes the ~48 detached iceberg cells a force balance cannot be posed on.
 =#
 T = Float64
 layering = CorrectedVerticalLayering(T, QuadraticSigmaTransform(T, nz))
 grid = StaggeredGrid(T, lx, ly, dx, dy, layering)
 rt   = Runtime(grid)
-topo = TopographicState(grid)
+masks = TopographyMasks(grid)
 cst  = Constants{T}()
 
 function fill_from_grid!(f, data)
@@ -81,13 +83,14 @@ function fill_from_grid3d!(f, data)
     return f
 end
 
-fill_from_grid!(topo.thickness.ice, H_ice)
-fill_from_grid!(topo.mask.is_grounded, f_grnd .> 0)
-icemasks!(topo, rt)
-momentum_mask!(topo, rt)
-mask = IceMask(topo.mask.is_momentum_solved)
+thickness_ice = Field(grid.arch, grid.grid2d, (Center(), Center(), Center()), T; halo = 1)
+fill_from_grid!(thickness_ice, H_ice)
+fill_from_grid!(masks.is_grounded, f_grnd .> 0)
+icemasks!(masks, thickness_ice, rt)
+momentum_mask!(masks.is_momentum_solved, masks.is_ice, masks.is_grounded, rt)
+mask = IceMask(masks.is_momentum_solved)
 
-n_detached = count(asarray(topo.mask.is_ice) .& .!asarray(topo.mask.is_momentum_solved))
+n_detached = count(asarray(masks.is_ice) .& .!asarray(masks.is_momentum_solved))
 @show n_detached
 
 #=

@@ -11,7 +11,7 @@
 #                          exist; never derived from the state, left alone by
 #                          [`icemasks!`](@ref).
 #
-# @dev: `TopographicMasks.is_margin` is named to pair with `is_ice_neighbour` (the ring
+# @dev: `TopographyMasks.is_margin` is named to pair with `is_ice_neighbour` (the ring
 # *inside* the ice), but nothing in `src/` computes it yet — treat the pairing as naming
 # intent, not a working relationship, until it gets a producer.
 #
@@ -194,7 +194,7 @@ reads `is_ice` one cell further out than `is_ice`'s own sweep reached.
     draining a cell below zero — which is the usual advective CFL condition, a separate
     constraint from the mask width.)
 """
-function icemasks!(mask::TopographicMasks, H, rt::Runtime; H_min = 0)
+function icemasks!(mask::TopographyMasks, H, rt::Runtime; H_min = 0)
     H_min = convert(eltype(H), H_min)
     rt.launch2d(rt.arch, rt.grid2d, _is_ice! => (mask.is_ice, H, H_min))
     rt.launch2d(

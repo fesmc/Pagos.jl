@@ -52,7 +52,7 @@ include("api/runtime.jl")
 export Runtime
 
 include("api/state.jl")
-export TopographicState, MechanicState, ThermodynamicState, MaterialState
+export TopographicState, TopographyMasks, MechanicState, ThermodynamicState, MaterialState
 
 include("api/boundary.jl")
 export asarray, setdata!

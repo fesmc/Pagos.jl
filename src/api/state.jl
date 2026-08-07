@@ -53,7 +53,7 @@ $(TYPEDSIGNATURES)
   grounded ice through ice, i.e. everything except detached icebergs. Written by
   [`momentum_mask!`](@ref); see its docstring for why this is not the same as `is_ice`.
 """
-struct TopographicMasks{AA}
+struct TopographyMasks{AA}
     is_ice::AA
     is_ice_neighbour::AA
     is_ice_allowed::AA
@@ -62,7 +62,21 @@ struct TopographicMasks{AA}
     is_margin::AA
     is_momentum_solved::AA
 end
-Adapt.@adapt_structure TopographicMasks
+Adapt.@adapt_structure TopographyMasks
+
+"""
+$(TYPEDSIGNATURES)
+
+Allocate a standalone [`TopographyMasks`](@ref) of Chmy `Field`s on `grid`, at the `aa`
+node. For callers that only need the ice/grounding masks — e.g. to run [`icemasks!`](@ref)
+and [`momentum_mask!`](@ref) — without paying for the rest of a
+[`TopographicState`](@ref).
+"""
+function TopographyMasks(grid::StaggeredGrid; halo = 1)
+    (; arch) = grid
+    g = grid.grid2d
+    return TopographyMasks(ntuple(_ -> _field(arch, g, NODE_AA, Bool, halo), 7)...)
+end
 
 """
 $(TYPEDSIGNATURES)
@@ -150,7 +164,7 @@ and `ACY` are the same type; with `Field`s they differ, because the location is 
 the type.
 """
 struct TopographicState{B,M,ACX,ACY}
-    mask::TopographicMasks{B}
+    mask::TopographyMasks{B}
     distance::DistanceState{M}
     fraction::FractionState{M}
     thickness::ThicknessState{M}
@@ -166,7 +180,7 @@ function TopographicState(grid::RegularGrid)
     b = KernelAbstractions.zeros(backend, Bool, nx, ny)
     m = KernelAbstractions.zeros(backend, T, nx, ny)
     return TopographicState(
-        TopographicMasks([copy(b) for _ = 1:7]...),
+        TopographyMasks([copy(b) for _ = 1:7]...),
         DistanceState([copy(m) for _ = 1:2]...),
         FractionState([copy(m) for _ = 1:1]...),
         ThicknessState([copy(m) for _ = 1:6]...),
@@ -192,7 +206,7 @@ function TopographicState(grid::StaggeredGrid; halo = 1)
     acx() = _field(arch, g, NODE_ACX, T, halo)
     acy() = _field(arch, g, NODE_ACY, T, halo)
     return TopographicState(
-        TopographicMasks(ntuple(_ -> b(), 7)...),
+        TopographyMasks(ntuple(_ -> b(), 7)...),
         DistanceState(ntuple(_ -> aa(), 2)...),
         FractionState(aa()),
         ThicknessState(ntuple(_ -> aa(), 6)...),

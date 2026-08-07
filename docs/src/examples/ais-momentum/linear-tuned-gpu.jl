@@ -1,23 +1,15 @@
 #=
 
-# DIVA: direct linear solve vs. fixed-tune PT vs. Gershgorin-tuned PT vs. GPU
+# DIVA: direct linear solve vs. Gershgorin-tuned PT, GPU
 
-Four solves of the same DIVA problem, all on the 8 km restart:
+Two solves of the same DIVA problem, both on the 8 km restart:
 
  1. **Linear** — a direct sparse solve ([`LinearMomentumSolver2D`](@ref)), CPU, Float32.
- 2. **Fixed-tune PT** — [`PseudoTransientSolver`](@ref) with [`ViscosityPseudoTimeStep`](@ref)
-    (Sandip et al. 2024 Eq. 7, `Δτ ∝ 1/η`), CPU, Float32.
- 3. **Gershgorin-tuned PT** — the library default, [`GershgorinPseudoTimeStep`](@ref), CPU,
+ 2. **Gershgorin-tuned PT** — the library default, [`GershgorinPseudoTimeStep`](@ref), GPU,
     Float32.
- 4. **Gershgorin-tuned PT** — same as 3, on GPU.
 
-3 vs. 4 is the same comparison `cpu-gpu.jl` makes (there at Float64); this script repeats it
-at Float32 as one leg of a wider comparison rather than as its own subject. 2 vs. 3 compares
-`pseudo_timestep` (`Δτ` rule) *and* `tuning` (relaxation strategy) together, since
-`AutotunedDynamicRelaxation` requires [`GershgorinPseudoTimeStep`](@ref) and cannot be held
-fixed across both legs — so this ends up close to `hand-auto-tuned.jl`'s `FixedTuning()` vs.
-`AutotunedDynamicRelaxation()` comparison, with `pseudo_timestep` riding along as a second,
-inseparable axis of difference rather than an isolated one.
+Leg 2 is the same GPU solve `cpu-gpu.jl` compares against its own CPU run (there at Float64);
+here it stands instead against the direct linear solve below, at Float32.
 
 ## The direct linear solve: what it means here, and why the mask matters
 
@@ -143,9 +135,9 @@ using SparseArrays, LinearAlgebra
 #=
 ## 1. Linear: masked direct solve, CPU, Float32
 
-`grid32`/`rt32` are reused below for the two CPU PT legs too, since `diva_update!`'s
-`β_eff` is the only thing that needs a live [`MechanicState`](@ref) here; `run_solve` builds
-and tears down its own.
+`grid32`/`rt32` build the Float32 CPU state that seeds the linear system below via
+`diva_update!`'s DIVA-corrected `β_eff`; `grid32` is reused further down to build the
+GPU state too (`mech_cpu_for_gpu`, adapted onto the GPU before its own solve).
 =#
 grid32 = StaggeredGrid(Float32, lx, ly, dx, dy, layering)
 rt32   = Runtime(grid32)
@@ -199,7 +191,7 @@ lsd = LinearMomentumSolver2D(regular_grid, DIVAMomentumBalance())
 ux0 = zeros(Float32, nx, ny); uy0 = zeros(Float32, nx, ny)
 populate_vectors!(lsd, N, N_ab, ux0, uy0, tx, ty, b_acx, b_acy)
 
-is_solved = interior(topo.mask.is_momentum_solved)[:, :, 1]
+is_solved = interior(masks.is_momentum_solved)[:, :, 1]
 
 # `|`, not `&`: a face is solved when *either* flanking cell is, which is exactly what
 # `node_active` gives the PT solver. The strict `&` rule that used to stand here pins every
@@ -234,33 +226,7 @@ println("Linear, CPU Float32: elapsed = ", round(elapsed_lin, digits = 2), "s ",
        " a SuiteSparse/UMFPACK limitation, not a Pagos one)")
 
 #=
-## 2. Fixed-tune PT (`ViscosityPseudoTimeStep`) vs. 3. Gershgorin-tuned PT — CPU, Float32
-
-`AutotunedDynamicRelaxation` (`SOLVER_KWARGS`'s own default `tuning`) requires
-[`GershgorinPseudoTimeStep`](@ref) (`_check_tuning` throws otherwise), so the fixed-tune leg
-below also swaps `tuning` to `FixedTuning()` — see the module docstring for why that makes
-this a two-preset comparison rather than a single isolated variable.
-
-`ViscosityPseudoTimeStep` ignores basal drag when choosing `Δτ` (its own docstring's warning),
-which under real, friction-dominated grounded ice stalls convergence rather than merely
-slowing it: on this restart the residual plateaus around `0.93` (abstol is `1e-3`) within the
-first 20 iterations and stays there, so `maxiter` is capped at a few hundred rather than chased
-up toward convergence that inspection shows will not arrive. The Gershgorin-tuned legs below
-use `SOLVER_KWARGS` unchanged, i.e. the library default (`AutotunedDynamicRelaxation(cadence =
-50)`), same as every other script in this folder.
-=#
-diva_fixed = run_solve(DIVAMomentumBalance(), grid32, rt32, mask;
-    (; SOLVER_KWARGS..., pseudo_timestep = ViscosityPseudoTimeStep(Float32),
-      tuning = FixedTuning(), maxiter = 500)...)
-println("Fixed-tune PT, CPU Float32: ",
-       (; diva_fixed.converged, diva_fixed.iterations, diva_fixed.elapsed, diva_fixed.residual))
-
-diva_gersh = run_solve(DIVAMomentumBalance(), grid32, rt32, mask; SOLVER_KWARGS...)
-println("Gershgorin-tuned PT, CPU Float32: ",
-       (; diva_gersh.converged, diva_gersh.iterations, diva_gersh.elapsed, diva_gersh.residual))
-
-#=
-## 4. Gershgorin-tuned PT — GPU, Float32
+## 2. Gershgorin-tuned PT — GPU, Float32
 
 Same structure as `cpu-gpu.jl` (CUDA touched before `helpers.jl`'s `set_theme!` call, a
 discarded warm-up solve run in place on `mech_gpu` past `SOLVER_KWARGS`'s tuning cadence) —
@@ -282,8 +248,8 @@ if CUDA.functional()
     setdata!(mech_cpu_for_gpu.velocity.depthaverage_x, 0.0f0)
     setdata!(mech_cpu_for_gpu.velocity.depthaverage_y, 0.0f0)
 
-    topo_gpu = Pagos.Adapt.adapt(CuArray, topo)
-    mask_gpu = IceMask(topo_gpu.mask.is_momentum_solved)
+    masks_gpu = Pagos.Adapt.adapt(CuArray, masks)
+    mask_gpu = IceMask(masks_gpu.is_momentum_solved)
 
     function solve_on!(mech, grid, rt, mask; solver_kwargs...)
         solver = PseudoTransientSolver(grid; solver_kwargs...)
@@ -324,10 +290,9 @@ end
 #=
 ## Diagnostics
 
-`speed_lin` vs. `diva_gersh.speed` is the direct-solve/PT comparison discussed in the note
+`speed_lin` vs. `diva_gpu.speed` is the direct-solve/PT comparison discussed in the note
 above — the two agree on the bulk and part company in fast-flowing ice, where PT's aggregate
-stopping criterion is the likelier culprit; `diva_gersh.speed` vs. `diva_gpu.speed` is the
-CPU/GPU consistency check `cpu-gpu.jl` already makes, repeated here at Float32.
+stopping criterion is the likelier culprit.
 =#
 function pairwise_stats(name, a, b)
     d = on_ice(a .- b)
@@ -337,10 +302,8 @@ function pairwise_stats(name, a, b)
     return d
 end
 
-diff_lin_gersh = pairwise_stats("Linear vs. Gershgorin PT (CPU)", speed_lin, diva_gersh.speed)
-diff_fixed_gersh = pairwise_stats("Fixed-tune vs. Gershgorin PT (CPU)", diva_fixed.speed, diva_gersh.speed)
-diff_cpu_gpu = CUDA.functional() ?
-    pairwise_stats("Gershgorin PT, CPU vs. GPU", diva_gersh.speed, diva_gpu.speed) :
+diff_lin_gpu = CUDA.functional() ?
+    pairwise_stats("Linear vs. Gershgorin PT (GPU)", speed_lin, diva_gpu.speed) :
     fill(NaN32, nx, ny)
 
 #=
@@ -349,9 +312,9 @@ diff_cpu_gpu = CUDA.functional() ?
 MEaSUREs-style velocity colouring (white → dodgerblue → yellow → red → darkred, log-scaled,
 each colour landing exactly on 0/100/400/700/1000 m/yr) over a `:bukavu` bathymetry backdrop
 drawn first in each panel, so the ocean/off-ice area (transparent `NaN` in the speed layer)
-reads as seafloor rather than blank. One row, four columns: Linear, then the three PT
-variants. Cropped by 30 cells in `x` and 80 in `y` (each side) to trim the mostly-empty
-domain margin around the ice sheet.
+reads as seafloor rather than blank. One row, two columns: Linear, then Gershgorin-tuned PT
+(GPU). Cropped by 30 cells in `x` and 80 in `y` (each side) to trim the mostly-empty domain
+margin around the ice sheet.
 =#
 crop_x, crop_y = 30, 80
 ix = (crop_x + 1):(nx - crop_x)
@@ -381,15 +344,13 @@ function panel!(fig_pos, title, subtitle, data)
     return hm
 end
 
-fig = Figure(size = (1650, 500), fontsize = 18)
+fig = Figure(size = (900, 500), fontsize = 18)
 
 panel!(fig[1, 1], "Linear (masked direct solve)",
     @sprintf("%.1f s (direct, no iteration)", elapsed_lin), on_ice(speed_lin))
-panel!(fig[1, 2], "Fixed-tune PT", perf_label(diva_fixed), on_ice(diva_fixed.speed))
-panel!(fig[1, 3], "Gershgorin-tuned PT, CPU", perf_label(diva_gersh), on_ice(diva_gersh.speed))
-hm_gpu = panel!(fig[1, 4], "Gershgorin-tuned PT, GPU", perf_label(diva_gpu), on_ice(diva_gpu.speed))
+hm_gpu = panel!(fig[1, 2], "Gershgorin-tuned PT, GPU", perf_label(diva_gpu), on_ice(diva_gpu.speed))
 
-Colorbar(fig[2, 2:3], hm_gpu, vertical = false, width = Relative(0.5), flipaxis = false, height = Relative(1), label = "speed (m/yr)")
+Colorbar(fig[2, 1:2], hm_gpu, vertical = false, width = Relative(0.5), flipaxis = false, height = Relative(1), label = "speed (m/yr)")
 rowsize!(fig.layout, 2, 20)
 colgap!(fig.layout, 5)
 save("$figdir/linear-tuned-gpu-$(resolution_km)km.png", fig)

@@ -71,8 +71,8 @@ if CUDA.functional()
     setdata!(mech_cpu_for_gpu.velocity.depthaverage_x, 0.0)
     setdata!(mech_cpu_for_gpu.velocity.depthaverage_y, 0.0)
 
-    topo_gpu = Pagos.Adapt.adapt(CuArray, topo)
-    mask_gpu = IceMask(topo_gpu.mask.is_momentum_solved)
+    masks_gpu = Pagos.Adapt.adapt(CuArray, masks)
+    mask_gpu = IceMask(masks_gpu.is_momentum_solved)
 
     function solve_on!(mech, grid, rt, mask; solver_kwargs...)
         solver = PseudoTransientSolver(grid; solver_kwargs...)
