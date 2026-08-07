@@ -77,6 +77,7 @@ PAGES = [
         "numerics/integrators.md",
         "numerics/staggered_grids.md",
     ],
+    "variables.md",
     # "Guidelines" => [
     #     "guidelines/naming.md",
     #     "guidelines/performance.md",
