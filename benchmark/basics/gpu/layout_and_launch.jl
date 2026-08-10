@@ -1,14 +1,25 @@
 # ---------------------------------------------------------------------------
 # Question: where does a depth-integrated Pagos kernel's GPU time actually go?
 #
-# Two answers that are properties of the *launch*, not of any kernel body:
+# Two answers that were properties of the *launch*, not of any kernel body:
 #
-#  1. A `Field` on `grid2d` is one k-plane of a `(nx + 4, ny + 4, 5)` parent — 5× the
+#  1. A `Field` on `grid2d` used to be one k-plane of a `(nx + 4, ny + 4, 5)` parent — 5× the
 #     memory its interior needs, because the halo convention adds two rings in z to an axis
-#     with no extent. That is what puts a Float64 AIS state at 8 km over an 8 GB card.
+#     with no extent. That is what put a Float64 AIS state at 8 km over an 8 GB card.
 #  2. Chmy's `Launcher` sweeps `size(grid, Center()) .+ 2`, i.e. `(nx + 2, ny + 2, 3)` on
-#     `grid2d`. Every depth-integrated kernel therefore reads and writes **three** k-planes
+#     `grid2d`. Every depth-integrated kernel therefore read and wrote **three** k-planes
 #     where one would do.
+#
+# **Both landed in `src`** (`pagos-roadmap/memreduce.md`): `rt.launch2d` is a
+# `Pagos.FlatLauncher` (finding 2), and `MechanicState`'s `grid2d` fields now allocate with
+# `halo = (h, h, 0)` (finding 1, via `Pagos._halo2d`). Measured numbers for both live in
+# `benchmark/basics/gpu/README.md` §1, taken while getting the fix right — not reproduced
+# live below, because that would mean reconstructing the pre-fix 5-plane allocation just to
+# re-demonstrate a bug `mech`'s own fields can no longer exhibit (a `full()` launch below
+# would now be a `BoundsError`, correctly: `mech`'s `grid2d` fields have no `z ± 1` to read).
+# What is still live: the plane-count probe (a standalone `halo = 1` field, so it keeps
+# showing what an *ordinary* Chmy `Launcher` sweeps) and the roofline comparisons, neither of
+# which depended on the bug.
 #
 # Run:  julia --project=benchmark benchmark/basics/gpu/layout_and_launch.jl [f32]
 # ---------------------------------------------------------------------------
@@ -17,7 +28,7 @@ include(joinpath(@__DIR__, "common.jl"))
 T = length(ARGS) > 0 && ARGS[1] == "f32" ? Float32 : Float64
 fx = gpu_fixture(; T)
 (; mech, rt, mask) = fx
-(; stress, velocity, material, topography, friction) = mech
+(; stress, velocity, material, friction) = mech
 
 println("=== $T, $(GPU_NX)x$(GPU_NY), nz = $(GPU_NZ) ===\n")
 
@@ -62,47 +73,31 @@ big = big2 = nothing; GC.gc(); CUDA.reclaim()
 
 ux, bx = velocity.depthaverage_x, velocity.base_x       # both at acx
 iv_d, iv_s = interior(bx), interior(ux)
+# Still a 5-plane parent, unlike most of `mech`'s other `grid2d` fields: `depthaverage_x`
+# and `base_x` are 2 of the 14 fields `MechanicState` exempts from the z-ghost shrink
+# because they're `bc!`'d (see its constructor's note) — so the data plane is still at
+# parent index 3, exactly as a `halo = 1` field puts it.
 kp_d, kp_s = view(parent(bx), :, :, 3), view(parent(ux), :, :, 3)
 bwline("copyto! on asarray(f) (strided view)", () -> copyto!(iv_d, iv_s),
        2sizeof(T) * length(iv_d))
 bwline("copyto! on the parent k-plane", () -> copyto!(kp_d, kp_s), 2sizeof(T) * length(kp_d))
 
-## ------------------------------------------------------- three k-planes versus one
+## ------------------------------------------------ finding 1 is no longer reproducible
+# What used to be here timed the same kernel launched over 3 k-planes (Chmy's default
+# `Launcher` worksize) against 1 (`FlatLauncher`'s). That comparison needed a `grid2d` field
+# with a real z-ghost to sweep the extra two planes of — `mech`'s fields no longer have one,
+# so the `full()` launch below is now a `BoundsError`, on purpose: it is the fix, observed
+# directly rather than timed. The historical numbers (2.9–4.2× per kernel) are in
+# `benchmark/basics/gpu/README.md` §1.
 bk = get_backend(rt.arch)
 gs = heuristic_groupsize(bk, Val(3))
 ws_full = size(rt.grid2d, Center()) .+ 2
-ws_flat = (ws_full[1], ws_full[2], 1)
 full(k, args) = (k(bk, gs, ws_full)(args..., Chmy.Offset(-1)); nothing)
-flat(k, args) = (k(bk, gs, ws_flat)(args..., Chmy.Offset(-1, -1, 0)); nothing)
-
-KERNELS = (
-    ("_depthaverage_velocity_gradients!", Pagos._depthaverage_velocity_gradients!,
-     (velocity, mask, rt.grid2d)),
-    ("_membrane_stress_staggered!", Pagos._membrane_stress_staggered!,
-     (stress.membrane_xx, stress.membrane_xy, stress.membrane_yy,
-      material.viscosity_depthaveraged, topography.thickness, velocity, mask, rt.grid2d)),
-    ("_basalstress_staggered!", Pagos._basalstress_staggered!,
-     (stress.base_x, stress.base_y, friction.beta_eff, velocity.base_x, velocity.base_y,
-      mask, rt.grid2d)),
-)
-
-println("\nthe same kernel over 3 k-planes (Chmy default) and over 1")
-tot_full = tot_flat = 0.0
-for (nm, k, args) in KERNELS
-    tf = bench(() -> full(k, args), "$nm  [3 planes]")
-    tl = bench(() -> flat(k, args), "$nm  [1 plane]")
-    @printf("  %-46s %8.2fx\n", "->", tf / tl)
-    global tot_full += tf; global tot_flat += tl
+try
+    full(Pagos._basalstress_staggered!,
+         (stress.base_x, stress.base_y, friction.beta_eff, velocity.base_x, velocity.base_y,
+          mask, rt.grid2d))
+    println("\nunexpected: a 3-plane launch over a grid2d field succeeded")
+catch e
+    println("\na 3-plane launch over a grid2d field now errors, as expected: ", nameof(typeof(e)))
 end
-@printf("\n  hot depth-integrated kernels: %.0f us -> %.0f us  (%.2fx)\n",
-        tot_full, tot_flat, tot_full / tot_flat)
-
-# The flat launch must leave the interior untouched — the halo planes are the only
-# difference, and nothing reads them.
-Pagos.membranestress!(stress, velocity, material, topography, DIVAMomentumBalance(), rt, mask)
-ref = copy(Array(asarray(stress.membrane_xy)))
-fill!(parent(stress.membrane_xy), T(NaN))
-flat(Pagos._membrane_stress_staggered!, KERNELS[2][3])
-CUDA.synchronize()
-println("\n  flat launch reproduces the full launch's interior: ",
-        isequal(ref, Array(asarray(stress.membrane_xy))))

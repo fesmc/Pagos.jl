@@ -118,11 +118,8 @@ deviatoric_stress!(mech::MechanicState{<:Chmy.AbstractField}, mat::MaterialState
         node_fully_active(mask, NODE_ACY_AC, i, j) ?
         2 * hlerp(η, NODE_ACY_AC, grid, I...) * sr.yz[I...] : Z
     stress.xy[I...] = txy
-    stress.yx[I...] = txy
     stress.xz[I...] = txz
-    stress.zx[I...] = txz
     stress.yz[I...] = tyz
-    stress.zy[I...] = tyz
 end
 
 @kernel inbounds = true function _deviatoric_stress_effective_staggered!(

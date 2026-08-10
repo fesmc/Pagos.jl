@@ -37,6 +37,28 @@ architecture `arch`. Thin, eltype-explicit wrapper around `Chmy.Field` used by t
 """
 _field(arch, grid, loc, T, halo) = Field(arch, grid, loc, T; halo)
 
+"""
+$(TYPEDSIGNATURES)
+
+The halo width to allocate a field on `grid.grid2d` with: whatever the caller asked for on
+`x`/`y`, and **zero** on `z`.
+
+`grid2d`'s z-axis has extent 1, and nothing sweeps a ghost ring there — `Runtime`'s
+`launch2d` is a [`FlatLauncher`](@ref), which visits only the one real z-plane (see its
+docstring for why nothing reads the planes it stops writing). A scalar `halo` would
+allocate the usual `4·halo` extra z-planes anyway, since `Chmy.Field` does not know a given
+grid's z-axis is a placeholder — **5.1× the memory a `grid2d` field's interior needs** at
+the default `halo = 1` (`pagos-roadmap/chmy-issues.md`). `_halo2d` is what state.jl's
+`grid2d`-based field builders pass instead of `halo` directly.
+
+Every use of `Field(...; halo = _halo2d(halo))` sees the *same* transform of a given `halo`,
+so a `@diagnostic` field allocated at full size (`diagnostics = true`) and its one-cell
+placeholder (`diagnostics = false`) keep matching `Field{T,N,L,H,A}` types — see the
+"Diagnostic (output-only) fields" note above, which the same invariant serves.
+"""
+_halo2d(halo::Integer) = (halo, halo, 0)
+_halo2d(halo::NTuple{3,Integer}) = (halo[1], halo[2], 0)
+
 ###############################################################
 # Diagnostic (output-only) fields
 ###############################################################
@@ -131,7 +153,7 @@ and [`momentum_mask!`](@ref) — without paying for the rest of a
 function TopographyMasks(grid::StaggeredGrid; halo = 1)
     (; arch) = grid
     g = grid.grid2d
-    return TopographyMasks(ntuple(_ -> _field(arch, g, NODE_AA, Bool, halo), 7)...)
+    return TopographyMasks(ntuple(_ -> _field(arch, g, NODE_AA, Bool, _halo2d(halo)), 7)...)
 end
 
 """
@@ -168,6 +190,10 @@ $(TYPEDSIGNATURES)
 - `calving_floating`: calving mass loss from floating ice (m/yr)
 - `calving_grounded`: calving mass loss from grounded ice (m/yr)
 - `discharge`: mass loss from ice flowing out of the grounded domain (m/yr)
+- `front`: mass loss from ice flowing out of the floating domain (m/yr)
+- `net`: net mass balance (m/yr)
+- `surface`: surface mass balance (m/yr)
+- `surface_ref`: reference surface mass balance (m/yr)
 """
 struct MassBalanceState{AA}
     base::AA
@@ -183,6 +209,17 @@ struct MassBalanceState{AA}
 end
 Adapt.@adapt_structure MassBalanceState
 
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `ice`: ice thickness (m)
+- `ice_ref`: reference ice thickness (m)
+- `ice_dt`: ice thickness change rate (m/yr)
+- `ice_effective`: effective ice thickness (m)
+- `ice_grounded`: grounded ice thickness (m)
+- `sediment`: sediment thickness (m)
+"""
 struct ThicknessState{AA}
     ice::AA
     ice_ref::AA
@@ -193,6 +230,21 @@ struct ThicknessState{AA}
 end
 Adapt.@adapt_structure ThicknessState
 
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+
+- `base`: ice base elevation (m); differs from bed elevation when sediments are present or when ice is floating
+- `bed`: bedrock elevation (m)
+- `bed_ref`: reference bedrock elevation (m)
+- `bed_stddev`: bedrock elevation standard deviation (m)
+- `seasurface`: sea surface elevation (m)
+- `surface`: ice surface elevation (m)
+- `surface_dt`: ice surface elevation change rate (m/yr)
+- `surface_dx`: ice surface gradient in x (∂s/∂x, unitless)
+- `surface_dy`: ice surface gradient in y (∂s/∂y, unitless)
+"""
 struct ElevationState{AA,ACX,ACY}
     base::AA
     bed::AA
@@ -250,8 +302,9 @@ $(TYPEDSIGNATURES)
 
 Build a [`TopographicState`](@ref) of Chmy `Field`s on `grid`. All fields are
 depth-integrated, so they live on `grid.grid2d` at the `aa` node — except the surface
-gradients, which live on the `acx`/`acy` faces. Element type follows the grid; `halo`
-is the ghost-cell width of every field.
+gradients, which live on the `acx`/`acy` faces. Element type follows the grid; `halo` is the
+ghost-cell width on `x`/`y` — every field here is on `grid.grid2d`, so `z` gets none
+(see [`_halo2d`](@ref)).
 
 `diagnostics = false` (the default) allocates the output-only fields on a one-cell grid
 instead of the full one — see the "Diagnostic (output-only) fields" note above. In this
@@ -264,12 +317,13 @@ function TopographicState(grid::StaggeredGrid; halo = 1, diagnostics = false)
     g = grid.grid2d
     T = eltype(g)
     d = _degenerate_grid(grid)
-    b() = _field(arch, g, NODE_AA, Bool, halo)
-    aa() = _field(arch, g, NODE_AA, T, halo)
-    acx() = _field(arch, g, NODE_ACX, T, halo)
-    acy() = _field(arch, g, NODE_ACY, T, halo)
+    h = _halo2d(halo)
+    b() = _field(arch, g, NODE_AA, Bool, h)
+    aa() = _field(arch, g, NODE_AA, T, h)
+    acx() = _field(arch, g, NODE_ACX, T, h)
+    acy() = _field(arch, g, NODE_ACY, T, h)
     # @diagnostic — Necessary ✗ / Used ✗ in `docs/src/variables.md`
-    aa_d() = _maybe_field(arch, g, d, NODE_AA, T, halo, diagnostics)
+    aa_d() = _maybe_field(arch, g, d, NODE_AA, T, h, diagnostics)
     return TopographicState(
         TopographyMasks(ntuple(_ -> b(), 7)...),
         DistanceState(aa_d(), aa_d()),                       # distance_to_margin/grline
@@ -286,6 +340,13 @@ end
 
 ###############################################################
 
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `surface`: ice surface velocity (m/yr)
+- `thickness`: ice thickness (m)
+"""
 struct MechanicTopographyState{AA}
     surface::AA
     thickness::AA
@@ -306,6 +367,14 @@ pseudo-transient solver's Glen-law viscosity continuation
 (1/µ)((s-z)/H)^m dz` (Robinson et al. 2022, Eq. 15), written by `viscosity_integrals!` and
 kept here next to the viscosity they integrate rather than in `FrictionState`; zero on any
 state that never runs DIVA.
+
+## Fields
+- `viscosity_depthaveraged`: depth-averaged ice viscosity (Pa yr)
+- `viscosity`: 3D ice viscosity (Pa yr)
+- `rate_factor_depthaveraged`: depth-averaged ice rate factor (Pa⁻¹ yr⁻¹)
+- `rate_factor`: 3D ice rate factor (Pa⁻¹ yr⁻¹)
+- `viscosity_integral_1`: first generalized viscosity integral
+- `viscosity_integral_2`: second generalized viscosity integral
 """
 struct MechanicMaterialState{AA2,AA3}
     viscosity_depthaveraged::AA2
@@ -321,6 +390,14 @@ Adapt.@adapt_structure MechanicMaterialState
 # magnitude they depend on are evaluated. Whether β on the velocity faces (β_acx/acy)
 # becomes stored fields or an inline `lerp` in the momentum kernel is a Phase 3 decision
 # (see `pagos-roadmaps/chmy.md`).
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `beta`: basal friction coefficient (Pa yr m⁻¹)
+- `beta_eff`: effective basal friction coefficient (Pa yr m⁻¹)
+- `c_bed`: basal yield stress (Pa)
+"""
 struct FrictionState{AA}
     beta::AA
     beta_eff::AA
@@ -332,6 +409,14 @@ Adapt.@adapt_structure FrictionState
 # (acx/acy) for `∂H/∂t = -divg(q)` to stay conservative — a cell-centred `aa` flux would
 # need re-staggering inside the divergence. `grline` is a grounding-line diagnostic, not a
 # continuity term, so it stays at `aa`.
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `x`: ice flux in x
+- `y`: ice flux in y
+- `grline`: grounding line diagnostic
+"""
 struct FluxState{ACX2,ACY2,AA2}
     x::ACX2
     y::ACY2
@@ -339,6 +424,32 @@ struct FluxState{ACX2,ACY2,AA2}
 end
 Adapt.@adapt_structure FluxState
 
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `driving_x`: driving stress in x (Pa)
+- `driving_y`: driving stress in y (Pa)
+- `base_x`: basal stress in x (Pa)
+- `base_y`: basal stress in y (Pa)
+- `base_vertical`: basal stress in z (Pa)
+- `membrane_xx`: depth-integrated membrane stress in xx (Pa m)
+- `membrane_xy`: depth-integrated membrane stress in xy (Pa m)
+- `membrane_yy`: depth-integrated membrane stress in yy (Pa m)
+- `xx`: stress tensor component σ_xx (Pa)
+- `xy`: stress tensor component σ_xy (Pa)
+- `xz`: stress tensor component σ_xz (Pa)
+- `yy`: stress tensor component σ_yy (Pa)
+- `yz`: stress tensor component σ_yz (Pa)
+- `zz`: stress tensor component σ_zz (Pa)
+- `effective`: effective stress (Pa)
+- `lateral`: lateral stress (Pa)
+- `eigenvalue_1`: first principal stress (Pa)
+- `eigenvalue_2`: second principal stress (Pa)
+
+`yx`/`zx`/`zy` are not stored: the tensor is symmetric, so they are exposed as
+non-allocating aliases of `xy`/`xz`/`yz` via `getproperty` (see below `StressState`).
+"""
 struct StressState{ACX2,ACY2,AA2,AB2,AA3,AB3,ACXZ3,ACYZ3}
     driving_x::ACX2
     driving_y::ACY2
@@ -354,14 +465,13 @@ struct StressState{ACX2,ACY2,AA2,AB2,AA3,AB3,ACXZ3,ACYZ3}
     membrane_xy::AB2
     membrane_yy::AA2
 
+    # Symmetric: `yx`/`zx`/`zy` are not fields here, but `getproperty` below aliases them
+    # to `xy`/`xz`/`yz` so consumers can still spell out the full tensor.
     xx::AA3
     xy::AB3
     xz::ACXZ3
-    yx::AB3
     yy::AA3
     yz::ACYZ3
-    zx::ACXZ3
-    zy::ACYZ3
     zz::AA3
     effective::AA3
     lateral::AA3
@@ -370,15 +480,37 @@ struct StressState{ACX2,ACY2,AA2,AB2,AA3,AB3,ACXZ3,ACYZ3}
 end
 Adapt.@adapt_structure StressState
 
+function Base.getproperty(s::StressState, name::Symbol)
+    name === :yx && return getfield(s, :xy)
+    name === :zx && return getfield(s, :xz)
+    name === :zy && return getfield(s, :yz)
+    return getfield(s, name)
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+## Fields
+- `xx`: strain rate tensor component ε̇_xx (yr⁻¹)
+- `xy`: strain rate tensor component ε̇_xy (yr⁻¹)
+- `xz`: strain rate tensor component ε̇_xz (yr⁻¹)
+- `yy`: strain rate tensor component ε̇_yy (yr⁻¹)
+- `yz`: strain rate tensor component ε̇_yz (yr⁻¹)
+- `zz`: strain rate tensor component ε̇_zz (yr⁻¹)
+- `effective`: effective strain rate (yr⁻¹)
+- `effective_depthaveraged`: depth-averaged effective strain rate (yr⁻¹)
+
+`yx`/`zx`/`zy` are not stored: the tensor is symmetric, so they are exposed as
+non-allocating aliases of `xy`/`xz`/`yz` via `getproperty` (see below `StrainRateState`).
+"""
 struct StrainRateState{AA2,AA3,AB3,ACXZ3,ACYZ3}
+    # Symmetric: `yx`/`zx`/`zy` are not fields here, but `getproperty` below aliases them
+    # to `xy`/`xz`/`yz` so consumers can still spell out the full tensor.
     xx::AA3
     xy::AB3
     xz::ACXZ3
-    yx::AB3
     yy::AA3
     yz::ACYZ3
-    zx::ACXZ3
-    zy::ACYZ3
     zz::AA3
 
     # `effective` and `effective_depthaveraged` are different quantities, not one value at
@@ -390,6 +522,13 @@ struct StrainRateState{AA2,AA3,AB3,ACXZ3,ACYZ3}
     effective_depthaveraged::AA2
 end
 Adapt.@adapt_structure StrainRateState
+
+function Base.getproperty(s::StrainRateState, name::Symbol)
+    name === :yx && return getfield(s, :xy)
+    name === :zx && return getfield(s, :xz)
+    name === :zy && return getfield(s, :yz)
+    return getfield(s, name)
+end
 
 struct VelocityState{ACX2,ACY2,AA2,AB2,ACX3,ACY3,AA3,AB3,AAZ3,ACXZ3,ACYZ3}
     depthaverage_x::ACX2
@@ -466,8 +605,8 @@ function MechanicState(grid::RegularGrid)
         MechanicTopographyState(m2(), m2()),               # surface, thickness
         # viscosity_depthaveraged, viscosity, rate_factor_depthaveraged, rate_factor, F₁, F₂
         MechanicMaterialState(m2(), m3(), m2(), m3(), m2(), m2()),
-        StrainRateState(ntuple(_ -> m3(), 10)..., m2()),   # 10 column + effective_depthaveraged
-        StressState(ntuple(_ -> m2(), 8)..., ntuple(_ -> m3(), 13)...),  # 8 depth-integrated + 13 column
+        StrainRateState(ntuple(_ -> m3(), 7)..., m2()),   # 7 column + effective_depthaveraged
+        StressState(ntuple(_ -> m2(), 8)..., ntuple(_ -> m3(), 10)...),  # 8 depth-integrated + 10 column
         VelocityState(ntuple(_ -> m2(), 14)..., ntuple(_ -> m3(), 13)...),  # 14 depth-averaged + 13 column
     )
 end
@@ -478,7 +617,21 @@ $(TYPEDSIGNATURES)
 Build a [`MechanicState`](@ref) of Chmy `Field`s on `grid`. Depth-integrated fields are
 built on `grid.grid2d`, column fields on `grid.grid`; each is placed at the node class
 its physics dictates (see the table at the top of `src/api/state.jl`). Element type
-follows the grid; `halo` is the ghost-cell width of every field.
+follows the grid; `halo` is the ghost-cell width on `x`/`y`/(`z` for column fields) — most
+depth-integrated fields get no `z` ghost (see [`_halo2d`](@ref)).
+
+!!! note "The `ACX2`/`ACY2` fields are the exception, and keep a full `z` ghost"
+    `flux.x`/`y`, `stress.driving_x`/`y`, `stress.base_x`/`y`, and eight fields in
+    [`VelocityState`](@ref) (`depthaverage_x`/`y`, `depthaverage_x_dz`/`y_dz`, `base_x`/`y`,
+    `surface_x`/`y`) all carry `MechanicState`'s own `ACX2`/`ACY2` type parameter — the
+    *outer* struct's, reused across `flux`/`stress`/`velocity` rather than each owning its
+    own — so they share one halo whether or not a given field needs the full one.
+    `velocity.depthaverage_x`/`y` are `bc!`'d every PT iteration
+    (`pseudo_transient!`), and Chmy's boundary-condition kernel sweeps every axis *other*
+    than the one being filled at the grid's own `size(·, Vertex()) .+ 2` — so even filling
+    the `x`/`y` boundary touches a `z` "ghost" that a `(h, h, 0)`-halo field does not have
+    (a `BoundsError` under `--check-bounds=yes`; silent, intermittent corruption without
+    it — see `pagos-roadmap/chmy-issues.md`). These 14 fields are therefore exempt.
 
 `diagnostics = false` (the default) allocates the output-only fields on a one-cell grid
 instead of the full one — see the "Diagnostic (output-only) fields" note above. Here that is
@@ -497,13 +650,28 @@ function MechanicState(grid::StaggeredGrid; halo = 1, diagnostics = false)
     g2, g3 = grid.grid2d, grid.grid
     T = eltype(g3)
     d = _degenerate_grid(grid)
+    h2 = _halo2d(halo)
     # @diagnostic — Necessary ✗ / Used ✗ in `docs/src/variables.md`
-    aa2_d() = _maybe_field(arch, g2, d, NODE_AA, T, halo, diagnostics)
+    aa2_d() = _maybe_field(arch, g2, d, NODE_AA, T, h2, diagnostics)
     aa3_d() = _maybe_field(arch, g3, d, NODE_AA, T, halo, diagnostics)
-    aa2() = _field(arch, g2, NODE_AA, T, halo)
+    aa2() = _field(arch, g2, NODE_AA, T, h2)
+    ab2() = _field(arch, g2, NODE_AB, T, h2)
+    # NOT `h2`: `MechanicState`'s own type parameters unify `ACX2`/`ACY2` across `flux`,
+    # `stress` and `velocity` (they're the *outer* struct's params, reused — not each
+    # sub-state's own), so every field built from `acx2()`/`acy2()` shares one halo whether
+    # or not that particular field needs it. `velocity.depthaverage_x`/`y` are `bc!`'d every
+    # PT iteration (`pseudo_transient!`), and Chmy's boundary-condition kernel sweeps every
+    # *other* axis at `size(grid, Vertex()) .+ 2` regardless of the target field's own halo
+    # — so filling even the `x`/`y` boundary reads/writes a `z` "ghost" a `(h,h,0)` field
+    # does not have. Confirmed with `--check-bounds=yes`: `BoundsError: ... at index [2, 3,
+    # 0]`, non-deterministically past `@inbounds` on a normal build. See
+    # `pagos-roadmap/chmy-issues.md` for the upstream report. Costs 14 of `MechanicState`'s
+    # ~35 depth-integrated fields the full saving (flux.x/y, stress.driving_x/y,
+    # stress.base_x/y, and 8 in `VelocityState` — see its docstring); the `aa2`/`ab2` fields
+    # above, and everything in `TopographicState`/`ThermodynamicState`/`MaterialState`
+    # (never `bc!`'d), are unaffected.
     acx2() = _field(arch, g2, NODE_ACX, T, halo)
     acy2() = _field(arch, g2, NODE_ACY, T, halo)
-    ab2() = _field(arch, g2, NODE_AB, T, halo)
     aa3() = _field(arch, g3, NODE_AA, T, halo)
     acx3() = _field(arch, g3, NODE_ACX, T, halo)
     acy3() = _field(arch, g3, NODE_ACY, T, halo)
@@ -521,12 +689,9 @@ function MechanicState(grid::StaggeredGrid; halo = 1, diagnostics = false)
             aa3(),
             ab3(),
             acxz3(),
-            ab3(),
-            aa3(),         # xx, xy, xz, yx, yy
+            aa3(),         # xx, xy, xz, yy
             acyz3(),
-            acxz3(),
-            acyz3(),
-            aa3(),            # yz, zx, zy, zz
+            aa3(),            # yz, zz
             aa3(),
             aa2(),                                # effective, effective_depthaveraged
         ),
@@ -542,12 +707,9 @@ function MechanicState(grid::StaggeredGrid; halo = 1, diagnostics = false)
             aa3(),
             ab3(),
             acxz3(),
-            ab3(),
-            aa3(),         # xx, xy, xz, yx, yy
+            aa3(),         # xx, xy, xz, yy
             acyz3(),
-            acxz3(),
-            acyz3(),
-            aa3(),            # yz, zx, zy, zz
+            aa3(),            # yz, zz
             aa3(),            # effective
             aa3_d(),
             aa3_d(),
@@ -655,19 +817,21 @@ $(TYPEDSIGNATURES)
 Build a [`ThermodynamicState`](@ref) of Chmy `Field`s on `grid`, all at the `aa` node:
 column fields on `grid.grid`, depth-integrated ones on `grid.grid2d` (see the
 [`ThermodynamicState`](@ref) docstring for which is which). Element type follows the
-grid; `halo` is the ghost-cell width of every field.
+grid; `halo` is the ghost-cell width on `x`/`y`/(`z` for column fields) — the
+depth-integrated fields get no `z` ghost (see [`_halo2d`](@ref)).
 """
 function ThermodynamicState(grid::StaggeredGrid; halo = 1, diagnostics = false)
     (; arch) = grid
     g2, g3 = grid.grid2d, grid.grid
     T = eltype(g3)
     d = _degenerate_grid(grid)
-    aa2() = _field(arch, g2, NODE_AA, T, halo)
+    h2 = _halo2d(halo)
+    aa2() = _field(arch, g2, NODE_AA, T, h2)
     aa3() = _field(arch, g3, NODE_AA, T, halo)
     # @diagnostic — Necessary ✗ / Used ✗ in `docs/src/variables.md`. Every *other* field here
     # is Used ✗ too (the heat equation is not implemented yet) but Necessary ✓, so it stays
     # full size: it is waiting on a solver, not on a decision.
-    aa2_d() = _maybe_field(arch, g2, d, NODE_AA, T, halo, diagnostics)
+    aa2_d() = _maybe_field(arch, g2, d, NODE_AA, T, h2, diagnostics)
     aa3_d() = _maybe_field(arch, g3, d, NODE_AA, T, halo, diagnostics)
     return ThermodynamicState(
         TemperatureState(aa3(), aa2(), aa3(), aa3(), aa3()),
@@ -716,8 +880,9 @@ $(TYPEDSIGNATURES)
 
 Build a [`MaterialState`](@ref) of Chmy `Field`s on `grid`: the depth-averaged and
 depth-integrated viscosities on `grid.grid2d`, the column viscosity on `grid.grid`, all
-at the `aa` node. Element type follows the grid; `halo` is the ghost-cell width of every
-field.
+at the `aa` node. Element type follows the grid; `halo` is the ghost-cell width on
+`x`/`y`/(`z` for `eta_ice`) — the two depth-integrated fields get no `z` ghost (see
+[`_halo2d`](@ref)).
 
 `diagnostics = false` (the default) allocates `eta_depth_integrated` on a one-cell grid —
 see the "Diagnostic (output-only) fields" note above. It is the depth-*integral*
@@ -726,8 +891,9 @@ see the "Diagnostic (output-only) fields" note above. It is the depth-*integral*
 function MaterialState(grid::StaggeredGrid; halo = 1, diagnostics = false)
     (; arch) = grid
     T = eltype(grid.grid)
-    aa2() = _field(arch, grid.grid2d, NODE_AA, T, halo)
+    h2 = _halo2d(halo)
+    aa2() = _field(arch, grid.grid2d, NODE_AA, T, h2)
     # @diagnostic — Necessary ✗ / Used ✗ in `docs/src/variables.md`
-    aa2_d() = _maybe_field(arch, grid.grid2d, _degenerate_grid(grid), NODE_AA, T, halo, diagnostics)
+    aa2_d() = _maybe_field(arch, grid.grid2d, _degenerate_grid(grid), NODE_AA, T, h2, diagnostics)
     return MaterialState(aa2(), aa2_d(), _field(arch, grid.grid, NODE_AA, T, halo))
 end

@@ -51,9 +51,22 @@ depth-integrated field index it explicitly — `_dotvel_staggered_bp!` writes
 `FlatLauncher` in `common.jl` is the one-object fix: same kernels, worksize
 `(nx + 2, ny + 2, 1)` and `Offset(-1, -1, 0)`. Per-kernel, 2.9–4.2×; on the whole loop, 1.99×.
 
+**Landed in `src`.** `Pagos.FlatLauncher` (`src/api/runtime.jl`) is this type, hardened for
+library use — it implements the `bc =` path Chmy's `Launcher` has (and this probe's version
+throws on), and `Runtime` installs it as `rt.launch2d`, so all ~40 depth-integrated launch
+sites got the fix without a call-site edit. The probe copy here stays as the measurement
+apparatus. `outer_width` still falls back to a plain `Launcher`.
+
+Cross-checked on **CPU** (4 threads, 380×380×2, Float64, 100 fixed PT iterations, best of 5)
+by swapping `rt.launch2d` back to a Chmy `Launcher`: 15.83 → 7.13 ms/iter, **2.22×**, with
+`depthaverage_x`/`_y` bit-identical between the two. So this is not a GPU-only effect — the
+redundant planes are redundant *work*, and both backends were doing 3× of it.
+
 The same halo convention makes a `grid2d` `Field` a single k-plane of an
 `(nx + 4, ny + 4, 5)` parent — **5.1× the memory its interior needs**, 22 MB per 2D field at
 this size. That, not the column, is what puts a Float64 AIS state at 8 km over an 8 GB card.
+Reclaiming it is now a Pagos-side change (per-axis `halo` at the allocation sites in
+`src/api/state.jl`) rather than an upstream blocker — see `pagos-roadmap/memreduce.md` §2.
 
 ### 2. Chmy synchronizes after every launch
 
@@ -83,6 +96,32 @@ moves during a DIVA solve (`_iterate_viscosity!` is a no-op for DIVA; `NoDIVUpda
 `µ̄` alone). The build costs 0.7 of an iteration and a 200-iteration solve recomputes it 200
 times for one answer.
 
+**Landed in `src`.** The prefactor pair lives on the solver
+(`PseudoTransientSolver.membrane_pre_aa`/`membrane_pre_ab`), is written by
+`membrane_prefactors!` and read by a cached `membranestress!` method
+(`src/mechanics/strainrate.jl`). Rather than assuming `µ̄` is static, the cache is
+*invalidated where `µ̄` is written*: `_refresh_membrane_prefactors!` runs after
+`_iterate_viscosity!` and after `diva_update!`, and dispatches to a no-op under
+`NoViscosityContinuation`. That makes it correct for SSA-with-continuation too, not just the
+DIVA/`NoDIVUpdate` case this section measured.
+
+Whole-loop on **CPU** (4 threads, 380×380×4, Float64, 100 fixed iterations, best of 5),
+verified bit-identical to the old path in all four configurations:
+
+| configuration | before | after | |
+|---|---:|---:|---:|
+| DIVA + `NoDIVUpdate` | 10.93 | 7.84 ms/iter | **1.39×** |
+| SSA + `NoViscosityContinuation` | 9.52 | 7.79 ms/iter | **1.22×** |
+| DIVA + `PeriodicDIVUpdate(10)` | 15.29 | 13.11 ms/iter | 1.17× |
+| SSA + `GlenViscosityContinuation` | 15.01 | 13.81 ms/iter | 1.09× |
+
+Smaller than the 4.0× above because that figure is this *kernel* in isolation on a GPU,
+where FP64 division runs at 1/32 rate; on CPU the divisions are cheaper and the kernel is one
+of ~7 in the loop. The bottom two rows rebuild the cache as often as `µ̄` moves, so they gain
+only from the work splitting into two simpler kernels — but they do gain, so the cache costs
+nothing anywhere. The GPU figure has not been re-measured against `src` (no working CUDA on
+the dev box at the time).
+
 ### 4. Four `copyto!`s a iteration, at 60% of copy bandwidth
 
 - `update_basalstress!` copies `ū` into `velocity.base_{x,y}` and reads it straight back.
@@ -106,8 +145,10 @@ times for one answer.
       routing the fused replacement through the ordinary `rt.launch2d` instead (§1's
       `(nx+2, ny+2, 3)`) makes it pay a 3× tax on work that previously paid none, which
       **measured ~10% slower** for the whole PT loop, not faster. Both `src` methods above
-      launch by hand at the flat worksize instead (`_launch_flat2d!`, next to `pseudo_vel!`
-      in `pseudotransient.jl`) without pulling `FlatLauncher` itself into the public API.
+      launched by hand at the flat worksize instead. **Superseded**: finding #1's fix has
+      since landed — `rt.launch2d` is a `Pagos.FlatLauncher` (`src/api/runtime.jl`) with
+      exactly that worksize, so both methods now launch through it like every other kernel
+      and the hand-launch helper is gone.
       With that fix, the real `pseudo_transient!` loop measures 4.09 → 3.76 ms/iter (median
       of 15, Float64, same 760×760 slab and RTX 2070 Super Max-Q as above) from these two
       fusions alone — smaller than the isolated numbers since they are 2 of ~7 kernels in

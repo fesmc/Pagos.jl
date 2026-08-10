@@ -65,23 +65,11 @@ rt   = Runtime(grid)
 masks = TopographyMasks(grid)
 cst  = Constants{T}()
 
-function fill_from_grid!(f, data)
-    ni, nj = size(data)
-    for k in axes(interior(f), 3), j in -1:(nj + 2), i in -1:(ni + 2)
-        ic, jc = clamp(i, 1, ni), clamp(j, 1, nj)
-        f[i, j, k] = data[ic, jc]
-    end
-    return f
-end
-
-function fill_from_grid3d!(f, data)
-    ni, nj, nk = size(data)
-    for k in 1:nk, j in -1:(nj + 2), i in -1:(ni + 2)
-        ic, jc = clamp(i, 1, ni), clamp(j, 1, nj)
-        f[i, j, k] = data[ic, jc, k]
-    end
-    return f
-end
+# `fill_from_grid!`/`fill_from_grid3d!` are Pagos's own halo-aware bulk fill (see
+# `src/api/fill.jl`) — a handful of bulk array ops rather than an element-by-element loop,
+# so the fields below never need scalar `getindex`/`setindex!` and can be built directly
+# on a GPU. See `pagos-roadmap/memreduce.md`, "Build device states without a host
+# duplicate".
 
 thickness_ice = Field(grid.arch, grid.grid2d, (Center(), Center(), Center()), T; halo = 1)
 fill_from_grid!(thickness_ice, H_ice)

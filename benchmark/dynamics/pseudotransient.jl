@@ -32,6 +32,13 @@ function pseudotransient_suite(fx)
     # ---- per-iteration pieces ------------------------------------------------
     ref_solver = PseudoTransientSolver(grid)
 
+    # `pseudo_rate!` reads the membrane prefactor cache rather than rebuilding it (see
+    # `membrane_prefactors!`), and `pseudo_transient!` — not `pseudo_rate!` — is what
+    # normally fills it. Building it here is not tidiness: on a fresh solver the cache is
+    # zero, which makes the membrane kernel's work vanish and would time an iteration doing
+    # strictly less than a real one.
+    membrane_prefactors!(ref_solver, mech, rt, mask)
+
     # The Gershgorin bound. Not per-iteration: the loop recomputes it only when DIVA's
     # `div_update` cadence fires (a fresh β_eff would otherwise leave the bound optimistic
     # and the explicit iteration divergent), and once before the loop otherwise. Tracked on

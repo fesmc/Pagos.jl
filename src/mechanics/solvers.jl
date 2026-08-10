@@ -816,6 +816,8 @@ struct PseudoTransientSolver{
     T<:AbstractFloat,
     MX,
     MY,
+    PA,
+    PB,
     PT<:AbstractPseudoTimeStep,
     CV<:AbstractPTConvergence,
     VC<:AbstractViscosityContinuation,
@@ -837,6 +839,13 @@ struct PseudoTransientSolver{
     dtau_y::MY
     residual_x::MX
     residual_y::MY
+
+    # Cached `2η̄H` (`aa`) and `η̄H̄` (`ab`) for the SSA/DIVA membrane stress — see
+    # `membrane_prefactors!`. Degenerate `1×1` under a `MomentumBalance3D`, whose membrane
+    # path is per-layer from `material.viscosity` and never reads these.
+    membrane_pre_aa::PA
+    membrane_pre_ab::PB
+
     pseudo_timestep::PT
     convergence::CV
     viscosity_continuation::VC
@@ -880,8 +889,10 @@ function PseudoTransientSolver(
     (; arch) = grid
     g = grid.grid2d
     T = eltype(g)
-    acx() = _field(arch, g, NODE_ACX, T, halo)
-    acy() = _field(arch, g, NODE_ACY, T, halo)
+    # `g` is `grid2d`, whose z-axis carries no ghost ring — see `_halo2d`.
+    h = _halo2d(halo)
+    acx() = _field(arch, g, NODE_ACX, T, h)
+    acy() = _field(arch, g, NODE_ACY, T, h)
     return PseudoTransientSolver(
         T(abstol),
         Int(maxiter),
@@ -896,6 +907,10 @@ function PseudoTransientSolver(
         acy(),
         acx(),
         acy(),
+        # The membrane prefactor cache, at the node classes the two stress components live
+        # on: `aa` for `membrane_xx`/`yy`, `ab` for `membrane_xy`.
+        _field(arch, g, NODE_AA, T, h),
+        _field(arch, g, NODE_AB, T, h),
         pseudo_timestep,
         convergence,
         viscosity_continuation,
@@ -947,6 +962,11 @@ function PseudoTransientSolver(
     acx() = _field(arch, g, NODE_ACX, T, halo)
     acy() = _field(arch, g, NODE_ACY, T, halo)
     _check_vertical_scratch(vertical_treatment, acx(), acy())
+    # The membrane prefactor cache is SSA/DIVA-only: BP's membrane stress is per-layer from
+    # `material.viscosity`, with no `η̄H` prefactor to hoist. Allocated degenerately for the
+    # same reason the `@diagnostic` state fields are — the struct field and its type stay,
+    # only its `dims` shrink.
+    d = _degenerate_grid(grid)
     return PseudoTransientSolver(
         T(abstol),
         Int(maxiter),
@@ -961,6 +981,8 @@ function PseudoTransientSolver(
         acy(),
         acx(),
         acy(),
+        _field(arch, d, NODE_AA, T, halo),
+        _field(arch, d, NODE_AB, T, halo),
         pseudo_timestep,
         convergence,
         viscosity_continuation,
@@ -1009,13 +1031,14 @@ Solve the ice dynamics via a direct linear solver (e.g., sparse LU factorization
  2. SparseMatrixCSC pre-allocated at construction (fixed sparsity pattern). The hot path writes directly to A.nzval via a precomputed COO→nzval index map, eliminating the sparse(Ai, Aj, Av) allocation on every solve.
  3. Single AI type parameter (i_idx and j_idx are always the same kind).
  4. VT/MT/PI type parameters for vector/matrix/perm arrays so the struct can hold GPU arrays (CuVector, CuSparseMatrix) without code changes. The populate_vectors! kernels are written with KernelAbstractions and run on whichever backend owns lsd.u.
+ 5. perm/Ai/Aj are Int32: nnz = 18·nx·ny stays far below 2^31 at any resolution this solver targets, and `sparse` propagates Int32 into A's rowval/colptr, roughly halving the assembled CSC's index storage alongside perm itself.
 """
 struct LinearMomentumSolver2D{
     DYN<:AbstractMomentumBalance,
     T<:AbstractFloat,
     VT<:AbstractVector,        # float vector type (u, u0, b)
     MT,                            # sparse matrix type (SparseMatrixCSC or CuSparseMatrix)
-    PI<:AbstractVector{Int},   # perm index vector type
+    PI<:AbstractVector{<:Integer},   # perm index vector type
     AI,
 } <: AbstractMomentumSolver
     dynamics::DYN
@@ -1118,12 +1141,14 @@ function fill_pattern!(Ai, Aj, nx, ny, i_idx, j_idx)
 end
 
 function coo_to_nzval_idx(Ai, Aj, A::SparseMatrixCSC)
-    perm = Vector{Int}(undef, length(Ai))
+    perm = Vector{Int32}(undef, length(Ai))
     for k in eachindex(Ai)
         c = Aj[k]
         r = Ai[k]
         lo = A.colptr[c]
-        hi = A.colptr[c+1] - 1
+        # `- 1` on an Int32 colptr entry promotes to Int64; subtract `one(lo)` instead so
+        # `hi` keeps `lo`'s type, as `searchsortedfirst` requires matching bound types.
+        hi = A.colptr[c+1] - one(lo)
         perm[k] = searchsortedfirst(A.rowval, r, lo, hi, Base.Order.Forward)
     end
     return perm
@@ -1146,9 +1171,12 @@ function LinearMomentumSolver2D(
     i_idx = PeriodicIndexing(1, nx)
     j_idx = PeriodicIndexing(1, ny)
 
-    # Pattern and permutation are always computed on CPU (one-time cost).
-    Ai_cpu = zeros(Int, n_sprs)
-    Aj_cpu = zeros(Int, n_sprs)
+    # Pattern and permutation are always computed on CPU (one-time cost). Int32 rather
+    # than Int: nnz = 18*nx*ny is far below 2^31 even at the finest resolutions this
+    # solver runs at, and Int32 both halves perm/Ai/Aj and gets `sparse` to build A with
+    # Int32 rowval/colptr, roughly halving the assembled CSC's index storage too.
+    Ai_cpu = zeros(Int32, n_sprs)
+    Aj_cpu = zeros(Int32, n_sprs)
     fill_pattern!(Ai_cpu, Aj_cpu, nx, ny, i_idx, j_idx)
     A_cpu = sparse(Ai_cpu, Aj_cpu, ones(T, n_sprs), n_u, n_u)
     perm_cpu = coo_to_nzval_idx(Ai_cpu, Aj_cpu, A_cpu)
@@ -1157,7 +1185,7 @@ function LinearMomentumSolver2D(
     u = KernelAbstractions.zeros(backend, T, n_u)
     u0 = KernelAbstractions.zeros(backend, T, n_u)
     b = KernelAbstractions.zeros(backend, T, n_u)
-    perm = KernelAbstractions.zeros(backend, Int, n_sprs)
+    perm = KernelAbstractions.zeros(backend, Int32, n_sprs)
     perm .= perm_cpu
 
     # `A_cpu` stays a `SparseMatrixCSC` for the CPU default; for GPU, adapt it before

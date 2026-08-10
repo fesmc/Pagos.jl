@@ -70,6 +70,9 @@ function pt_opt!(mech, c, solver, rt, momentum, mask, pre_aa, pre_ab)
         rt.launch2d(rt.arch, rt.grid2d, _vel_update_fused! =>
             (ux, uy, ux_old, uy_old, solver.velocity_x_dt, solver.velocity_y_dt,
              solver.dtau_x, solver.dtau_y, state.theta_v))
+        # `ux`/`uy` are two of the 14 `MechanicState` fields kept at full halo specifically
+        # because they're `bc!`'d — see the note on `MechanicState`'s constructor
+        # (`src/api/state.jl`).
         bc!(rt.arch, rt.grid2d, ux => Neumann())
         bc!(rt.arch, rt.grid2d, uy => Neumann())
         state = Pagos._arm_tuning(tuning, state, solver, ux, uy, iter)

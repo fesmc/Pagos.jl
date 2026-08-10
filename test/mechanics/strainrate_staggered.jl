@@ -86,7 +86,7 @@ end
               analytic_like3d(strainrate.zz, rt.grid, (x, y, ζ) -> e * x + f * y)
         @test all(interior(strainrate.xy) .≈ (b + c) / 2)
 
-        # the symmetric duplicates are filled, not left at zero
+        # `yx`/`zx`/`zy` aren't stored; `getproperty` aliases them to `xy`/`xz`/`yz`
         @test interior(strainrate.yx) == interior(strainrate.xy)
         @test interior(strainrate.zx) == interior(strainrate.xz)
         @test interior(strainrate.zy) == interior(strainrate.yz)
@@ -385,5 +385,75 @@ end
         @test location(v.depthaverage_x_dy) === (Vertex(), Vertex(), Center())  # ab
         @test size(interior(v.depthaverage_x_dx)) == (grid.nx, grid.ny, 1)
         @test size(interior(v.depthaverage_x_dy)) == (grid.nx + 1, grid.ny + 1, 1)
+    end
+
+    # The PT loop reads `membrane_xx`/`xy`/`yy` from a cached `2η̄H`/`η̄H̄` pair rather than
+    # recomputing them from `µ̄` and `H` every iteration (`membrane_prefactors!`, worth 1.39×
+    # on the loop). The cached path is a *substitution*, not an approximation, so it is
+    # pinned bit-for-bit — the split moves a `2` and a `/2` across the two halves, both
+    # exact in binary floating point, and re-tests the mask so masked nodes keep `+0.0`
+    # rather than the `-0.0` that `0.0 * negative` produces.
+    @testset "cached membrane prefactors ≡ recomputing them, bit for bit" begin
+        grid, rt, mech, _ = setup()
+        solver = PseudoTransientSolver(grid)
+        mom = DIVAMomentumBalance()
+
+        # η and H both non-uniform, so hlerp and lerp genuinely interpolate; velocity
+        # cross-dependent (ux on y, uy on x) or `membrane_xy` — the only component that
+        # exercises the `ab` prefactor at all — is identically zero and the test is vacuous.
+        fill_analytic!(mech.material.viscosity_depthaveraged, rt.grid2d,
+                       (x, y) -> 1e5 * (1 + 0.5sin(3x) * cos(2y)))
+        fill_analytic!(mech.topography.thickness, rt.grid2d, (x, y) -> H0 * (1 + 0.3cos(2x)))
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> 2e-3x + 7e-4y)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 5e-4y - 3e-4x)
+        depthaverage_velocitygradients!(mech.velocity, rt)
+
+        membranestress!(mech, mom, rt)                       # self-contained
+        direct = map(copy, (interior(mech.stress.membrane_xx),
+                            interior(mech.stress.membrane_xy),
+                            interior(mech.stress.membrane_yy)))
+
+        # Poison the outputs, so an unwritten component cannot pass by holding the old value.
+        for f in (mech.stress.membrane_xx, mech.stress.membrane_xy, mech.stress.membrane_yy)
+            setdata!(f, NaN)
+        end
+
+        membrane_prefactors!(solver, mech, rt)               # cached
+        membranestress!(mech.stress, mech.velocity, solver, mom, rt)
+
+        @test interior(mech.stress.membrane_xx) == direct[1]
+        @test interior(mech.stress.membrane_xy) == direct[2]
+        @test interior(mech.stress.membrane_yy) == direct[3]
+
+        # ...and the comparison is not between two sets of zeros.
+        @test maximum(abs, direct[1]) > 0
+        @test maximum(abs, direct[2]) > 0
+    end
+
+    # The cache is only as good as its invalidation, and the failure mode is silent: a stale
+    # `µ̄` still produces a plausible stress field. This pins that the cache really is a
+    # cache (it does NOT track `µ̄` on its own) and that rebuilding it picks the change up.
+    @testset "the membrane cache is stale until rebuilt" begin
+        grid, rt, mech, _ = setup()
+        solver = PseudoTransientSolver(grid)
+        mom = DIVAMomentumBalance()
+
+        fill_analytic!(mech.material.viscosity_depthaveraged, rt.grid2d, (x, y) -> 1e5)
+        fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> 2e-3x + 7e-4y)
+        fill_analytic!(mech.velocity.depthaverage_y, rt.grid2d, (x, y) -> 5e-4y - 3e-4x)
+        depthaverage_velocitygradients!(mech.velocity, rt)
+
+        membrane_prefactors!(solver, mech, rt)
+        membranestress!(mech.stress, mech.velocity, solver, mom, rt)
+        before = copy(interior(mech.stress.membrane_xx))
+
+        # Double µ̄ behind the cache's back.
+        setdata!(mech.material.viscosity_depthaveraged, 2e5)
+        membranestress!(mech.stress, mech.velocity, solver, mom, rt)
+        @test interior(mech.stress.membrane_xx) == before      # stale, by construction
+
+        membrane_prefactors!(solver, mech, rt)
+        membranestress!(mech.stress, mech.velocity, solver, mom, rt)
+        @test interior(mech.stress.membrane_xx) ≈ 2 .* before  # and linear in µ̄
     end
 end

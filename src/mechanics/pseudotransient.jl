@@ -12,26 +12,13 @@ function pseudo_vel!(v, v_old, dotvel, dtau, theta_v)
     return nothing
 end
 
-# `rt.launch2d`'s Chmy `Launcher` sweeps `size(grid2d, Center()) .+ 2` — on `grid2d`
-# (z-extent 1) that is `(nx + 2, ny + 2, 3)`, three k-planes rather than the one that holds
-# real data (`benchmark/basics/gpu/README.md` §1). `pseudo_vel!`'s plain broadcast and
-# `copyto!` never paid that tax (`asarray`/`interior` sweeps exactly the field's own extent,
-# no `Launcher` involved) — so a kernel that fuses them must not pay it either, or the fusion
-# triples the swept volume of exactly the work it was written to shrink, drowning the gain
-# (measured: routing the two fused kernels below through `rt.launch2d` made the whole PT loop
-# ~10% *slower*, not faster). Launching by hand at the flat `(nx + 2, ny + 2, 1)` worksize
-# instead — the same shape `benchmark/basics/gpu/kernel_variants.jl`'s `flat()` helper and
-# `FlatLauncher` use — keeps the fusion's saving real without adding a `FlatLauncher`-like
-# type to the public `Runtime`/`Launcher` API (out of scope here; see finding #1).
-function _launch_flat2d!(rt::Runtime, kernel, args...)
-    backend = get_backend(rt.arch)
-    n = size(rt.grid2d, Center())
-    ws = (n[1] + 2, n[2] + 2, 1)
-    gs = heuristic_groupsize(backend, Val(3))
-    kernel(backend, gs, ws)(args..., Offset(-1, -1, 0))
-    KernelAbstractions.synchronize(backend)
-    return nothing
-end
+# The fused kernels below used to launch by hand at a flat `(nx + 2, ny + 2, 1)` worksize,
+# bypassing `rt.launch2d`: Chmy's `Launcher` swept `(nx + 2, ny + 2, 3)` on `grid2d`, and
+# `pseudo_vel!`'s broadcast + `copyto!` had never paid that tax (`asarray`/`interior` sweeps
+# exactly the field's own extent, no `Launcher` involved), so routing the fusion through
+# `rt.launch2d` tripled the swept volume of the very work it was written to shrink and
+# measured ~10% *slower* for the whole loop. `rt.launch2d` is now a `FlatLauncher` with
+# exactly that worksize, so the hand-launch is gone and these read like every other kernel.
 
 @kernel inbounds = true function _pseudo_vel_fused!(
     ux,
@@ -84,7 +71,11 @@ function _pseudo_vel_and_store!(
     rt::Runtime,
 )
     θ = convert(eltype(dvx), theta_v)
-    _launch_flat2d!(rt, _pseudo_vel_fused!, ux, uy, ux_old, uy_old, dvx, dvy, dtau_x, dtau_y, θ)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _pseudo_vel_fused! => (ux, uy, ux_old, uy_old, dvx, dvy, dtau_x, dtau_y, θ),
+    )
     return nothing
 end
 
@@ -1440,6 +1431,51 @@ _iterate_viscosity!(
     mask::AbstractIceMask,
 ) = update_viscosity!(mech, solver.viscosity_continuation, rt, mask)
 
+"""
+$(TYPEDSIGNATURES)
+
+Rebuild the membrane prefactor cache ([`membrane_prefactors!`](@ref)) iff the viscosity
+continuation that just ran can have moved `µ̄`.
+
+This is the cache's invalidation rule, and it is deliberately keyed on the *same* type that
+decides whether [`update_viscosity!`](@ref) writes anything: under
+[`NoViscosityContinuation`](@ref) that call is a no-op, so `µ̄` is exactly what it was when
+the cache was built and refreshing it would be pure waste; under any other continuation `µ̄`
+has just been overwritten and the cache is stale. Dispatching rather than branching means a
+new continuation type gets the safe behaviour (rebuild) by falling into the general method.
+
+`H`, the cache's other input, cannot move inside a momentum solve — mass continuity is a
+separate step — so it needs no counterpart here.
+"""
+_refresh_membrane_prefactors!(
+    ::PseudoTransientSolver,
+    ::MechanicState,
+    ::Runtime,
+    ::AbstractIceMask,
+    ::NoViscosityContinuation,
+) = nothing
+
+_refresh_membrane_prefactors!(
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    rt::Runtime,
+    mask::AbstractIceMask,
+    ::AbstractViscosityContinuation,
+) = membrane_prefactors!(solver, mech, rt, mask)
+
+_refresh_membrane_prefactors!(
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+) = _refresh_membrane_prefactors!(
+    solver,
+    mech,
+    rt,
+    mask,
+    solver.viscosity_continuation,
+)
+
 ###############################################################
 # Basal friction update
 ###############################################################
@@ -1509,18 +1545,20 @@ function update_basalstress!(
     mask::AbstractIceMask = NoMask(),
 )
     (; velocity, stress, friction) = mech
-    _launch_flat2d!(
-        rt,
-        _basalstress_active!,
-        stress.base_x,
-        stress.base_y,
-        velocity.base_x,
-        velocity.base_y,
-        velocity.depthaverage_x,
-        velocity.depthaverage_y,
-        friction.beta_eff,
-        mask,
+    rt.launch2d(
+        rt.arch,
         rt.grid2d,
+        _basalstress_active! => (
+            stress.base_x,
+            stress.base_y,
+            velocity.base_x,
+            velocity.base_y,
+            velocity.depthaverage_x,
+            velocity.depthaverage_y,
+            friction.beta_eff,
+            mask,
+            rt.grid2d,
+        ),
     )
     return nothing
 end
@@ -1555,6 +1593,20 @@ velocity rate. Writes `solver.velocity_x_dt`/`velocity_y_dt`, damped by `gamma`,
 `gamma` is a keyword because [`AutotunedDynamicRelaxation`](@ref) recomputes the damping
 *during* the solve, so the value in force at a given iteration is not a property of the
 solver; it defaults to `1` (undamped), matching [`dotvel!`](@ref).
+
+!!! warning "Requires `solver`'s membrane prefactors to have been built"
+    The membrane stress here reads `solver.membrane_pre_aa`/`membrane_pre_ab` rather than
+    recomputing them from `µ̄` and `H` every iteration — that hoist is worth 1.39× on the
+    whole loop (see [`membrane_prefactors!`](@ref)). [`pseudo_transient!`](@ref) builds them
+    before its first iteration and refreshes them wherever `µ̄` moves, so a solve driven
+    through it needs no action. **Calling `pseudo_rate!` standalone does not**: on a freshly
+    constructed solver the cache is all zeros, which makes the membrane stress vanish and
+    the rate come out as driving minus basal stress alone — a plausible-looking wrong
+    answer, not an error. Call [`membrane_prefactors!`](@ref) first.
+
+    There is deliberately no runtime guard, for the same reason [`diva_update!`](@ref) has
+    none for `β_eff`: a zeroed field is a well-formed input that no cheap check can
+    distinguish from a legitimately zero one. This docstring is the contract.
 """
 # Per-balance grid requirements. SSA is depth-independent by construction: it never reads a
 # column field, so any `nz` is fine and a column grid simply costs nothing. DIVA is the
@@ -1607,11 +1659,15 @@ function pseudo_rate!(
     mask::AbstractIceMask = NoMask();
     gamma = 1,
 )
-    (; velocity, material, topography, stress) = mech
+    (; velocity, topography, stress) = mech
 
     depthaverage_velocitygradients!(velocity, rt, mask)
     _iterate_viscosity!(mech, momentum, solver, rt, mask)
-    membranestress!(stress, velocity, material, topography, momentum, rt, mask)
+    # `_iterate_viscosity!` is the every-iteration writer of `µ̄` (SSA's continuation); this
+    # is a no-op unless it actually moved it. `pseudo_transient!` builds the cache before the
+    # loop and refreshes it again after `diva_update!`, the other writer.
+    _refresh_membrane_prefactors!(solver, mech, rt, mask)
+    membranestress!(stress, velocity, solver, momentum, rt, mask)
 
     update_basalstress!(mech, solver.friction_update, rt, mask)
 
@@ -1710,6 +1766,11 @@ function pseudo_transient!(
 
     # Fields held fixed over the PT iteration.
     drivingstress!(mech, c, rt, mask)
+    # The membrane prefactor cache: built here from the caller's `µ̄`/`H`, and thereafter
+    # refreshed only where `µ̄` moves (`_refresh_membrane_prefactors!`, called inside
+    # `pseudo_rate!` and after `diva_update!` below). Unconditional — the loop's cheap
+    # membrane kernel reads these on iteration 1, whatever the continuation is.
+    membrane_prefactors!(solver, mech, rt, mask)
     state = _tuning_init!(tuning, solver, mech, c, rt, mask)
     # After `drivingstress!` (it reads the driving stress) and before the loop (it borrows
     # `residual_x`/`residual_y` as scratch, which `dotvel!` overwrites on iteration 1).
@@ -1730,6 +1791,11 @@ function pseudo_transient!(
         # optimistic, and the explicit iteration then diverges (decision 8).
         if momentum isa DIVAMomentumBalance && _div_refresh_due(solver.div_update, iter)
             diva_update!(mech, solver, rt, mask)
+            # `diva_update!` runs the continuation, i.e. it is the DIVA path's writer of
+            # `µ̄` — the membrane prefactor cache is stale from here until rebuilt. (Under
+            # the default `NoDIVUpdate` this branch never runs, which is exactly why the
+            # cache pays off there.)
+            _refresh_membrane_prefactors!(solver, mech, rt, mask)
             pseudo_dt!(solver, mech, c, rt, mask)
         end
 
@@ -1741,6 +1807,12 @@ function pseudo_transient!(
         # pair followed by two `pseudo_vel!` calls.
         _pseudo_vel_and_store!(ux, uy, ux_old, uy_old, dvx, dvy, dtau_x, dtau_y, state.theta_v, rt)
 
+        # `ux`/`uy` are two of the 14 `MechanicState` fields `_halo2d` exempts from the
+        # z-ghost shrink specifically so this call stays a plain, whole-axis `Neumann()` —
+        # see the note on `MechanicState`'s constructor for why (Chmy's `bc!` sweeps every
+        # *other* axis at the grid's own `size .+ 2` regardless of the target field's own
+        # halo, so filling the x/y boundary alone still touches a z "ghost" a `(h,h,0)`
+        # field would not have).
         bc!(rt.arch, rt.grid2d, ux => Neumann())
         bc!(rt.arch, rt.grid2d, uy => Neumann())
 

@@ -49,6 +49,9 @@ include("api/sigma_operators.jl")
 export ∂z_σ
 
 include("api/runtime.jl")
+# `FlatLauncher` is deliberately NOT exported: `Runtime` is the only thing that builds one,
+# and the name is already taken in `benchmark/basics/gpu/common.jl` by the probe copy this
+# type was promoted from. Reach it as `Pagos.FlatLauncher`.
 export Runtime
 
 include("api/state.jl")
@@ -56,6 +59,9 @@ export TopographicState, TopographyMasks, MechanicState, ThermodynamicState, Mat
 
 include("api/boundary.jl")
 export asarray, setdata!
+
+include("api/fill.jl")
+export fill_from_grid!, fill_from_grid3d!
 
 include("api/constants.jl")
 export Constants
@@ -174,7 +180,7 @@ export deviatoric_stress!, surface_gradient!
 
 include("mechanics/strainrate.jl")
 export strainrate!, scaledstrainrate!, velocitygradients!
-export depthaverage_velocitygradients!, membranestress!
+export depthaverage_velocitygradients!, membranestress!, membrane_prefactors!
 export terrain_metric_correction!
 export raw_strainrate!, raw_strainrate_effective!
 export effective_strainrate_ssa!, effective_strainrate_diva!, effective_strainrate_bp!

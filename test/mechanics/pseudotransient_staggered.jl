@@ -892,4 +892,55 @@ end
         @test res_fixed.damping == 0.7
         @test isnan(res_fixed.lambda_min)
     end
+
+    # `pseudo_transient!` hoists the membrane stress's `2η̄H`/`η̄H̄` prefactor out of the
+    # iteration (`membrane_prefactors!`). That is only sound while `µ̄` holds still, so the
+    # loop refreshes the cache wherever `µ̄` is written. A missing refresh does not error —
+    # the solve simply keeps using the viscosity it started with — so what is pinned here
+    # is that the cache the solver ends with matches its own final `µ̄`.
+    @testset "the membrane prefactor cache is not left stale by the loop" begin
+        # Locals deliberately not named grid/rt/mech — see the closure box-sharing note
+        # further up this file.
+        function build_cache_problem(vc, du)
+            g, r, mc = setup_slab()
+            fill_slab!(mc, r, const_case)
+            fill_analytic!(mc.material.rate_factor_depthaveraged, r.grid2d, (x, y) -> 1e-16)
+            sv = PseudoTransientSolver(g; maxiter = 40, abstol = 0.0,
+                                       viscosity_continuation = vc, div_update = du)
+            return g, r, mc, sv
+        end
+
+        # What `membrane_prefactors!` would produce from a given state, computed into a
+        # throwaway solver so the one under test is never disturbed.
+        function reference_cache(g, r, mc)
+            probe = PseudoTransientSolver(g)
+            membrane_prefactors!(probe, mc, r)
+            return copy(interior(probe.membrane_pre_aa)), copy(interior(probe.membrane_pre_ab))
+        end
+
+        glen = GlenViscosityContinuation(; strainrate_reg = 1e-12)
+
+        @testset "µ̄ rewritten every iteration (SSA + GlenViscosityContinuation)" begin
+            g, r, mc, sv = build_cache_problem(glen, NoDIVUpdate())
+            pseudo_transient!(mc, cst, sv, r, SSAMomentumBalance())
+
+            ref_aa, ref_ab = reference_cache(g, r, mc)
+            @test interior(sv.membrane_pre_aa) == ref_aa
+            @test interior(sv.membrane_pre_ab) == ref_ab
+
+            # The continuation really did move µ̄, or the check above is vacuous — it would
+            # hold trivially if the cache and µ̄ had both stayed at their initial values.
+            @test !all(≈(const_case.μ0), interior(mc.material.viscosity_depthaveraged))
+        end
+
+        @testset "µ̄ held fixed (NoViscosityContinuation): cache built once, still correct" begin
+            g, r, mc, sv = build_cache_problem(NoViscosityContinuation(), NoDIVUpdate())
+            pseudo_transient!(mc, cst, sv, r, SSAMomentumBalance())
+
+            ref_aa, ref_ab = reference_cache(g, r, mc)
+            @test interior(sv.membrane_pre_aa) == ref_aa
+            @test interior(sv.membrane_pre_ab) == ref_ab
+            @test all(≈(const_case.μ0), interior(mc.material.viscosity_depthaveraged))
+        end
+    end
 end

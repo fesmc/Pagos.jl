@@ -1,5 +1,14 @@
 # Shared helpers for the Chmy-native (`StaggeredGrid`/`Field`) tests.
 
+# `Chmy.Field` allocates `2 * halo(f)` ghost cells per side (the "both halo rings" the
+# docstrings below mean), and `halo(f)` is `h` (uniform on every axis) for most fields but
+# a per-axis tuple for a `grid2d` field allocated `(h, h, 0)` — no ghost ring at all on `z`
+# (`Pagos._halo2d`, `pagos-roadmap/memreduce.md`). A hardcoded `-1:(n + 2)` assumes the
+# uniform case and writes two cells out of bounds on `z` for the tuple one; this reads the
+# field's own halo per axis instead, so `k` never leaves `1:n` when `z`'s halo is `0`.
+_fill_range(n, h) = (1 - 2h):(n + 2h)
+_field_halo3(f) = (h = halo(f); h isa Tuple ? h : (h, h, h))
+
 """
     fill_analytic!(f, grid, fun)
 
@@ -12,10 +21,9 @@ conditions — Phase 4 — but here the analytic continuation *is* the intended 
 """
 function fill_analytic!(f, grid, fun)
     loc = location(f)
-    for k in -1:(size(interior(f), 3) + 2),
-        j in -1:(size(interior(f), 2) + 2),
-        i in -1:(size(interior(f), 1) + 2)
-
+    hx, hy, hz = _field_halo3(f)
+    nx, ny, nz = size(interior(f))
+    for k in _fill_range(nz, hz), j in _fill_range(ny, hy), i in _fill_range(nx, hx)
         x, y, _ = coord(grid, loc, i, j, k)
         f[i, j, k] = fun(x, y)
     end
@@ -33,10 +41,9 @@ shallowest one.
 """
 function fill_analytic3d!(f, grid, fun)
     loc = location(f)
-    for k in -1:(size(interior(f), 3) + 2),
-        j in -1:(size(interior(f), 2) + 2),
-        i in -1:(size(interior(f), 1) + 2)
-
+    hx, hy, hz = _field_halo3(f)
+    nx, ny, nz = size(interior(f))
+    for k in _fill_range(nz, hz), j in _fill_range(ny, hy), i in _fill_range(nx, hx)
         x, y, ζ = coord(grid, loc, i, j, k)
         f[i, j, k] = fun(x, y, ζ)
     end

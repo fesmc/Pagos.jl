@@ -174,11 +174,37 @@ end
         @test eltype(parent(topo32.mask.is_ice)) === Bool     # masks stay boolean
 
         grid = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
+        # Column fields (on `grid.grid`): halo is the scalar the caller passed, on every axis.
         @test Chmy.Fields.halo(MechanicState(grid).velocity.x) == 1
         @test Chmy.Fields.halo(MechanicState(grid; halo = 2).velocity.x) == 2
-        @test Chmy.Fields.halo(TopographicState(grid; halo = 2).thickness.ice) == 2
         @test Chmy.Fields.halo(ThermodynamicState(grid; halo = 2).enthalpy.ice) == 2
         @test Chmy.Fields.halo(MaterialState(grid; halo = 2).eta_ice) == 2
+
+        # Depth-integrated fields (on `grid.grid2d`): `z` gets none — `_halo2d`, and
+        # `pagos-roadmap/memreduce.md`'s per-axis-halo item. `TopographicState` is entirely
+        # depth-integrated, so `thickness.ice` here stands for the whole struct.
+        @test Chmy.Fields.halo(MechanicState(grid).friction.beta) == (1, 1, 0)
+        @test Chmy.Fields.halo(MechanicState(grid; halo = 2).friction.beta) == (2, 2, 0)
+        @test Chmy.Fields.halo(TopographicState(grid; halo = 2).thickness.ice) == (2, 2, 0)
+        @test Chmy.Fields.halo(ThermodynamicState(grid; halo = 2).heatflux_base_ice) ==
+              (2, 2, 0)
+        @test Chmy.Fields.halo(MaterialState(grid; halo = 2).eta_depth_averaged) == (2, 2, 0)
+
+        # The exception: `MechanicState`'s `ACX2`/`ACY2`-typed fields keep a full,
+        # every-axis halo, because Chmy's `bc!` sweeps every axis *other* than the one it
+        # fills at the grid's own `size .+ 2` — so a `(h, h, 0)`-halo field goes out of
+        # bounds even when only `x`/`y` are being filled, and `velocity.depthaverage_x`/`y`
+        # are `bc!`'d every PT iteration (`pseudo_transient!`). See the note on
+        # `MechanicState`'s constructor. `flux.x`/`stress.driving_x`/`velocity.base_x` share
+        # the *same* type parameter as `depthaverage_x` and so share its halo too, whether
+        # or not each one is itself ever `bc!`'d.
+        @test Chmy.Fields.halo(MechanicState(grid).velocity.depthaverage_x) == 1
+        @test Chmy.Fields.halo(MechanicState(grid; halo = 2).velocity.depthaverage_x) == 2
+        @test Chmy.Fields.halo(MechanicState(grid).flux.x) == 1
+        @test Chmy.Fields.halo(MechanicState(grid).stress.driving_x) == 1
+        @test Chmy.Fields.halo(MechanicState(grid).velocity.base_x) == 1
+        @test Chmy.Fields.halo(MechanicState(grid).velocity.surface_x) == 1
+        @test Chmy.Fields.halo(MechanicState(grid).velocity.depthaverage_x_dz) == 1
     end
 
     @testset "adapt" begin

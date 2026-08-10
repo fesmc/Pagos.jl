@@ -269,7 +269,7 @@ end
 
         @test rt.grid2d !== rt.grid
         @test rt.launch2d !== rt.launch
-        @test worksize(rt.launch2d) == (grid.nx + 2, grid.ny + 2, 3)
+        @test worksize(rt.launch2d) == (grid.nx + 2, grid.ny + 2, 1)
 
         fill_analytic!(topo.thickness.ice, rt.grid2d, (x, y) -> a + b * x)
         fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> U)
@@ -281,10 +281,11 @@ end
         @test all(interior(topo.thickness.ice_dt) .≈ -U * b)
     end
 
-    @testset "depth-integrated grid reuses one launcher" begin
+    @testset "depth-integrated launcher stays flat when grid2d === grid" begin
         _, rt, _, _ = setup()
         @test rt.grid2d === rt.grid
-        @test rt.launch2d === rt.launch
+        @test rt.launch2d isa Pagos.FlatLauncher
+        @test worksize(rt.launch2d)[3] == 1
     end
 
     @testset "Float32 end to end" begin

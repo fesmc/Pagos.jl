@@ -56,11 +56,14 @@ end
         @test worksize(rt.launch) == (sgrid.nx + 2, sgrid.ny + 2, sgrid.nz + 2)
         @test outer_width(rt.launch) === nothing
 
-        # nz == 1: the two grids are the same object, so the same Launcher is reused
-        # rather than a second one allocated (which, with outer_width set, would spawn a
-        # duplicate set of Worker Tasks).
+        # nz == 1: the two grids are the same object, but the launchers still differ —
+        # the depth-integrated one is a FlatLauncher, which drops the phantom z ring
+        # regardless of whether grid2d happens to be grid. Reuse only matters on the
+        # `outer_width` path, where a second Launcher would spawn duplicate Worker Tasks;
+        # a FlatLauncher owns none (see the "outer_width falls back" testset below).
         @test rt.grid2d === sgrid.grid2d === rt.grid
-        @test rt.launch2d === rt.launch
+        @test rt.launch2d isa Pagos.FlatLauncher
+        @test worksize(rt.launch2d) == (sgrid.nx + 2, sgrid.ny + 2, 1)
     end
 
     # A Field's size comes from the grid it was built on, and the state structs mix
@@ -76,7 +79,10 @@ end
         @test rt.grid2d !== rt.grid
         @test rt.launch2d !== rt.launch
         @test worksize(rt.launch)   == (sgrid.nx + 2, sgrid.ny + 2, sgrid.nz + 2)
-        @test worksize(rt.launch2d) == (sgrid.nx + 2, sgrid.ny + 2, 3)
+
+        # 1, not 3: grid2d's z axis has extent 1, so Chmy's `size .+ 2` rule would add a
+        # halo ring in a dimension that has none — three k-planes swept to fill one.
+        @test worksize(rt.launch2d) == (sgrid.nx + 2, sgrid.ny + 2, 1)
 
         # ...and it launches, filling the single layer of a grid2d field.
         f = Field(rt.arch, rt.grid2d, Center())
@@ -85,13 +91,71 @@ end
         @test interior(f)[:, 1, 1] ≈ collect(sgrid.x)
     end
 
-    @testset "outer_width forwarded" begin
+    # The point of FlatLauncher: it must still sweep the x/y halo ring (kernels rely on
+    # filling it), and must NOT sweep a z ring (grid2d's z axis has extent 1 and has none).
+    @testset "FlatLauncher sweeps the x/y ring but not a z one" begin
+        layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 6))
+        sgrid    = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
+        rt       = Runtime(sgrid)
+
+        f = Field(rt.arch, rt.grid2d, Center())
+        rt.launch2d(rt.arch, rt.grid2d, _fill_const! => (f, 1.0))
+
+        # x/y: the inner ghost ring is written, exactly as the ordinary Launcher does.
+        # Indexed on the z data plane (`with_halo` spans 3 in z here, and the two z
+        # ghosts are precisely what this launcher stops writing — asserted below).
+        @test all(interior(f; with_halo = true)[:, :, 2] .!= 0)
+
+        # z: `parent(f)` is (nx+4, ny+4, 5) — the halo=1 allocation — and only the plane
+        # holding real data was touched. Under Chmy's Launcher, planes 2 and 4 would have
+        # been written too, which is the 3× redundant work this launcher exists to remove.
+        p = parent(f)
+        @test size(p, 3) == 5
+        @test any(!iszero, view(p, :, :, 3))    # the data plane was written
+        @test all(iszero, view(p, :, :, 2))
+        @test all(iszero, view(p, :, :, 4))
+    end
+
+    # Chmy's Launcher runs the kernel and then `bc!`s the batch; FlatLauncher must do the
+    # same, since `thickness_rate!`/`advect!` pass `bc` straight through to it.
+    @testset "FlatLauncher applies boundary conditions" begin
+        layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 6))
+        sgrid    = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
+        rt       = Runtime(sgrid)
+
+        f = Field(rt.arch, rt.grid2d, Center())
+        rt.launch2d(
+            rt.arch,
+            rt.grid2d,
+            _fill_const! => (f, 1.0);
+            bc = batch(rt.grid2d, f => Dirichlet()),
+        )
+        # Dirichlet(0) on a Center field is enforced halfway between the last interior
+        # point and its ghost, so the two must average to zero. Same corner exclusion as
+        # the `rt.launch` testset below — and here the z ghosts are corners too, so this
+        # reads the x ghost on the z data plane (index 2 of 3).
+        @test all(interior(f) .≈ 1.0)
+        @test all(interior(f; with_halo = true)[1, 2:(end - 1), 2] .≈ -1.0)
+        @test all(interior(f; with_halo = true)[end, 2:(end - 1), 2] .≈ -1.0)
+    end
+
+    @testset "FlatLauncher rejects a column grid" begin
+        layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 6))
+        sgrid    = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
+        rt       = Runtime(sgrid)
+        @test_throws ArgumentError Pagos.FlatLauncher(rt.arch, rt.grid)
+    end
+
+    @testset "outer_width forwarded, and falls back off FlatLauncher" begin
         rt = Runtime(StaggeredGrid(Float64, lx, ly, dx, dy); outer_width = (2, 2, 1))
         @test outer_width(rt.launch) == (2, 2, 1)
 
         layering = CorrectedVerticalLayering(Float64, QuadraticSigmaTransform(Float64, 4))
         rt2 = Runtime(StaggeredGrid(Float64, lx, ly, dx, dy, layering);
                       outer_width = (2, 2, 1))
+        # FlatLauncher does not implement the async Worker/per-side-bc! path, so this
+        # configuration keeps the ordinary Launcher — 3-plane sweep and all.
+        @test rt2.launch2d isa Launcher
         @test outer_width(rt2.launch2d) == (2, 2, 1)
     end
 

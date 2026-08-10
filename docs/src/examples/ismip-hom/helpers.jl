@@ -318,6 +318,12 @@ The master range is `1:nx`, `1:ny` in *field* indices. On a `Vertex` axis that l
 duplicate node `nx + 1` outside the master range, so it is refreshed from node `1` — correct,
 because under periodicity they are the same physical degree of freedom, and it is why the
 right-hand source range is sized from `ni` rather than assumed to be two columns wide.
+
+The `z` pass is skipped for a `grid2d` field (`size(p, 3) == nk`, not `nk + 4`): since
+`pagos-roadmap/memreduce.md`'s per-axis-halo item landed, those fields carry no `z` ghost at
+all, matching the `bc!` path's own `x = .../y = ...` axis restriction
+(`src/mechanics/pseudotransient.jl`). Column fields (BP's `velocity.x_dz` and friends) are
+unaffected — they keep the full `halo = 1` this function was written for.
 =#
 function periodic_halo!(f, nx, ny)
     a = asarray(f); p = parent(a); ni, nj, nk = size(a)
@@ -327,11 +333,13 @@ function periodic_halo!(f, nx, ny)
     ## y: same, now over every i, so the corners inherit the corrected x ghosts.
     @views p[:, 1:2, :] .= p[:, (ny + 1):(ny + 2), :]
     @views p[:, (ny + 3):(nj + 4), :] .= p[:, 3:(nj + 2 - ny + 2), :]
-    ## z: Neumann, matching `bc!`.
-    @views p[:, :, 1] .= p[:, :, 3]
-    @views p[:, :, 2] .= p[:, :, 3]
-    @views p[:, :, nk + 3] .= p[:, :, nk + 2]
-    @views p[:, :, nk + 4] .= p[:, :, nk + 2]
+    ## z: Neumann, matching `bc!` — only when there is a z ghost to fill.
+    if size(p, 3) == nk + 4
+        @views p[:, :, 1] .= p[:, :, 3]
+        @views p[:, :, 2] .= p[:, :, 3]
+        @views p[:, :, nk + 3] .= p[:, :, nk + 2]
+        @views p[:, :, nk + 4] .= p[:, :, nk + 2]
+    end
     return f
 end
 

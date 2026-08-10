@@ -712,9 +712,6 @@ State-level [`verticalvelocity!`](@ref).
 verticalvelocity!(mech::MechanicState, rt::Runtime, mask::AbstractIceMask = NoMask()) =
     verticalvelocity!(mech.velocity, mech.topography.thickness, rt, mask)
 
-# `yx`/`zx`/`zy` are the symmetric duplicates of `xy`/`xz`/`yz` and live at the same node
-# classes. The collocated kernels leave them untouched; filling them costs three stores and
-# removes a "why is `strainrate.yx` zero" trap for anything that reads the full tensor.
 @inline function _raw_strainrate_at!(
     sr,
     vel,
@@ -768,11 +765,8 @@ end
     eyz =
         node_active(mask, NODE_ACY_AC, i, j) ? (vel.y_dz[I...] + vel.z_dy[I...]) / 2 : Z          # both at acy_ac
     sr.xy[I...] = exy
-    sr.yx[I...] = exy
     sr.xz[I...] = exz
-    sr.zx[I...] = exz
     sr.yz[I...] = eyz
-    sr.zy[I...] = eyz
     return nothing
 end
 
@@ -888,6 +882,49 @@ end
 # and `H` arithmetically (`lerp`, the same choice `drivingstress!` makes for thickness).
 # The strict mask (`node_fully_active`) applies only to that `ab` term, for the identical
 # NaN-avoidance reason as `deviatoric_stress!`: `hlerp` of `η = 0` is `NaN`, not `0`.
+#
+# The three `@inline` helpers below exist so the *same* algebra serves both the
+# self-contained kernel (`_membrane_stress_staggered!`, which recomputes the `η`/`H`
+# prefactor every call) and the cached pair (`_membrane_prefactors!` +
+# `_membrane_stress_cached!`, which the PT loop uses — see `membrane_prefactors!`). Writing
+# the split form out a second time by hand is exactly how a factor of two goes missing: note
+# that the `ab` prefactor is `hlerp·lerp`, *not* `2·hlerp·lerp`, because the `2` and the `/2`
+# in `N_xy = 2·η̄·H̄·(u_y + v_x)/2` cancel. Multiplying and dividing by 2 are exact in binary
+# floating point, so the cached path is bit-for-bit identical to the direct one.
+
+# `2ηH` at `aa` — the prefactor of both normal components.
+@inline _membrane_pre_aa(η, H, mask, I::Vararg{Integer,N}) where {N} =
+    node_active(mask, NODE_AA, I[1], I[2]) ? 2 * η[I...] * H[I...] : zero(eltype(η))
+
+# `η̄H̄` at `ab`, `η` harmonically and `H` arithmetically interpolated onto the corner.
+@inline _membrane_pre_ab(η, H, mask, grid, I::Vararg{Integer,N}) where {N} =
+    node_fully_active(mask, NODE_AB, I[1], I[2]) ?
+    hlerp(η, NODE_AB, grid, I...) * lerp(H, NODE_AB, grid, I...) : zero(eltype(η))
+
+# The velocity-gradient half, given both prefactors already evaluated at `I`.
+#
+# The masks are re-tested here rather than left to `p_aa`/`p_ab` being zero, and that is not
+# redundant: `0.0 * g` is `-0.0` for any `g < 0`, while the branch writes `+0.0`. Both are
+# arithmetically zero and nothing downstream can tell them apart, but reproducing the
+# original's exact bit pattern is what lets this path be swapped in under a bit-for-bit test
+# rather than an approximate one. The mask reads are Bool loads already in cache from the
+# rest of the loop; the cost this hoists out is `hlerp`'s divisions, not these.
+@inline function _membrane_from_pre(p_aa, p_ab, vel, mask, I::Vararg{Integer,N}) where {N}
+    Z = zero(p_aa)
+    if node_active(mask, NODE_AA, I[1], I[2])
+        dux = vel.depthaverage_x_dx[I...]
+        dvy = vel.depthaverage_y_dy[I...]
+        sxx = p_aa * (2 * dux + dvy)
+        syy = p_aa * (dux + 2 * dvy)
+    else
+        sxx = Z
+        syy = Z
+    end
+    sxy =
+        node_fully_active(mask, NODE_AB, I[1], I[2]) ?
+        p_ab * (vel.depthaverage_x_dy[I...] + vel.depthaverage_y_dx[I...]) : Z
+    return sxx, sxy, syy
+end
 
 @kernel inbounds = true function _membrane_stress_staggered!(
     sxx,
@@ -902,26 +939,45 @@ end
 )
     I = @index(Global, NTuple)
     I = I + O
-    i, j, _ = I
-    Z = zero(eltype(sxx))
+    a, b, c = _membrane_from_pre(
+        _membrane_pre_aa(η, H, mask, I...),
+        _membrane_pre_ab(η, H, mask, grid, I...),
+        vel,
+        mask,
+        I...,
+    )
+    sxx[I...] = a
+    sxy[I...] = b
+    syy[I...] = c
+end
 
-    if node_active(mask, NODE_AA, i, j)
-        ηH = 2 * η[I...] * H[I...]
-        dux = vel.depthaverage_x_dx[I...]
-        dvy = vel.depthaverage_y_dy[I...]
-        sxx[I...] = ηH * (2 * dux + dvy)
-        syy[I...] = ηH * (dux + 2 * dvy)
-    else
-        sxx[I...] = Z
-        syy[I...] = Z
-    end
+# Writes the two prefactors the PT loop caches. Same expressions as the kernel above reads
+# inline, via the same helpers — see `membrane_prefactors!` for when this is refreshed.
+@kernel inbounds = true function _membrane_prefactors!(p_aa, p_ab, η, H, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    p_aa[I...] = _membrane_pre_aa(η, H, mask, I...)
+    p_ab[I...] = _membrane_pre_ab(η, H, mask, grid, I...)
+end
 
-    sxy[I...] =
-        node_fully_active(mask, NODE_AB, i, j) ?
-        2 *
-        hlerp(η, NODE_AB, grid, I...) *
-        lerp(H, NODE_AB, grid, I...) *
-        (vel.depthaverage_x_dy[I...] + vel.depthaverage_y_dx[I...]) / 2 : Z
+# The hot-loop kernel: no `hlerp` (nine FP64 divisions a node), no `lerp`, no `η`/`H` reads
+# — just two field loads and the velocity-gradient arithmetic.
+@kernel inbounds = true function _membrane_stress_cached!(
+    sxx,
+    sxy,
+    syy,
+    p_aa,
+    p_ab,
+    vel,
+    mask,
+    O,
+)
+    I = @index(Global, NTuple)
+    I = I + O
+    a, b, c = _membrane_from_pre(p_aa[I...], p_ab[I...], vel, mask, I...)
+    sxx[I...] = a
+    sxy[I...] = b
+    syy[I...] = c
 end
 
 """
@@ -994,6 +1050,103 @@ membranestress!(
     rt,
     mask,
 )
+
+"""
+$(TYPEDSIGNATURES)
+
+Write the cached membrane prefactors `2η̄H` (at `aa`) and `η̄H̄` (at `ab`) into
+`solver.membrane_pre_aa`/`membrane_pre_ab`, from `material.viscosity_depthaveraged` and
+`topo.thickness`.
+
+This is the expensive half of [`membranestress!`](@ref) — `hlerp` alone is nine FP64
+divisions per node, and at Float64 the membrane kernel is the PT loop's single most costly
+one (32% of GPU device time, `benchmark/basics/gpu/README.md` §3). Neither `µ̄` nor `H` moves
+during most solves, so the loop builds this once and then runs the cheap cached
+[`membranestress!`](@ref) method every iteration.
+
+Measured on the whole `pseudo_transient!` loop (CPU, 4 threads, 380×380×4, Float64, 100
+fixed iterations, best of 5), against recomputing the prefactor every iteration:
+
+| configuration | before | after | |
+|---|---:|---:|---:|
+| DIVA + `NoDIVUpdate` (`µ̄` static) | 10.93 | 7.84 ms/iter | **1.39×** |
+| SSA + `NoViscosityContinuation` (`µ̄` static) | 9.52 | 7.79 ms/iter | **1.22×** |
+| DIVA + `PeriodicDIVUpdate(10)` | 15.29 | 13.11 ms/iter | 1.17× |
+| SSA + `GlenViscosityContinuation` (`µ̄` every iteration) | 15.01 | 13.81 ms/iter | 1.09× |
+
+The last two rebuild the cache as often as `µ̄` moves and so cannot benefit from the hoist
+itself; they still come out ahead because splitting the work leaves two simpler kernels than
+the one fused kernel they replace. There is therefore no configuration this costs, and no
+need for a second dispatch path that skips the cache.
+
+!!! warning "Whoever writes `µ̄` owns refreshing this"
+    The cache is only as good as its invalidation. `H` never moves inside a momentum solve,
+    but `µ̄` is written by [`update_viscosity!`](@ref) — every iteration under
+    [`GlenViscosityContinuation`](@ref), and at [`PeriodicDIVUpdate`](@ref)'s cadence inside
+    [`diva_update!`](@ref). [`pseudo_transient!`](@ref) calls
+    [`_refresh_membrane_prefactors!`](@ref) after both, which dispatches to a no-op when the
+    continuation is [`NoViscosityContinuation`](@ref) and so cannot have moved `µ̄`. A new
+    writer of `µ̄` must do the same or the solve silently uses a stale viscosity.
+"""
+function membrane_prefactors!(
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _membrane_prefactors! => (
+            solver.membrane_pre_aa,
+            solver.membrane_pre_ab,
+            mech.material.viscosity_depthaveraged,
+            mech.topography.thickness,
+            mask,
+            rt.grid2d,
+        ),
+    )
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+[`membranestress!`](@ref) from the prefactors [`membrane_prefactors!`](@ref) already wrote,
+rather than recomputing `2η̄H`/`η̄H̄` from `µ̄` and `H`.
+
+**Bit-for-bit identical** to the self-contained method, and verified as such over a full
+`pseudo_transient!` solve in every viscosity-continuation regime — the two share
+`_membrane_from_pre`, the `2`/`/2` that move between the halves are exact in binary floating
+point, and the mask is re-tested here so masked nodes get `+0.0` rather than the `-0.0` that
+`0.0 * negative` would produce.
+
+`prefactors` is the `solver`, passed for its two cache fields; the argument exists so this
+method cannot be reached by a caller that has not built them.
+"""
+function membranestress!(
+    stress::StressState,
+    velocity::VelocityState,
+    prefactors::PseudoTransientSolver,
+    ::MomentumBalance2D,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _membrane_stress_cached! => (
+            stress.membrane_xx,
+            stress.membrane_xy,
+            stress.membrane_yy,
+            prefactors.membrane_pre_aa,
+            prefactors.membrane_pre_ab,
+            velocity,
+            mask,
+        ),
+    )
+    return nothing
+end
 
 ###############################################################
 # Chmy-native, C-grid staggered Blatter-Pattyn membrane stress
