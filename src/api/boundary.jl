@@ -3,7 +3,7 @@
 ###############################################################
 #
 # Pagos' public API deals in plain arrays and scalars; Chmy `Field`s are an internal
-# representation (see `roadmaps/chmy.md`, Phase 2). Two functions carry data across that
+# representation (see `pagos-roadmaps/chmy.md`, Phase 2). Two functions carry data across that
 # boundary in either direction, and both work on *either* representation, so calling code
 # does not need to know which one a state struct was built with:
 #
@@ -82,7 +82,7 @@ $(TYPEDSIGNATURES)
 
 Write `src` — a plain array, a scalar, or another field — into `dst`, which may be a Chmy
 `Field` or a plain array. Only `dst`'s interior is touched; halos are left alone (they are
-filled by boundary conditions, see `roadmaps/chmy.md`, Phase 4). Element types are
+filled by boundary conditions, see `pagos-roadmaps/chmy.md`, Phase 4). Element types are
 converted as needed, so a `Float64` array initializes a `Float32` field, and a host array
 initializes a device field by copy. Returns `dst`.
 

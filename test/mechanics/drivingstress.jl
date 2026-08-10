@@ -6,7 +6,7 @@ include("../test_helpers/chmy.jl")
 # The Chmy-native, C-grid staggered driving stress: `τ = ρ g H ∂s/∂x` with the gradient
 # taken natively `aa → acx`/`acy` and `H` lerped onto the same face. Validated against
 # analytic solutions, not against the collocated method it replaces (which discretizes a
-# different thing — a cell-centred gradient — see `roadmaps/chmy.md`, Phase 3).
+# different thing — a cell-centred gradient — see `pagos-roadmaps/chmy.md`, Phase 3).
 
 @testset "driving stress (C-grid staggered)" begin
     lx, ly, dx, dy = 8.0, 8.0, 1.0, 1.0

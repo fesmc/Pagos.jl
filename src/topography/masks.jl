@@ -228,7 +228,7 @@ icemasks!(topo::TopographicState, rt::Runtime; kwargs...) =
 #     scaled residual at 3.8e-3 from just 0.02% of the ice.
 #  2. **It would poison the autotuner.** Duretz Eq. 21 estimates λ_min from a Rayleigh
 #     quotient; a rigid-translation null mode drives λ_min → 0 and hence the damping
-#     `c_damp` → 0 for the entire domain (`roadmaps/PT-autotune.md`, Phase 1.5).
+#     `c_damp` → 0 for the entire domain (`pagos-roadmaps/PT-autotune.md`, Phase 1.5).
 #  3. **It costs nothing to act on.** Masks are already a per-call argument: momentum takes
 #     `IceMask(is_momentum_solved)` while advection keeps `IceMask(is_ice, is_ice_neighbour)`
 #     — bergs still advect and calve, they just stop being asked to satisfy a force balance.

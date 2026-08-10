@@ -10,7 +10,7 @@ The plain-array dispatch of those same functions (`creep!(cf::AbstractArray, σ_
 takes **no** `Runtime`: it reads its backend off the array itself
 (`KernelAbstractions.get_backend`) and has no grid, halo, or launcher concept. `Runtime`
 is internal machinery — it never appears in a signature a user is expected to call with
-plain arrays (see `roadmaps/chmy.md`, Phase 2).
+plain arrays (see `pagos-roadmaps/chmy.md`, Phase 2).
 
 # Fields
  - `arch`: the Chmy `Architecture` (device + backend); taken from the grid.
@@ -56,7 +56,7 @@ rt.launch(rt.arch, rt.grid, my_kernel! => (out, in, rt.grid); bc = batch(rt.grid
     Chmy's `Launcher` sweeps `size(grid, Center()) .+ 2` points with an `Offset(-1)`,
     i.e. one halo ring beyond the interior, so a kernel launched this way also fills
     that ring. Whether that ring should be *computed* or `bc!`-filled is a per-kernel
-    decision (see `roadmaps/chmy.md`, Phase 4).
+    decision (see `pagos-roadmaps/chmy.md`, Phase 4).
 
 # `outer_width` and AD
 
@@ -64,7 +64,7 @@ rt.launch(rt.arch, rt.grid, my_kernel! => (out, in, rt.grid); bc = batch(rt.grid
 the launcher splits the sweep into an interior part and boundary slabs run on async
 `Worker` tasks. That path spawns Tasks and is **not** safe inside an
 Enzyme-differentiated region — keep `outer_width = nothing` there (see
-`roadmaps/chmy.md`, Phase 5).
+`pagos-roadmaps/chmy.md`, Phase 5).
 """
 struct Runtime{A,G,G2,L,L2}
     arch::A

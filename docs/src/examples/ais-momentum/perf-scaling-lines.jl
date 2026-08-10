@@ -1,0 +1,1 @@
+In the meantime, since you have the wall time numbers of AIS at 32, 16, 8 and 4 km, could you please write the code for this in docs/src/examples/ais-momentum/perf-scaling-lines.jl?

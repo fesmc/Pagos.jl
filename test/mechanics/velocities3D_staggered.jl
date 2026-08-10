@@ -3,7 +3,7 @@ using Test
 
 include("../test_helpers/chmy.jl")
 
-# Stage 3 of the DIVA/SSA split (`roadmaps/chmy.md`, Phase 3, decisions 13-15): the 3D
+# Stage 3 of the DIVA/SSA split (`pagos-roadmaps/chmy.md`, Phase 3, decisions 13-15): the 3D
 # velocity reconstruction — Robinson et al. (2022)'s second step, "Eq. (16) is integrated
 # vertically to find the 3D velocity", run *after* `pseudo_transient!` converges, never
 # inside it.

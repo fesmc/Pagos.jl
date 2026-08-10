@@ -227,7 +227,7 @@ tendency's halo must fill it.
     Whether the domain edge is closed (no outflow) or open follows entirely from the
     halo values of `H` and `ū` when [`mass_flux!`](@ref) ran — the divergence itself makes
     no boundary decision. Mapping ice-sheet boundary conditions onto halo fills is Phase 4
-    of `roadmaps/chmy.md`.
+    of `pagos-roadmaps/chmy.md`.
 """
 function thickness_rate!(dHdt, q_x, q_y, mb, rt::Runtime; bc = nothing)
     rt.launch2d(

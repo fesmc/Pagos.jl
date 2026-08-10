@@ -8,7 +8,7 @@
     bare SSA friction coefficient. The DIVA and Blatter-Pattyn runs instead start from the
     bare `beta` and derive their own vertical-shear response from Pagos' own 3D viscosity and
     geometry — DIVA via [`diva_update!`](@ref)'s `β_eff`, BP by resolving the column directly
-    and reading `beta_eff` (BP has no `F₂` correction to derive, `roadmaps/blatter-pattyn.md`
+    and reading `beta_eff` (BP has no `F₂` correction to derive, `pagos-roadmaps/blatter-pattyn.md`
     §2.2) — which will not exactly reproduce Yelmo's `beta_eff`, not least because of the
     layering mismatch noted in `yelmo-pagos.jl`. So this comparison is "SSA fed Yelmo's
     DIVA-corrected friction" vs. "DIVA/BP deriving their own correction from the same raw
@@ -22,7 +22,7 @@ column tensor fields against SSA/DIVA's handful of 2D ones), so this script neve
 solves' `MechanicState`s at once.
 
 !!! warning "The BP run below does not converge on this geometry"
-    It uses [`ImplicitVertical`](@ref) (`roadmaps/blatter-pattyn.md`, Phase 2), which removes
+    It uses [`ImplicitVertical`](@ref) (`pagos-roadmaps/blatter-pattyn.md`, Phase 2), which removes
     the aspect-ratio penalty on `Δτ` and is verified — same fixed point, iteration count flat
     in `nz` — on clean and synthetically masked geometry. On the real 8 km restart it instead
     *cycles*: down to `err ~ 3e-2`, a burst to `1e6`–`1e7`, recovery over ~60 iterations,

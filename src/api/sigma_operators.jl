@@ -36,7 +36,7 @@ Chmy's own convention (opposite of `f`'s location along z, same as `f`'s along x
     bit-for-bit: `FunctionAxis` has no such fast path, so `spacing(ax, Vertex, i)` and
     `spacing(ax, Center, i)` reach the same real number by different floating-point
     routes. Either way, it is a strict correction, not a behavior change, wherever Chmy is
-    already (numerically) right. Not upstreamed yet; see `roadmaps/chmy.md`, §3.
+    already (numerically) right. Not upstreamed yet; see `pagos-roadmaps/chmy.md`, §3.
 
 # Examples
 

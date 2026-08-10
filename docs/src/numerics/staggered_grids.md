@@ -197,7 +197,7 @@ interior(grad2)[2:end-1, 4]
     periodic/reflective/one-sided value; that is why the examples above only
     inspect interior points. Mapping Pagos' current boundary conventions
     (`FlatIndexing`, `ReflectiveIndexing`, `PeriodicIndexing`) onto `bc!` is tracked
-    as its own step in `roadmaps/chmy.md`.
+    as its own step in `pagos-roadmaps/chmy.md`.
 
 ## Backends and distribution
 

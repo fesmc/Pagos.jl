@@ -57,7 +57,7 @@ $(TYPEDSIGNATURES)
 An abstract type to multiple-dispatch whether and how [`PseudoTransientSolver`](@ref)
 updates `material.viscosity_depthaveraged` from the current velocity iterate during the
 PT loop, following the codebase's "dispatch, not `if`/`else`" convention
-(`roadmaps/pagos.md`). [`NoViscosityContinuation`](@ref) (the default) makes the solver
+(`pagos-roadmaps/pagos.md`). [`NoViscosityContinuation`](@ref) (the default) makes the solver
 treat viscosity as a fixed input, exactly as every solver behaved before this type existed.
 [`GlenViscosityContinuation`](@ref) enables Sandip et al. (2024) Eq. 8's log-space
 continuation.
@@ -68,7 +68,7 @@ continuation.
     are built around a *stress*-driven creep formulation (`creep(σ_e, law)`), which would
     need an inner per-cell nonlinear solve to use here (`σ_e = 2ηε̇_e` depends on the very
     `η` being solved for) — not what Sandip's direct, closed-form update does. This is
-    flagged, not resolved, in `roadmaps/PT-autotune.md`: the codebase now has two
+    flagged, not resolved, in `pagos-roadmaps/PT-autotune.md`: the codebase now has two
     parallel notions of "Glen's law" (this one and the stress-driven one), plus two
     *dead* strain-rate-driven copies (`src/legacy/flow_law.jl`,
     `src/thermodynamics/viscosity.jl`, neither `include`d) that were the closer relatives
@@ -152,7 +152,7 @@ Fields are as [`GlenViscosityContinuation`](@ref)'s: `n_glen`, `theta_mu`,
 
 !!! note "This is the only writer of `µ` under DIVA"
     Making it an [`AbstractViscosityContinuation`](@ref) rather than a separate mechanism
-    keeps one dispatch point for "who owns the viscosity" (`roadmaps/chmy.md`, Phase 3,
+    keeps one dispatch point for "who owns the viscosity" (`pagos-roadmaps/chmy.md`, Phase 3,
     decision 12). Pairing `DIVAMomentumBalance` with `GlenViscosityContinuation` instead
     would leave `µ(z)` untouched and the shear terms stale — which is why
     [`diva_update!`](@ref) drives this directly rather than relying on the solver's
@@ -194,7 +194,7 @@ from BP's effective strain rate ([`effective_strainrate_bp!`](@ref), Eq. 3), but
 carries a real 3D velocity, so there is nothing to diagnose.
 
 Unlike [`DIVAViscosityContinuation`](@ref), `material.viscosity_depthaveraged` is *not*
-derived here: nothing on the BP path reads it (`roadmaps/blatter-pattyn.md`, §1.3), so it is
+derived here: nothing on the BP path reads it (`pagos-roadmaps/blatter-pattyn.md`, §1.3), so it is
 left as whatever degenerate allocation the state constructor gave it, mirroring
 `viscosity_integral_1`/`_2` and `rate_factor_depthaveraged` staying untouched on this path.
 
@@ -253,7 +253,7 @@ The default.
     Under `NoDIVUpdate` the solver never evaluates the chain — not even once before the
     loop. A caller that skips [`diva_update!`](@ref) gets `friction.beta_eff` at its
     allocation default of zero, i.e. **no basal drag at all**, with no error raised. This is
-    a deliberate contract (`roadmaps/chmy.md`, Phase 3, decision 7): the solver does what it
+    a deliberate contract (`pagos-roadmaps/chmy.md`, Phase 3, decision 7): the solver does what it
     says and no redundant work, exactly like the halo-filling contract documented on
     [`pseudo_transient!`](@ref).
 
@@ -278,7 +278,7 @@ expensive; larger values amortize the cost).
     `β_eff` is an input to the Gershgorin bound behind `solver.dtau_x`/`dtau_y`, computed
     once before the loop. A `β_eff` that grows under a stale bound makes that bound
     optimistic and the iteration can diverge, so every refresh re-runs
-    [`pseudo_dt!`](@ref) (`roadmaps/chmy.md`, Phase 3, decision 8). This preserves the
+    [`pseudo_dt!`](@ref) (`pagos-roadmaps/chmy.md`, Phase 3, decision 8). This preserves the
     invariant `pseudo_dt!` already states for the mask and `friction_update`: the bound must
     describe the operator actually being iterated.
 """
@@ -342,7 +342,7 @@ ViscosityPseudoTimeStep(T::Type{<:AbstractFloat} = Float64; muB = 1e2, ndim = 4.
 $(TYPEDSIGNATURES)
 
 Pseudo-time step from a Gershgorin bound on the spectral radius of the SSA/DIVA residual
-operator (Duretz et al. 2026, Eq. 20 — `roadmaps/PT-autotune.md` Phase 2): the explicit
+operator (Duretz et al. 2026, Eq. 20 — `pagos-roadmaps/PT-autotune.md` Phase 2): the explicit
 stability limit is `Δτ ≤ 2/λ_max`, and `λ_max` is bounded by the largest absolute row sum
 of the (mass-scaled) operator, which for the `u`-equation at an `acx` face is
 
@@ -382,7 +382,7 @@ Three things this buys over [`ViscosityPseudoTimeStep`](@ref):
     Like [`ViscosityPseudoTimeStep`](@ref), this is evaluated once before the PT loop, from
     the viscosity and friction fields as they stand then. Re-estimating it *during* the
     loop (needed when `η` evolves under viscosity continuation) is the re-estimation cadence
-    item of `roadmaps/PT-autotune.md` Phase 2, not yet implemented.
+    item of `pagos-roadmaps/PT-autotune.md` Phase 2, not yet implemented.
 """
 struct GershgorinPseudoTimeStep{T<:AbstractFloat} <: AbstractPseudoTimeStep
     cfl::T
@@ -438,7 +438,7 @@ as a velocity.
 
 !!! warning "`abstol` changes units when you select this"
     With [`VelocityIncrement`](@ref) `abstol` is in m yr⁻¹; here it is dimensionless. This is
-    exactly the semantic change `roadmaps/PT-autotune.md` Phase 1 deferred rather than force
+    exactly the semantic change `pagos-roadmaps/PT-autotune.md` Phase 1 deferred rather than force
     on every existing test — hence a dispatch type rather than a change of meaning in place.
 
 Normalized by the driving stress rather than by the *initial* residual on purpose: a
@@ -469,7 +469,7 @@ Hand-set iteration parameters, held fixed for the whole solve: `Δτ` comes from
 default, and the only behaviour prior to [`AbstractPTTuning`](@ref) existing.
 
 Also the baseline [`AutotunedDynamicRelaxation`](@ref) is measured against — `gamma = 1`
-is the undamped iteration the speedup numbers in `roadmaps/PT-autotune.md` are quoted
+is the undamped iteration the speedup numbers in `pagos-roadmaps/PT-autotune.md` are quoted
 relative to, which is why hand-setting survives at all.
 
 # Fields:
@@ -494,7 +494,7 @@ FixedTuning(T::Type{<:AbstractFloat} = Float64; theta_v = 0.6, gamma = 1) =
 $(TYPEDSIGNATURES)
 
 Dynamic relaxation with automatically tuned `Δτ` and damping (Duretz et al. 2026;
-`roadmaps/PT-autotune.md` Phase 2, which carries the derivation and the measurements).
+`pagos-roadmaps/PT-autotune.md` Phase 2, which carries the derivation and the measurements).
 Both are derived from spectral estimates of the *preconditioned* momentum operator rather
 than scanned by hand, and re-derived every `cadence` iterations so they follow a viscosity
 that evolves during the solve.
@@ -612,7 +612,7 @@ An abstract type to multiple-dispatch how a [`MomentumBalance3D`](@ref) solve ad
 vertical-shear divergence `∂z(µ ∂z u)` — explicitly, like every other term, or implicitly
 down each column — following the same "dispatch, not `if`/`else`" convention as
 [`AbstractPseudoTimeStep`](@ref). [`ExplicitVertical`](@ref) (the default) is the whole of
-`roadmaps/blatter-pattyn.md` Phase 1; [`ImplicitVertical`](@ref) is Phase 2.
+`pagos-roadmaps/blatter-pattyn.md` Phase 1; [`ImplicitVertical`](@ref) is Phase 2.
 
 Read **only** on the [`MomentumBalance3D`](@ref) path: SSA and DIVA have no vertical operator
 to treat (DIVA integrates it out analytically through `F₁`/`F₂`), so the depth-averaged
@@ -629,7 +629,7 @@ plain [`pseudo_vel!`](@ref) step `u ← u + θ_v Δτ dv`, and `Δτ` is bounded
 Gershgorin row sum, vertical term and bed-drag term included. The default, and the only
 behaviour prior to [`AbstractVerticalTreatment`](@ref) existing.
 
-The cost is the aspect-ratio penalty of `roadmaps/blatter-pattyn.md` §2: `Λ_vert/Λ_horiz` has
+The cost is the aspect-ratio penalty of `pagos-roadmaps/blatter-pattyn.md` §2: `Λ_vert/Λ_horiz` has
 a median of ~400 and a 99th percentile of ~2e5 on 8 km Antarctic geometry, so `Δτ` is set by
 the vertical operator almost everywhere and by the thinnest columns in particular
 (`Λ_vert ∝ 1/H²`). [`ImplicitVertical`](@ref) removes exactly that penalty; this stays as the
@@ -641,7 +641,7 @@ struct ExplicitVertical <: AbstractVerticalTreatment end
 $(TYPEDSIGNATURES)
 
 Advance `∂z(µ ∂z u)` **implicitly** down each column — vertical line relaxation,
-`roadmaps/blatter-pattyn.md` Phase 2 — while the membrane terms stay explicit. `Δτ` is then
+`pagos-roadmaps/blatter-pattyn.md` Phase 2 — while the membrane terms stay explicit. `Δτ` is then
 bounded by the horizontal operator alone, i.e. by the same row sum SSA and DIVA use, and the
 aspect-ratio penalty of [`ExplicitVertical`](@ref) disappears rather than being square-rooted
 by the damping.
@@ -670,7 +670,7 @@ after 600 explicit iterations sits at `k = 1`, so that second win is the larger 
     1420 over `nz ∈ {4…32}`, against 1720 → 25 380 explicit) — on uniform slabs and on
     synthetically masked, laterally varying cases. On the real 8 km Antarctic restart the
     solve instead *cycles*: down to `err ~ 3e-2`, a burst to `1e6`–`1e7`, recovery, repeat.
-    The cause is open and tracked in `roadmaps/blatter-pattyn.md`, Phase 2 ("recurring
+    The cause is open and tracked in `pagos-roadmaps/blatter-pattyn.md`, Phase 2 ("recurring
     bursts"), which also records what has already been ruled out (the `cfl`/`λ_max` margin,
     and the `λ_min = 1` clamp). Prefer [`ExplicitVertical`](@ref) on real geometry.
 
@@ -914,7 +914,7 @@ Build a [`PseudoTransientSolver`](@ref) for a [`MomentumBalance3D`](@ref) solve
 `grid.grid` (`ACX3`/`ACY3`), matching the column velocity components they mirror
 (`mech.velocity.x`/`y`) — the only difference from the depth-averaged constructor above is
 which of `grid.grid2d`/`grid.grid` the work arrays are built on. A separate method rather
-than a keyword on the existing constructor (`roadmaps/blatter-pattyn.md`, Phase 1: "prefer
+than a keyword on the existing constructor (`pagos-roadmaps/blatter-pattyn.md`, Phase 1: "prefer
 dispatch — the balance already decides the grid via `_check_momentum_grid`, and a keyword
 lets the two disagree"), and kept as a fully independent method body so the depth-averaged
 constructor above is untouched by this one's existence.

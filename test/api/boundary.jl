@@ -3,7 +3,7 @@ using Test
 
 # The plain-array API boundary: `asarray` out, `setdata!` in, both working on either
 # representation (Chmy `Field`s or plain arrays) so that public/user-facing code never has
-# to name a Chmy type. See `roadmaps/chmy.md`, Phase 2.
+# to name a Chmy type. See `pagos-roadmaps/chmy.md`, Phase 2.
 
 @testset "plain-array API boundary" begin
     lx, ly, dx, dy = 8.0, 8.0, 1.0, 1.0

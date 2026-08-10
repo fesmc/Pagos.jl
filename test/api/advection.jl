@@ -4,7 +4,7 @@ using Test
 include("../test_helpers/chmy.jl")
 
 # Mass continuity, `∂H/∂t = -∇·q + ṁ`, validated against analytic/manufactured solutions
-# rather than against the pre-migration code path (see `roadmaps/chmy.md`, Phase 3).
+# rather than against the pre-migration code path (see `pagos-roadmaps/chmy.md`, Phase 3).
 
 # Total mass rate over the interior, and the net inflow across the interior's outer faces.
 # For a flux-form scheme these must agree with the total mass balance to machine
@@ -42,7 +42,13 @@ end
         @test location(mech.flux.y) === location(mech.velocity.depthaverage_y)
         @test size(interior(mech.flux.x)) == (grid.nx + 1, grid.ny, 1)
         @test size(interior(mech.flux.y)) == (grid.nx, grid.ny + 1, 1)
-        @test size(interior(mech.flux.grline)) == (grid.nx, grid.ny, 1)
+
+        # `grline` is `@diagnostic` (Necessary ✗ / Used ✗ in `docs/src/variables.md`), so it
+        # is allocated on a one-cell grid unless explicitly asked for — its *location* is
+        # unchanged, since that is a type property and not affected by the degenerate size.
+        @test size(interior(mech.flux.grline)) == (1, 1, 1)
+        @test size(interior(MechanicState(grid; diagnostics = true).flux.grline)) ==
+              (grid.nx, grid.ny, 1)
 
         # ...and the divergence of that pair lands exactly on the thickness field.
         @test location(mech.flux.grline) === location(mech.topography.thickness)

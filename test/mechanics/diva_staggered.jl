@@ -3,7 +3,7 @@ using Test
 
 include("../test_helpers/chmy.jl")
 
-# Stage 2 of the DIVA/SSA split (`roadmaps/chmy.md`, Phase 3, decisions 6-12): the pieces
+# Stage 2 of the DIVA/SSA split (`pagos-roadmaps/chmy.md`, Phase 3, decisions 6-12): the pieces
 # that give DIVA a genuine vertical-shear correction instead of the SSA-limit-in-disguise
 # behaviour Stage 0/1 left it in. Validated against Robinson et al. (2022)'s own equations
 # and, for the full solve, their linearised-slab reference state (§3.1) — decision 16, no

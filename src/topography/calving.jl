@@ -301,7 +301,7 @@ function calving_rate(z_srf, z_sl, z_bed, calving::CrawfordCalving)
 end
 
 # @dev TODO: this needs a `seawater_depth` implementation, and the formula re-checked,
-# before it can be used (see roadmaps/todo.md).
+# before it can be used (see pagos-roadmaps/todo.md).
 function calving_rate(H_eff, z_sl, z_bed, f_ice, c, calving::BassisCalving)
     error(
         "calving_rate(::BassisCalving) is not yet implemented: seawater_depth is undefined",

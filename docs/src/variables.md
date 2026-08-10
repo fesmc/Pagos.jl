@@ -11,6 +11,24 @@ This page inventories the fields carried by Pagos' state structs (`src/api/state
 - **Necessary** — ✓ if the variable feeds the prognostic update of ice thickness, velocity, temperature, or viscosity (directly, or as an intermediate on that path); ✗ if it is a diagnostic computed for output/analysis and never read back into the next step. This reflects the variable's intended role in the model design, independent of whether that role is already implemented.
 - **Used** — ✓ if some function in `src/` currently reads and/or writes this field; ✗ if the field is allocated in the state struct but nothing in `src/` touches it yet. A field can be necessary but currently unused (an as-designed dependency on a component that isn't wired up yet, e.g. most of `ThermodynamicState`), and a field can be used without being internally computed — several fields (e.g. `mask.is_grounded`, `mask.is_ice_allowed`, `massbalance.net`) are deliberately caller-supplied forcing/inputs that live code reads, rather than something a solver derives.
 
+!!! note "Fields that are ✗ on both axes are allocated degenerately"
+    A field that is **neither necessary nor used** is not on the design path to being read and
+    is not read today — it exists as somewhere to put a quantity for *output*. Allocating those
+    at full size is pure waste, and on large grids it dominates: at 1522×1522 they account for
+    ~1.4 GiB across `TopographicState` and `MechanicState` alone.
+
+    The state constructors therefore allocate them on a **one-cell grid** by default. The struct
+    field still exists and keeps its type, location and name — only its `dims` shrink — so this
+    table stays an accurate description of the intended design, and `Adapt`/`propertynames` and
+    anything that merely names the field are unaffected. Pass `diagnostics = true` to
+    `TopographicState`, `MechanicState`, `ThermodynamicState` or `MaterialState` to allocate them
+    at full size.
+
+    Every ✗/✗ row below is affected. Rows that are **Necessary ✓ but Used ✗** are *not*: they are
+    waiting on a solver that isn't wired up yet (most of `ThermodynamicState`), not on a decision,
+    so they stay full size. When one of these fields does acquire a writer, flip its **Used** to ✓
+    here and drop its `@diagnostic` marker in `src/api/state.jl`.
+
 ## Topography
 
 | Variable | Symbol | Dimension | Instances | Necessary | Used |
