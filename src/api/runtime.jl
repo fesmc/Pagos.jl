@@ -118,13 +118,22 @@ the sweep's `k` was pure repetition, running the same column integral three time
     Chmy's; [`Runtime`](@ref) falls back to a plain `Launcher` for `launch2d` when
     `outer_width` is set, so that configuration is unchanged by this type.
 
+!!! note "Groupsize is a type parameter, not a field"
+    `Worksize` already was one, matching `Chmy.Launcher`'s own foldable
+    `worksize(::Launcher{WorkSize})`; `GroupSize` follows it for the same reason (see the
+    call operator below). Both reaching the type system is what a static-size KA kernel
+    needs to specialise its index arithmetic and bounds checks at compile time. A plain
+    `Chmy.Launcher` calls `heuristic_groupsize(backend, Val(N))` at every launch — the
+    compiler constant-folds it since it dispatches only on `backend`'s type and `Val(N)` —
+    while `FlatLauncher` bakes that same call's result into its own type once, at
+    construction, outside the PT loop.
+
 The `synchronize` after each launch is kept, matching `Launcher`. Dropping it is worth a
 further ~1.3× but is a Chmy-wide policy question and size-dependent (a loss at 381²) — see
 `benchmark/basics/gpu/README.md` §2.
 """
-struct FlatLauncher{Worksize,B,G}
+struct FlatLauncher{Worksize,GroupSize,B}
     backend::B
-    groupsize::G
 end
 
 function FlatLauncher(arch, grid)
@@ -138,7 +147,7 @@ function FlatLauncher(arch, grid)
     backend = get_backend(arch)
     groupsize = heuristic_groupsize(backend, Val(3))
     ws = (n[1] + 2, n[2] + 2, 1)
-    return FlatLauncher{ws,typeof(backend),typeof(groupsize)}(backend, groupsize)
+    return FlatLauncher{ws,groupsize,typeof(backend)}(backend)
 end
 
 # Extend Chmy's own generic functions, not new same-named ones: `worksize`/`outer_width`
@@ -150,21 +159,29 @@ Base.@assume_effects :foldable Chmy.KernelLaunch.worksize(::FlatLauncher{WS}) wh
     WS
 Base.@assume_effects :foldable Chmy.KernelLaunch.outer_width(::FlatLauncher) = nothing
 
-function (launcher::FlatLauncher{WS})(
+# `GroupSize` is a type parameter, not a field, for the same reason `Worksize` is: passing
+# a struct *field* to `kernel(backend, groupsize, ndrange)` reads it at runtime, so KA's
+# `StaticSize` wrapper can't fold it and the launch config never reaches the type system —
+# it costs the workshop's "specialise once, outside the hot loop" gain (index arithmetic to
+# shifts, bounds check to one constant compare, launch bounds for register allocation; see
+# `benchmark/basics/gpu/README.md`). `heuristic_groupsize` is pure in the backend's *type*
+# (`Val(3)` is the only other argument), so baking its result into `FlatLauncher`'s type is
+# exact, not a heuristic-of-a-heuristic.
+function (launcher::FlatLauncher{WS,GS})(
     arch::Architecture,
     grid,
     kernel_and_args::Pair{F,Args};
     bc = nothing,
-) where {WS,F,Args}
+) where {WS,GS,F,Args}
     kernel, args = kernel_and_args
     offset = Offset(-1, -1, 0)
 
     if isnothing(bc)
-        kernel(launcher.backend, launcher.groupsize, WS)(args..., offset)
+        kernel(launcher.backend, GS, WS)(args..., offset)
     else
         # Mirrors Chmy's own `launch_with_bc` on the `outer_width === nothing` branch:
         # whole-domain kernel first, then one `bc!` over the batch.
-        gs = KernelAbstractions.NDIteration.StaticSize(launcher.groupsize)
+        gs = KernelAbstractions.NDIteration.StaticSize(GS)
         ws = KernelAbstractions.NDIteration.StaticSize(WS)
         kernel(launcher.backend, gs, ws)(args..., offset)
         bc!(arch, grid, bc)
