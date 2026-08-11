@@ -213,7 +213,7 @@ end
 
         # `fill_analytic!`, not `setdata!`, for η/H: `setdata!` only touches the interior,
         # and the first/last `ab` vertex is built from a halo `aa` cell (vertex i sits
-        # between centres i-1, i; i=1 reaches centre 0). See `pagos-roadmaps/chmy.md`, §3.
+        # between centres i-1, i; i=1 reaches centre 0). See `pagos-roadmap/chmy.md`, §3.
         fill_analytic!(mech.material.viscosity_depthaveraged, rt.grid2d, (x, y) -> η0)
         fill_analytic!(mech.topography.thickness, rt.grid2d, (x, y) -> H0)
         fill_analytic!(mech.velocity.depthaverage_x, rt.grid2d, (x, y) -> a * x + b * y)
@@ -234,7 +234,7 @@ end
 
     # A genuine viscosity contrast: hlerp must give the harmonic, not the arithmetic, mean.
     # Located by cell centres, not a coordinate/index guess, per the vertex/centre lesson
-    # in `pagos-roadmaps/chmy.md` (§3): vertex `i` sits between centres `i-1` and `i`.
+    # in `pagos-roadmap/chmy.md` (§3): vertex `i` sits between centres `i-1` and `i`.
     @testset "membrane stress: harmonic η averaging at a viscosity step" begin
         grid = StaggeredGrid(Float64, 8.0, 8.0, 1.0, 1.0)
         rt   = Runtime(grid)

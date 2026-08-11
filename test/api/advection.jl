@@ -4,7 +4,7 @@ using Test
 include("../test_helpers/chmy.jl")
 
 # Mass continuity, `∂H/∂t = -∇·q + ṁ`, validated against analytic/manufactured solutions
-# rather than against the pre-migration code path (see `pagos-roadmaps/chmy.md`, Phase 3).
+# rather than against the pre-migration code path (see `pagos-roadmap/chmy.md`, Phase 3).
 
 # Total mass rate over the interior, and the net inflow across the interior's outer faces.
 # For a flux-form scheme these must agree with the total mass balance to machine

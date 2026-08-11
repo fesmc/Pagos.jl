@@ -3,7 +3,7 @@ using Test
 
 include("../test_helpers/chmy.jl")
 
-# Phase 1 of `pagos-roadmaps/blatter-pattyn.md`: the explicit Blatter-Pattyn pseudo-transient
+# Phase 1 of `pagos-roadmap/blatter-pattyn.md`: the explicit Blatter-Pattyn pseudo-transient
 # solver, reusing the SSA/DIVA iteration skeleton on the column grid. Verified the same way
 # `pseudotransient_staggered.jl` verifies SSA/DIVA: closed-form pieces first, then the full
 # `pseudo_transient!` solve against the one case with an analytic solution (§Phase 1 of the
@@ -24,7 +24,7 @@ include("../test_helpers/chmy.jl")
 # al. derive SSA *from* BP by depth-integrating exactly this balance, so BP's z-integral
 # must reproduce it on a geometry where SSA itself is exact. This is the one case with a
 # closed form: it exercises the vertical operator and both boundary conditions, and nothing
-# else (`pagos-roadmaps/blatter-pattyn.md`, Phase 1 verification).
+# else (`pagos-roadmap/blatter-pattyn.md`, Phase 1 verification).
 # -----------------------------------------------------------------------
 
 function bp_slab_analytical(; H0, μ0, β0, α, ρ = 910.0, g = 9.81)
@@ -37,11 +37,11 @@ end
 # How wide the slab domain has to be for the closed form to be the answer in the middle.
 #
 # The membrane terms vanish in the *continuous* slab problem, but not in the discrete one:
-# the domain edges carry the `Neumann(0)` halo placeholder (`pagos-roadmaps/chmy.md` Phase 4)
+# the domain edges carry the `Neumann(0)` halo placeholder (`pagos-roadmap/chmy.md` Phase 4)
 # rather than a real per-equation boundary condition, so a small membrane residual is seeded
 # at x = 0 and x = L. This used to be invisible because `σxx` was identically zero on a
 # slab; with the terrain-following metric correction in `velocitygradients!`
-# (`terrain_metric_correction!`, `pagos-roadmaps/blatter-pattyn-equations.md` A1) the surface slope
+# (`terrain_metric_correction!`, `pagos-roadmap/blatter-pattyn-equations.md` A1) the surface slope
 # makes `σxx = 4µ α ∂u/∂z ≠ 0`, and the edge artifact becomes visible.
 #
 # It decays away from the edges on the membrane (SSA coupling) length scale
@@ -142,7 +142,7 @@ const SLAB_NX = 128
     end
 
     @testset "margin faces keep their vertical operator" begin
-        # The regression the AIS 8 km run exposed (`pagos-roadmaps/blatter-pattyn.md`, Phase 1
+        # The regression the AIS 8 km run exposed (`pagos-roadmap/blatter-pattyn.md`, Phase 1
         # "margin σxz"). `NODE_ACX_AC` and `NODE_ACX` resolve to the *same* cell pair, so
         # gating σxz on `node_fully_active` while the unknown is created under `node_active`
         # zeroed the whole vertical operator along the margin — and BP's only tie between a
@@ -268,7 +268,7 @@ const SLAB_NX = 128
         # the same order as for a well-resolved column (`Δz ≪ Δx`).
         dx = 1e4  # deliberately coarse Δx relative to Δz so the vertical term is not
                   # starved by an unrelated horizontal bound (see the Phase 1 session note
-                  # on aspect ratio in `pagos-roadmaps/blatter-pattyn.md` §2).
+                  # on aspect ratio in `pagos-roadmap/blatter-pattyn.md` §2).
         H0, μ0, β0 = 1000.0, 1e8, 1e3
         grid = StaggeredGrid(Float64, 8dx, 8dx, dx, dx, layering(; nz = 2))
         rt = Runtime(grid)

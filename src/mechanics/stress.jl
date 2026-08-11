@@ -499,7 +499,7 @@ Distinguished from the collocated method by taking a [`Runtime`](@ref) instead o
     every momentum balance.
 
 `ρ_ice * g` is converted to the output eltype before entering the kernel, so a Float32
-pipeline stays in Float32 (see `pagos-roadmaps/chmy.md`, Float32 discipline).
+pipeline stays in Float32 (see `pagos-roadmap/chmy.md`, Float32 discipline).
 """
 function drivingstress!(
     τx,
@@ -546,7 +546,7 @@ drivingstress!(
 ###############################################################
 # Chmy-native, C-grid staggered Blatter-Pattyn (un-integrated) driving stress
 ###############################################################
-# `ρg ∂s/∂x`, not `ρgH ∂s/∂x` — see `pagos-roadmaps/blatter-pattyn.md` §1 for why no thickness
+# `ρg ∂s/∂x`, not `ρgH ∂s/∂x` — see `pagos-roadmap/blatter-pattyn.md` §1 for why no thickness
 # enters. Written once on `grid2d` and read at `k = 1` inside the 3D [`dotvel!`](@ref) sweep,
 # the same broadcast convention `_velocity_gradients!` uses for `H`. No `H` to stagger here,
 # so no `lerp` appears at all.

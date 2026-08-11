@@ -351,7 +351,7 @@ end
     # `depthaverage_velocitygradients!` is the depth-integrated companion of the column
     # `velocitygradients!`, introduced when the momentum solver moved its unknown from
     # `velocity.x`/`y` (`ACX3`) to `velocity.depthaverage_x`/`y` (`ACX2`)
-    # (`pagos-roadmaps/chmy.md`, Phase 3, decision 1). That move is only a *relocation* if the
+    # (`pagos-roadmap/chmy.md`, Phase 3, decision 1). That move is only a *relocation* if the
     # two kernels agree exactly on a grid where both are defined — which is what this
     # pins, bit-for-bit rather than approximately, since identical stencils on identical
     # data have no reason to differ in the last ulp.

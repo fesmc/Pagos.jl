@@ -435,7 +435,7 @@ end
     ## @dev: do not "fix" this by clamping or skipping — both were tried and both are worse
     ## (clamping imports `NaN` and broke the masked `ImplicitVertical` fixed-point test;
     ## skipping the ring broke the uniform-slab test). The real fix is a proper halo/BC
-    ## treatment for the gradient fields (`pagos-roadmaps/blatter-pattyn-equations.md`, A1 and A6).
+    ## treatment for the gradient fields (`pagos-roadmap/blatter-pattyn-equations.md`, A1 and A6).
 
     if node_active(mask, NODE_AA, i, j)
         ## `∂x` of an `aa` field lands at `acx`; averaging the two faces of the cell is the
@@ -502,7 +502,7 @@ $(TYPEDSIGNATURES)
 Convert the four horizontal velocity gradients from constant-ζ to constant-`z` derivatives,
 in place — the terrain-following metric correction
 `∂f/∂x|_z = ∂f/∂x|_ζ - (∂s/∂x - (1-ζ)∂H/∂x)·∂f/∂z` and its `y` mirror
-(`pagos-roadmaps/blatter-pattyn-equations.md`, item A1).
+(`pagos-roadmap/blatter-pattyn-equations.md`, item A1).
 
 Corrects `x_dx`/`y_dy` (at `aa`) and `x_dy`/`y_dx` (at `ab`); `x_dz`/`y_dz` are already
 physical `∂/∂z` and are read, not written. Must run **after** [`velocitygradients!`](@ref)
@@ -624,7 +624,7 @@ z.
 !!! note "Which velocity the momentum solver iterates"
     `pseudo_transient!` solves for `velocity.depthaverage_x`/`y`, not `velocity.x`/`y` —
     `ū` is genuinely 2D for SSA and DIVA alike, and leaving `velocity.x`/`y` free lets DIVA
-    use them for the reconstructed 3D profile (`pagos-roadmaps/chmy.md`, Phase 3, decision 1).
+    use them for the reconstructed 3D profile.
 """
 function depthaverage_velocitygradients!(
     velocity::VelocityState,
@@ -680,7 +680,7 @@ $(TYPEDSIGNATURES)
 Diagnose the vertical velocity `velocity.z` (`AAZ3`, at the layer interfaces) from
 incompressibility, `∂w/∂z = -(u_x + v_y)`, integrated up from the bed (`w = 0`) —
 [`MomentumBalance3D`](@ref)'s `w` is a post-solve diagnostic, not an unknown of
-[`pseudo_transient!`](@ref) (`pagos-roadmaps/blatter-pattyn.md`, Phase 1), so this is called
+[`pseudo_transient!`](@ref) (`pagos-roadmap/blatter-pattyn.md`, Phase 1), so this is called
 *after* a converged solve, never from inside the PT loop.
 
 Requires `velocity.x_dx`/`y_dy` to already be current (see [`velocitygradients!`](@ref)).

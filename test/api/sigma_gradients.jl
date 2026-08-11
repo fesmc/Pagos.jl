@@ -97,7 +97,7 @@ end
         grid     = StaggeredGrid(Float64, lx, ly, dx, dy, layering)
         rt       = Runtime(grid)
         # `Runtime` carries a Launcher for the column grid only, so the depth-integrated
-        # fill needs its own (pagos-roadmaps/chmy.md §3, "Two grids per domain").
+        # fill needs its own (pagos-roadmap/chmy.md §3, "Two grids per domain").
         launch2d = Launcher(grid.arch, grid.grid2d)
 
         @testset "$(nameof(typeof(transform))), p = $(transform.exponent)" begin

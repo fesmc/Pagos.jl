@@ -21,7 +21,7 @@ Horizontal axes (`x`, `y`) are always uniform. The vertical axis is either:
     layer midpoints where the grid does not think they are.
 
 `StaggeredGrid` is a new, additive type: it coexists with [`RegularGrid`](@ref) rather
-than replacing it (see `pagos-roadmaps/chmy.md`, Phase 1). `nx`, `ny`, `nz`, `x`, `y`, `z`,
+than replacing it (see `pagos-roadmap/chmy.md`, Phase 1). `nx`, `ny`, `nz`, `x`, `y`, `z`,
 `dx`, `dy`, `dz` are available as properties, computed from the wrapped Chmy grid, so
 existing destructuring patterns like `(; nx, ny, nz) = grid` keep working. `dz` is only
 defined when `nz == 1` — a full column's vertical spacing is non-uniform by

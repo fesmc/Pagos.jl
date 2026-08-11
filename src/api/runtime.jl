@@ -8,17 +8,21 @@ signatures (`creep!(cf::AbstractField, σ_e, law, rt)`, ...).
 
 The plain-array dispatch of those same functions (`creep!(cf::AbstractArray, σ_e, law)`)
 takes **no** `Runtime`: it reads its backend off the array itself
-(`KernelAbstractions.get_backend`) and has no grid, halo, or launcher concept. `Runtime`
-is internal machinery — it never appears in a signature a user is expected to call with
-plain arrays (see `pagos-roadmaps/chmy.md`, Phase 2).
+(`KernelAbstractions.get_backend`) and has no grid, halo, or launcher concept.
 
 # Fields
  - `arch`: the Chmy `Architecture` (device + backend); taken from the grid.
  - `grid`: the **bare Chmy grid** (`StructuredGrid{3}`), not the Pagos
-   [`StaggeredGrid`](@ref) it was built from — see below.
+   [`StaggeredGrid`](@ref) it was built from — Chmy's grid operators (`∂x`, `Δx`, ...),
+   `Launcher` and `bc!` all dispatch on `Chmy.StructuredGrid`, and the wrapper has no
+   `Adapt` rule, so it can never be passed into a kernel. Reach the geographic metadata
+   (`area`, `distortion`, ...) through [`IceSheet`](@ref)'s [`StaggeredGrid`](@ref) and
+   pass the array into the kernel explicitly.
  - `grid2d`: the bare Chmy grid the *depth-integrated* fields live on (`StaggeredGrid`'s
    `grid2d`: same horizontal axes, size-1 z-axis). `=== grid` when `nz == 1`.
- - `launch`: a Chmy `Launcher` sized for `grid`.
+ - `launch`: a Chmy `Launcher` sized for `grid`. Sweeps `size(grid, Center()) .+ 2` with
+   an `Offset(-1)`, i.e. one halo ring beyond the interior, so a kernel launched this way
+   also fills that ring.
  - `launch2d`: a [`FlatLauncher`](@ref) sized for `grid2d` — same call signature as
    `Launcher`, minus the phantom z ring Chmy's worksize rule adds on a size-1 axis. Falls
    back to a plain `Launcher` when `outer_width` is set.
@@ -36,42 +40,17 @@ rt.launch(rt.arch, rt.grid, my_kernel! => (out, in, rt.grid); bc = batch(rt.grid
 
 !!! warning "Pick the launcher that matches the *output* field's grid"
     A `Field`'s size comes from the grid it was built on, and the state structs mix both
-    (see [`StaggeredGrid`](@ref)'s `grid2d` note). Launch a kernel writing
-    depth-integrated fields (ice thickness, driving stress, mass fluxes) with
-    `rt.launch2d(rt.arch, rt.grid2d, ...)`, and one writing column fields with
-    `rt.launch(rt.arch, rt.grid, ...)`. A mismatch does **not** error: it silently sweeps
-    too few layers (2D launcher over a column field) or runs off the end of the shallow
-    field's `k` range (column launcher over a depth-integrated one). A kernel that reads
-    both — SIA/SSA driving stress from a column viscosity, DIVA's vertical integrals —
-    launches on whichever grid its *output* lives on and indexes the other explicitly.
+    (see [`StaggeredGrid`](@ref)'s `grid2d` note). A mismatch does **not** error: it
+    silently sweeps too few layers (2D launcher over a column field) or runs off the end
+    of the shallow field's `k` range (column launcher over a depth-integrated one). A
+    kernel that reads both — SIA/SSA driving stress from a column viscosity, DIVA's
+    vertical integrals — launches on whichever grid its *output* lives on and indexes the
+    other explicitly.
 
-!!! note "`rt.grid` is the Chmy grid, not the `StaggeredGrid`"
-    Chmy's grid operators (`∂x`, `Δx`, ...), `Launcher` and `bc!` all dispatch on
-    `Chmy.StructuredGrid`; the Pagos [`StaggeredGrid`](@ref) wrapper is opaque to them
-    and has no `Adapt` rule, so it can never be passed into a kernel. Holding the bare
-    grid keeps `Runtime` usable directly with Chmy's documented call signature. The
-    geographic metadata on [`StaggeredGrid`](@ref) (`area`, `distortion`, ...) is
-    reached through the grid itself, which [`IceSheet`](@ref) owns; a kernel that needs
-    it takes the array as an explicit argument, as Chmy kernels do for any other data.
-
-!!! note "Worksize includes one halo ring"
-    Chmy's `Launcher` sweeps `size(grid, Center()) .+ 2` points with an `Offset(-1)`,
-    i.e. one halo ring beyond the interior, so a kernel launched this way also fills
-    that ring. Whether that ring should be *computed* or `bc!`-filled is a per-kernel
-    decision (see `pagos-roadmaps/chmy.md`, Phase 4).
-
-    `launch2d` is the exception, and deliberately so: it is a [`FlatLauncher`](@ref),
-    which sweeps the ring in `x`/`y` but **not** in `z`, because `grid2d`'s z axis has
-    extent 1 and therefore has no ring to fill. See that docstring for why nothing reads
-    the planes it stops writing.
-
-# `outer_width` and AD
-
-`outer_width` (default `nothing`) enables Chmy's communication/computation overlap:
-the launcher splits the sweep into an interior part and boundary slabs run on async
-`Worker` tasks. That path spawns Tasks and is **not** safe inside an
-Enzyme-differentiated region — keep `outer_width = nothing` there (see
-`pagos-roadmaps/chmy.md`, Phase 5).
+!!! warning "`outer_width` is unsafe under AD"
+    It enables Chmy's communication/computation overlap: the launcher splits the sweep
+    into an interior part and boundary slabs run on async `Worker` Tasks. Keep
+    `outer_width = nothing` inside an Enzyme-differentiated region.
 """
 struct Runtime{A,G,G2,L,L2}
     arch::A
@@ -89,48 +68,21 @@ A drop-in `Chmy.Launcher` for **depth-integrated** grids: same call signature, s
 instead of Chmy's `size(grid, Center()) .+ 2` = `(nx + 2, ny + 2, 3)` with `Offset(-1)`.
 
 `grid2d`'s z axis has extent 1, so the two extra planes Chmy's rule adds are a halo ring in
-a dimension that has none: every depth-integrated kernel reads and writes **three** k-planes
-where only `k = 1` holds data. Removing them measures **2.22× on CPU** (4 threads, 380²,
-Float64, 100 fixed PT iterations: 15.83 → 7.13 ms/iter, velocities bit-identical) and
-**1.99× on GPU**, 2.9–4.2× per kernel (`benchmark/basics/gpu/README.md` §1).
+a dimension that has none, and nothing can observe them: the 2D grid operators never index
+`k ± 1`, column kernels read a depth-integrated field at an explicit `k = 1`, and `interior`
+on a `grid2d` `Field` returns `k = 1` only. Skipping them measures **2.22× on CPU** and
+**1.99× on GPU** (`benchmark/basics/gpu/README.md` §1).
 
-# Why nothing reads the planes this stops writing
-
- - The 2D grid operators (`∂x`, `∂y`, `lerp`/`hlerp` at `aa`/`ab`/`acx`/`acy`) never index
-   `k ± 1`, so no depth-integrated kernel can observe them.
- - Column kernels that read a depth-integrated field index it explicitly at `k = 1` — e.g.
-   `_dotvel_staggered_bp!` writes `lerp(H, NODE_ACX, grid2d, i, j, 1)`.
- - `interior` on a `grid2d` `Field` returns `k = 1` only, so neither output nor tests see
-   them.
-
-Every kernel launched through `launch2d` takes `i, j` from the sweep and then either writes
-a `grid2d` field at the sweep's own index (only `k = 1` meaningful) or writes a *column*
-field through an explicit internal `for k` loop (`_depthaverage!`, `_velocities3D_ssa!`,
-`_verticalvelocity!`, `_viscosity_integrals!`, `_vertical_line_relax_bp!`) — in which case
-the sweep's `k` was pure repetition, running the same column integral three times.
+Worksize *and* groupsize are type parameters rather than fields, which is what lets a
+static-size KA kernel specialise its index arithmetic and bounds checks at compile time.
 
 !!! warning "Depth-integrated grids only"
     Construction throws unless `size(grid, Center())[3] == 1`. Column kernels keep the
     ordinary `Launcher` through `rt.launch`, which still sweeps its z ring — a real one.
 
-!!! note "`outer_width` is not implemented here"
-    The communication/computation overlap path (async `Worker` tasks, per-side `bc!`) is
-    Chmy's; [`Runtime`](@ref) falls back to a plain `Launcher` for `launch2d` when
-    `outer_width` is set, so that configuration is unchanged by this type.
-
-!!! note "Groupsize is a type parameter, not a field"
-    `Worksize` already was one, matching `Chmy.Launcher`'s own foldable
-    `worksize(::Launcher{WorkSize})`; `GroupSize` follows it for the same reason (see the
-    call operator below). Both reaching the type system is what a static-size KA kernel
-    needs to specialise its index arithmetic and bounds checks at compile time. A plain
-    `Chmy.Launcher` calls `heuristic_groupsize(backend, Val(N))` at every launch — the
-    compiler constant-folds it since it dispatches only on `backend`'s type and `Val(N)` —
-    while `FlatLauncher` bakes that same call's result into its own type once, at
-    construction, outside the PT loop.
-
-The `synchronize` after each launch is kept, matching `Launcher`. Dropping it is worth a
-further ~1.3× but is a Chmy-wide policy question and size-dependent (a loss at 381²) — see
-`benchmark/basics/gpu/README.md` §2.
+`outer_width` is not implemented here; [`Runtime`](@ref) falls back to a plain `Launcher`
+for `launch2d` when it is set. The `synchronize` after each launch is kept, matching
+`Launcher` (`benchmark/basics/gpu/README.md` §2).
 """
 struct FlatLauncher{Worksize,GroupSize,B}
     backend::B
@@ -150,23 +102,17 @@ function FlatLauncher(arch, grid)
     return FlatLauncher{ws,groupsize,typeof(backend)}(backend)
 end
 
-# Extend Chmy's own generic functions, not new same-named ones: `worksize`/`outer_width`
-# reach Pagos only through `@reexport using Chmy`, so a *bare* definition here would create
-# a distinct `Pagos.worksize` that shadows Chmy's and makes the unqualified name ambiguous
-# at every call site, including the existing `worksize(rt.launch)` ones.
+# Extend Chmy's own generics, not new same-named ones: `worksize`/`outer_width` reach Pagos
+# only through `@reexport using Chmy`, so a bare definition here would shadow Chmy's and
+# make the unqualified name ambiguous at every call site.
 Base.@assume_effects :foldable Base.ndims(::FlatLauncher{WS}) where {WS} = length(WS)
 Base.@assume_effects :foldable Chmy.KernelLaunch.worksize(::FlatLauncher{WS}) where {WS} =
     WS
 Base.@assume_effects :foldable Chmy.KernelLaunch.outer_width(::FlatLauncher) = nothing
 
-# `GroupSize` is a type parameter, not a field, for the same reason `Worksize` is: passing
-# a struct *field* to `kernel(backend, groupsize, ndrange)` reads it at runtime, so KA's
-# `StaticSize` wrapper can't fold it and the launch config never reaches the type system —
-# it costs the workshop's "specialise once, outside the hot loop" gain (index arithmetic to
-# shifts, bounds check to one constant compare, launch bounds for register allocation; see
-# `benchmark/basics/gpu/README.md`). `heuristic_groupsize` is pure in the backend's *type*
-# (`Val(3)` is the only other argument), so baking its result into `FlatLauncher`'s type is
-# exact, not a heuristic-of-a-heuristic.
+# `GS`/`WS` are passed to `kernel(backend, groupsize, ndrange)` from the type, not from a
+# field: a field is read at runtime, so KA's `StaticSize` wrapper cannot fold it and the
+# launch config never reaches the type system.
 function (launcher::FlatLauncher{WS,GS})(
     arch::Architecture,
     grid,
@@ -198,16 +144,11 @@ Build a [`Runtime`](@ref) for `grid`, reusing the architecture the grid was cons
 on. `outer_width` is forwarded to Chmy's `Launcher` (see the [`Runtime`](@ref) docstring
 on when *not* to set it).
 
-`grid` gets an ordinary Chmy `Launcher`; `grid2d` gets a [`FlatLauncher`](@ref), which
-drops the phantom z ring Chmy's worksize rule adds on a size-1 axis. This holds even when
-`nz == 1` and the two grids are the *same object*: the depth-integrated launcher is still
-the one that should sweep one k-plane, and a `FlatLauncher` owns no `Worker` Tasks, so
-building a second launcher costs nothing.
-
-The exception is `outer_width`: that path is Chmy's async communication/computation overlap,
-which [`FlatLauncher`](@ref) does not implement. With it set, `launch2d` falls back to a
-plain `Launcher` — and *there* the same-object reuse still matters, since each `Launcher`
-would otherwise spawn a duplicate set of `Worker` Tasks.
+`grid` gets an ordinary Chmy `Launcher`; `grid2d` gets a [`FlatLauncher`](@ref), even when
+`nz == 1` and the two grids are the *same object* — a `FlatLauncher` owns no `Worker` Tasks,
+so building a second one costs nothing. With `outer_width` set, `launch2d` falls back to a
+plain `Launcher`, and *there* the same-object case reuses `launch` rather than spawning a
+duplicate set of `Worker` Tasks.
 """
 function Runtime(grid::StaggeredGrid; outer_width = nothing)
     arch = grid.arch

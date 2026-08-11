@@ -212,7 +212,7 @@ end
 #=
 ## Running Pagos' Blatter-Pattyn solver on the same experiments
 
-`pagos-roadmaps/blatter-pattyn.md` Phase 3.
+`pagos-roadmap/blatter-pattyn.md` Phase 3.
 
 !!! warning "The PT loop below is written out here rather than calling `pseudo_transient!`"
     ISMIP-HOM A and B are **periodic** domains, and Pagos cannot express that:
@@ -495,7 +495,7 @@ end
 #=
 ## Running Pagos' DIVA solver on the same experiments
 
-`pagos-roadmaps/chmy.md` Phase 3. DIVA is depth-integrated exactly like SSA, so — unlike BP — the
+`pagos-roadmap/chmy.md` Phase 3. DIVA is depth-integrated exactly like SSA, so — unlike BP — the
 library's own per-iteration step, [`pseudo_rate!`](@ref), needs no surgery for periodicity:
 the depth-averaged velocity gradients, membrane stress and basal update it assembles are all
 either local reads or direct neighbour differences, the same node algebra

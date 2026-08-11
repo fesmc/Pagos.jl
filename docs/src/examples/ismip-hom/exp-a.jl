@@ -2,7 +2,7 @@
 
 # ISMIP-HOM A: Pagos' Blatter-Pattyn against a full-Stokes ensemble
 
-`pagos-roadmaps/blatter-pattyn.md` Phase 3. Experiment **A** — the 3D one: a sinusoidal bed
+`pagos-roadmap/blatter-pattyn.md` Phase 3. Experiment **A** — the 3D one: a sinusoidal bed
 bumpy in both `x` and `y`, no slip, periodic, at domain lengths
 `L = 160, 80, 40, 20, 10 km`. Experiment B lives in `exp-b.jl`; everything shared between
 the two is in `helpers.jl`, including the geometry, the file format, the `Δp` sign

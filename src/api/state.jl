@@ -43,18 +43,11 @@ $(TYPEDSIGNATURES)
 The halo width to allocate a field on `grid.grid2d` with: whatever the caller asked for on
 `x`/`y`, and **zero** on `z`.
 
-`grid2d`'s z-axis has extent 1, and nothing sweeps a ghost ring there — `Runtime`'s
-`launch2d` is a [`FlatLauncher`](@ref), which visits only the one real z-plane (see its
-docstring for why nothing reads the planes it stops writing). A scalar `halo` would
-allocate the usual `4·halo` extra z-planes anyway, since `Chmy.Field` does not know a given
-grid's z-axis is a placeholder — **5.1× the memory a `grid2d` field's interior needs** at
-the default `halo = 1` (`pagos-roadmap/chmy-issues.md`). `_halo2d` is what state.jl's
-`grid2d`-based field builders pass instead of `halo` directly.
-
-Every use of `Field(...; halo = _halo2d(halo))` sees the *same* transform of a given `halo`,
-so a `@diagnostic` field allocated at full size (`diagnostics = true`) and its one-cell
-placeholder (`diagnostics = false`) keep matching `Field{T,N,L,H,A}` types — see the
-"Diagnostic (output-only) fields" note above, which the same invariant serves.
+`grid2d`'s z-axis has extent 1 and nothing sweeps a ghost ring there, but `Chmy.Field` does
+not know that: a scalar `halo` allocates the usual `4·halo` extra z-planes anyway, **5.1× the
+memory the interior needs** at the default `halo = 1` (`pagos-roadmap/chmy-issues.md`). Every
+`grid2d`-based field builder below passes this instead of `halo` directly, so a given `halo`
+always yields the same `Field{T,N,L,H,A}` type.
 """
 _halo2d(halo::Integer) = (halo, halo, 0)
 _halo2d(halo::NTuple{3,Integer}) = (halo[1], halo[2], 0)
@@ -63,35 +56,17 @@ _halo2d(halo::NTuple{3,Integer}) = (halo[1], halo[2], 0)
 # Diagnostic (output-only) fields
 ###############################################################
 #
-# Some state fields are neither read nor written by anything in `src/`, and are not on the
-# design path to being read either — they exist as a place to put a quantity somebody may
-# want to *output*. `docs/src/variables.md` classifies every field on two axes, **Necessary**
-# (does it feed the prognostic update of H, u, T or η, directly or as an intermediate) and
-# **Used** (does anything in `src/` touch it today). The fields marked `@diagnostic` below are
-# exactly those that are ✗ on *both*.
+# Fields marked `@diagnostic` below are those `docs/src/variables.md` classifies as neither
+# Necessary nor Used: nothing in `src/` touches them, they exist as a place to put a quantity
+# somebody may want to *output*. At a 1522² Antarctic setup they cost ~1.4 GiB across
+# `TopographicState` + `MechanicState`, so `diagnostics = false` (the default) allocates them
+# on a one-cell grid instead. Pass `diagnostics = true` for full size.
 #
-# Allocating them at full size is pure waste, and on large grids it dominates: at a 1522²
-# Antarctic setup the ✗/✗ fields cost ~1.4 GiB across `TopographicState` + `MechanicState`.
-# So by default they are allocated on a **one-cell grid** instead — `diagnostics = false`.
-#
-# The struct field itself stays. That matters:
-#
-#   * the type parameters are unchanged, because a `Field` over a 1-cell grid has the *same*
-#     `Field{T,N,L,H,A}` type as one over the full grid (only `dims` and the array length
-#     differ) — so `MassBalanceState{AA}` and friends, which require every field to share one
-#     type, keep working untouched;
-#   * `Adapt`, `propertynames`, and any downstream code that merely *names* the field keep
-#     working;
-#   * `docs/src/variables.md` stays an accurate description of the intended design rather
-#     than drifting from a struct that quietly lost half its fields.
-#
-# Pass `diagnostics = true` to allocate them at full size — needed as soon as something is
-# wired up to write one, at which point its row in `variables.md` should flip to Used ✓ and
-# it should lose the `@diagnostic` marker here.
-#
-# This is the allocation-site half of the convention documented for dispatch-dependent
-# fields: a field a code path never touches is left unwritten and made degenerate, rather
-# than defended with a runtime guard.
+# The struct field itself stays: a `Field` over a 1-cell grid has the *same* `Field{T,N,L,H,A}`
+# type as one over the full grid, so the single-type-parameter states keep working and
+# `variables.md` stays an accurate description of the design.
+
+_topology_type(::StructuredGrid{N,T,C}) where {N,T,C} = C
 
 """
 $(TYPEDSIGNATURES)
@@ -102,8 +77,6 @@ A one-cell `StaggeredGrid` on the same architecture and element type as `grid`, 
 Mirrors `StaggeredGrid`'s own axis/topology construction so the resulting fields are the same
 Julia type as their full-size counterparts — only smaller.
 """
-_topology_type(::StructuredGrid{N,T,C}) where {N,T,C} = C
-
 function _degenerate_grid(grid::StaggeredGrid)
     (; arch) = grid
     T = eltype(grid.grid)
@@ -359,7 +332,7 @@ $(TYPEDSIGNATURES)
 Material properties feeding the momentum balance. `viscosity`/`viscosity_depthaveraged` are
 the 3D and depth-averaged ice viscosity. `rate_factor`/`rate_factor_depthaveraged` are
 prescribed inputs, not derived from temperature (`ThermodynamicState` is a separate,
-unconnected sibling; see `pagos-roadmaps/PT-autotune.md`, Phase 1); they exist only for the
+unconnected sibling; see `pagos-roadmap/PT-autotune.md`, Phase 1); they exist only for the
 pseudo-transient solver's Glen-law viscosity continuation
 ([`GlenViscosityContinuation`](@ref)), and `rate_factor` is filled by broadcasting
 `rate_factor_depthaveraged` down the column in the isothermal case. `viscosity_integral_1`/
@@ -389,7 +362,7 @@ Adapt.@adapt_structure MechanicMaterialState
 # beta, beta_eff, c_bed live at `aa`, where the effective pressure and basal velocity
 # magnitude they depend on are evaluated. Whether β on the velocity faces (β_acx/acy)
 # becomes stored fields or an inline `lerp` in the momentum kernel is a Phase 3 decision
-# (see `pagos-roadmaps/chmy.md`).
+# (see `pagos-roadmap/chmy.md`).
 """
 $(TYPEDSIGNATURES)
 

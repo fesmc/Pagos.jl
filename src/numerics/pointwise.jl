@@ -12,7 +12,7 @@ per-cell array arguments and `extra` are non-indexed trailing arguments
     below captures it. Reassigning a captured variable (e.g. `I = I + O`, then
     closing over `I`) boxes it (`Core.Box`), which is silently slower on CPU
     but fails GPU compilation outright ("unsupported dynamic function
-    invocation") — see `pagos-roadmaps/chmy.md`, appendix, 2026-07-31.
+    invocation") — see `pagos-roadmap/chmy.md`, appendix, 2026-07-31.
 """
 @kernel inbounds = true function _pointwise!(f::F, out, args, extra, O) where {F}
     Ilocal = @index(Global, NTuple)

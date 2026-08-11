@@ -4,7 +4,7 @@ using LinearAlgebra: Tridiagonal, Diagonal, Symmetric, eigvals
 
 include("../test_helpers/chmy.jl")
 
-# Phase 2 of `pagos-roadmaps/blatter-pattyn.md`: vertical-implicit line relaxation. The claim is
+# Phase 2 of `pagos-roadmap/blatter-pattyn.md`: vertical-implicit line relaxation. The claim is
 # narrow and sharp — *the same fixed point as Phase 1, reached in an iteration count that does
 # not grow with `nz`* — so the tests below are exactly those two statements plus the two
 # invariants the implementation rests on (the Δτ bound loses its vertical term; the tridiagonal
@@ -97,7 +97,7 @@ end
         # The bound is the whole reason this phase exists: under `ImplicitVertical` the
         # vertical rows are inverted rather than stepped over, so `Δτ` must be set by
         # `Λ_horiz` alone. At Δx = 1 km against H = 100 m the vertical term dominates by
-        # ~4 orders (the aspect ratio of `pagos-roadmaps/blatter-pattyn.md` §2), which is what makes
+        # ~4 orders (the aspect ratio of `pagos-roadmap/blatter-pattyn.md` §2), which is what makes
         # this measurable rather than a rounding difference.
         nx, ny, nz = 6, 4, 6
         H0, μ0, β0, dx = 100.0, 1e7, 1e3, 1e3

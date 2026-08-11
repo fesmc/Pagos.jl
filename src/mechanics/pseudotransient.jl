@@ -12,14 +12,6 @@ function pseudo_vel!(v, v_old, dotvel, dtau, theta_v)
     return nothing
 end
 
-# The fused kernels below used to launch by hand at a flat `(nx + 2, ny + 2, 1)` worksize,
-# bypassing `rt.launch2d`: Chmy's `Launcher` swept `(nx + 2, ny + 2, 3)` on `grid2d`, and
-# `pseudo_vel!`'s broadcast + `copyto!` had never paid that tax (`asarray`/`interior` sweeps
-# exactly the field's own extent, no `Launcher` involved), so routing the fusion through
-# `rt.launch2d` tripled the swept volume of the very work it was written to shrink and
-# measured ~10% *slower* for the whole loop. `rt.launch2d` is now a `FlatLauncher` with
-# exactly that worksize, so the hand-launch is gone and these read like every other kernel.
-
 @kernel inbounds = true function _pseudo_vel_fused!(
     ux,
     uy,
@@ -46,17 +38,14 @@ end
 $(TYPEDSIGNATURES)
 
 Fused `u → u_old` copy and [`pseudo_vel!`](@ref) relaxation, for both velocity components in
-one launch: `u_old ← u` (the pre-update iterate [`_tune!`](@ref) needs — see its docstring),
-then `u ← u_old + theta_v * dotvel * dtau`, reading each component's pre-update value exactly
-once instead of writing it to `u_old` via `copyto!` and reading it straight back through
-[`pseudo_vel!`](@ref). `benchmark/basics/gpu/README.md` §4 measures the two-`copyto!`-plus-
-`pseudo_vel!` sequence this replaces at 1.79×.
+one launch: `u_old ← u` (the pre-update iterate [`_tune!`](@ref) needs), then
+`u ← u_old + theta_v * dotvel * dtau`, reading each component's pre-update value once
+instead of writing it to `u_old` via `copyto!` and reading it straight back. Worth 1.79×
+over that sequence (`benchmark/basics/gpu/README.md` §4).
 
-Depth-integrated throughout (`rt.grid2d`), so this is [`pseudo_transient!`](@ref)'s own
-[`MomentumBalance2D`](@ref) loop fusion; [`_velocity_update!`](@ref)'s `ExplicitVertical`
-method (shared with [`MomentumBalance3D`](@ref)) still goes through the unfused `copyto!` +
-[`pseudo_vel!`](@ref) pair, since the benchmark that validated this fusion bit-for-bit only
-ever exercised the 2D SSA/DIVA loop.
+Depth-integrated (`rt.grid2d`), so this serves [`pseudo_transient!`](@ref)'s
+[`MomentumBalance2D`](@ref) loop only; [`_velocity_update!`](@ref)'s `ExplicitVertical`
+method still uses the unfused `copyto!` + [`pseudo_vel!`](@ref) pair.
 """
 function _pseudo_vel_and_store!(
     ux,
@@ -83,13 +72,12 @@ end
 # C-grid staggered pseudo-transient solver
 ###############################################################
 #
-# Two facts govern everything below and neither lives inside a kernel. `Chmy.Field` is an
-# `AbstractArray` with no `BroadcastStyle`, so `copyto!`, the `v = v_old + θ·dv·dτ`
-# relaxation and the max-norm reductions would fall back to scalar `getindex` — right on
-# CPU, catastrophic on GPU — and are therefore all routed through `asarray`. And the
-# membrane stress reads velocity gradients one ring beyond the interior at `ab`, so the
-# velocity halo must be refreshed every iteration, not once at the end; `Neumann(0)` is the
-# placeholder until per-equation boundary conditions land (`pagos-roadmaps/chmy.md` Phase 4).
+# Two facts govern everything below and neither lives inside a kernel. `Chmy.Field` has no
+# `BroadcastStyle`, so `copyto!`, the `v = v_old + θ·dv·dτ` relaxation and the max-norm
+# reductions would fall back to scalar `getindex` — catastrophic on GPU — and are all routed
+# through `asarray` instead. And the membrane stress reads velocity gradients one ring beyond
+# the interior at `ab`, so the velocity halo must be refreshed every iteration, not once at
+# the end; `Neumann(0)` is the placeholder until per-equation boundary conditions land.
 
 """
 $(TYPEDSIGNATURES)
@@ -100,18 +88,15 @@ velocity's own node class (`acx`/`acy`) by `lerp` — the same arithmetic-mean c
 [`drivingstress!`](@ref) and [`dotvel!`](@ref) make for the ice thickness `H`, and folding
 the safety factor `dtau_scaling` in up front.
 
-Per grid point rather than a `maximum(mu)` reduction, so a single stiff cell no longer
-throttles `Δτ` everywhere else and no global reduction is needed. Only `mu`'s interior is
-read (`lerp` needs its halo only at the two domain-boundary `ab`-style corners the membrane
-stress itself needs — see [`pseudo_transient!`](@ref)'s halo warning), so this call has the
-same halo requirement as the rest of the solve.
+Per grid point rather than a `maximum(mu)` reduction, so a single stiff cell does not
+throttle `Δτ` everywhere else and no global reduction is needed. Reads `mu`'s interior only,
+so this call has the same halo requirement as the rest of the solve.
 
 !!! note "`ρ` here is a numerical pseudo-density, not ice"
     Callers pass `c.density_ice`, but this `Δτ` governs an artificial dynamic relaxation,
-    not physical inertia — `ρ` only sets a scale that `dtau_scaling` is free to absorb. So
-    it is *not* something the `(m, yr, Pa)` convention (see [`Constants`](@ref)) obliges
-    you to rescale: the viscosities this has always been tuned against were already
-    `Pa yr`, and the value works as-is. Retune via `dtau_scaling` if a problem needs it.
+    not physical inertia — `ρ` only sets a scale that `dtau_scaling` is free to absorb, so
+    the `(m, yr, Pa)` convention (see [`Constants`](@ref)) does not oblige you to rescale
+    it. Retune via `dtau_scaling` if a problem needs it.
 """
 function pseudo_dt!(dtau_x, dtau_y, ρ, dx, dy, mu, muB, ndim, dtau_scaling, rt::Runtime)
     scaling =
@@ -143,12 +128,9 @@ end
 ###############################################################
 #
 # Bounds λ_max of the mass-scaled residual operator via Gershgorin's row-sum bound
-# (Δτ ≤ 2/λ_max); see `GershgorinPseudoTimeStep`'s docstring in solvers.jl for the
-# derivation, the row-sum formula and why it beats `ViscosityPseudoTimeStep` on real
-# geometry (basal drag, ice margin). The coefficients below are read off the same
-# discretisation the solver runs — `_membrane_stress_staggered!`'s `ηH`/`hlerp(η)·lerp(H)`,
-# `_basalstress_staggered!`'s `lerp(β)`, `_dotvel_staggered!`'s `lerp(H)` — through the same
-# mask those kernels use.
+# (Δτ ≤ 2/λ_max); see `GershgorinPseudoTimeStep` in solvers.jl for the derivation and the
+# row-sum formula. The coefficients below are read off the same discretisation the solver
+# runs, through the same mask those kernels use.
 
 @inline _etaH_aa(η, H, mask, i, j, k) =
     node_active(mask, NODE_AA, i, j) ? η[i, j, k] * H[i, j, k] : zero(eltype(η))
@@ -159,9 +141,9 @@ end
     node_fully_active(mask, NODE_AB, i, j) ?
     hlerp(η, NODE_AB, grid, i, j, k) * lerp(H, NODE_AB, grid, i, j, k) : zero(eltype(η))
 
-# Drag enters the bound only if the drag term actually depends on the velocity being
-# iterated. Under `NoFrictionUpdate` the basal stress is a prescribed constant field, i.e. a
-# forcing like the driving stress, contributing nothing to the operator's spectrum.
+# Drag enters the bound only if it depends on the velocity being iterated. Under
+# `NoFrictionUpdate` the basal stress is a prescribed field — a forcing like the driving
+# stress, contributing nothing to the operator's spectrum.
 @inline _drag_in_spectrum(::ActiveFrictionUpdate) = true
 @inline _drag_in_spectrum(::NoFrictionUpdate) = false
 
@@ -328,7 +310,7 @@ end
 # Blatter-Pattyn Gershgorin pseudo-time step
 ###############################################################
 #
-# Row sums for BP's residual (`pagos-roadmaps/blatter-pattyn.md`, §2.1), per unit *volume* rather
+# Row sums for BP's residual (`pagos-roadmap/blatter-pattyn.md`, §2.1), per unit *volume* rather
 # than per unit area: `P`/`Q` above are `ηH` at `aa`/`ab`; here they are bare `µ` (no `H`,
 # matching `_membrane_stress_staggered_bp!`'s `σxx`/`σxy`), and there is a third,
 # vertical-shear contribution `Λ_vert` the 2D bound has no counterpart for at all:
@@ -347,10 +329,7 @@ end
 # for, and it carries only the single `1/H` `dotvel!`'s outer `_dz_over_H` division
 # contributes (`β` itself, unlike `µ`, is not a per-length quantity). At `k = nz` the top
 # flux is dropped outright (stress-free surface): no substitute term, matching `dotvel!`'s
-# `top = k < nz ? sxz[k+1] : 0`. Sanity check to assert in tests: uniform `µ`, no drag,
-# `dx = dy` and a single layer must reproduce the existing 2D bound divided by `H` — but
-# `_check_momentum_grid` rejects `nz == 1` for BP outright, so this is only ever exercised at
-# `nz ≥ 2`, where both `k = 1` and `k = nz` always have a genuine interior neighbour.
+# `top = k < nz ? sxz[k+1] : 0`.
 
 @inline _mu_aa(μ, mask, i, j, k) =
     node_active(mask, NODE_AA, i, j) ? μ[i, j, k] : zero(eltype(μ))
@@ -360,23 +339,15 @@ end
     zero(eltype(μ))
 
 # `µ` at the `acx_ac`/`acy_ac` interfaces `σxz`/`σyz` live on. **Not `node_fully_active`**,
-# unlike `_mu_ab` above, and the asymmetry is forced rather than a preference:
-# `_mask_cells` reads only the horizontal part of a node class, so `NODE_ACX_AC` and
-# `NODE_ACX` resolve to the *same* cell pair `((i-1,j), (i,j))`. Gating `σxz` on the strict
-# rule while the unknown itself is created under the loose one
-# (`node_active(mask, NODE_ACX, ...)`, in `_dotvel_staggered_bp!`) therefore zeroes the entire
-# vertical operator on every face of the margin ring — ~1 % of the solved faces on 8 km AIS.
-# That is fatal for BP specifically: basal drag enters as the `k = 1` interface flux and
-# nothing else couples the column to the bed, so layers `k ≥ 2` above such a face are left
-# with no restoring force at all and drift linearly in pseudo-time
-# (`pagos-roadmaps/blatter-pattyn.md`, Phase 1 "margin `σxz`"). `NODE_AB` is a genuine four-cell
-# node, so the strict rule there stays right and stays put.
+# unlike `_mu_ab` above: `NODE_ACX_AC` and `NODE_ACX` resolve to the same cell pair, so the
+# strict rule would zero the vertical operator on every face of the margin ring while the
+# unknown itself is created under the loose one. That is fatal for BP, where basal drag
+# enters as the `k = 1` interface flux and nothing else couples the column to the bed —
+# layers `k ≥ 2` above such a face would drift linearly in pseudo-time.
 #
-# One-sided instead of zero: interpolate down the ice-covered column alone (`NODE_AA_AC`,
-# harmonic in `z` only), which is what `hlerp` onto `NODE_ACX_AC` already reduces to when the
-# two columns carry equal `µ`. This never inverts an ice-free cell's `µ`, so it keeps the
-# NaN-avoidance the strict check was reached for in the first place, and it is bit-for-bit
-# the previous expression wherever both cells are active — i.e. everywhere but the margin.
+# One-sided rather than zero at the margin: interpolate down the ice-covered column alone
+# (`NODE_AA_AC`), which never inverts an ice-free cell's `µ` and is bit-for-bit the
+# two-sided `hlerp` wherever both cells are active.
 @inline function _mu_acxz(μ, mask, grid, i, j, k)
     west = node_active(mask, NODE_AA, i - 1, j)
     east = node_active(mask, NODE_AA, i, j)
@@ -393,11 +364,10 @@ end
            north ? hlerp(μ, NODE_AA_AC, grid, i, j, k) : zero(eltype(μ))
 end
 
-# The three coefficient groups of §2.1, factored out because Phase 2's tridiagonal assembly
-# (`_line_relax_x!`/`_line_relax_y!` below) must build the *same* operator this bound bounds —
-# "one source of truth for the vertical operator, so the two cannot drift apart"
-# (`pagos-roadmaps/blatter-pattyn.md`, Phase 2). All three are per unit volume and *before* the
-# `1/ρ̃` mass scaling, which both callers apply themselves.
+# The three coefficient groups, factored out so the tridiagonal assembly
+# (`_line_relax_x!`/`_line_relax_y!` below) builds the *same* operator this bound bounds and
+# the two cannot drift apart. All three are per unit volume and *before* the `1/ρ̃` mass
+# scaling, which both callers apply themselves.
 
 # `∂x(σxx) + ∂y(σxy)`, i.e. the membrane rows — the part that stays explicit under
 # `ImplicitVertical` and therefore the part that alone sets `Δτ` there.
@@ -425,9 +395,9 @@ end
     _mu_acyz(μ, mask, grid, i, j, kf) / Δz(grid, Vertex(), i, j, kf) /
     Δz(grid, Center(), i, j, k) / Hy^2
 
-# The bed interface at `k = 1`, where the flux *is* `τ_b = β u_b` (§2.3): `β/(Δζ₁ H)`, with a
-# single `1/H` and no factor 2 — unlike an interior `R/δ` term, `β u_b` has no neighbouring
-# layer to also appear as an off-diagonal for, and `β` is not a per-length quantity.
+# The bed interface at `k = 1`, where the flux *is* `τ_b = β u_b`: `β/(Δζ₁ H)`, with a single
+# `1/H` and no factor 2 — unlike an interior `R/δ` term, `β u_b` has no neighbouring layer to
+# also appear as an off-diagonal for, and `β` is not a per-length quantity.
 @inline _vdrag_x(β, grid, grid2d, Hx, i, j) =
     lerp(β, NODE_ACX, grid2d, i, j, 1) / Δz(grid, Center(), i, j, 1) / Hx
 
@@ -435,8 +405,8 @@ end
     lerp(β, NODE_ACY, grid2d, i, j, 1) / Δz(grid, Center(), i, j, 1) / Hy
 
 # Whether the vertical rows belong in the *explicit* stability bound at all. Under
-# `ImplicitVertical` they are inverted exactly rather than stepped over, so `Δτ` is bounded by
-# `Λ_horiz` alone — the whole point of Phase 2, and the one line of the bound that changes.
+# `ImplicitVertical` they are inverted exactly rather than stepped over, so `Δτ` is bounded
+# by `Λ_horiz` alone.
 @inline _bound_vertical(::ExplicitVertical, Λ_vert) = Λ_vert
 @inline _bound_vertical(::ImplicitVertical, Λ_vert) = zero(Λ_vert)
 
@@ -747,24 +717,23 @@ end
 # Blatter-Pattyn pseudo-transient velocity rate
 ###############################################################
 #
-# Three structural differences from `_dotvel_staggered!` above (`pagos-roadmaps/blatter-pattyn.md`
-# §1, §2.3), all of them changes to what is assembled, not a new mechanism:
+# Three structural differences from `_dotvel_staggered!` above, all of them changes to what
+# is assembled, not a new mechanism:
 #
 #  - a third divergence term, `∂z(σxz)`, on top of the same `∂x(σxx) + ∂y(σxy)` the 2D
 #    kernel already computes (`sxx`/`sxy`/`syy` are per-unit-volume here, but the operator
 #    algebra staggering them onto `acx`/`acy` is identical);
 #  - **no `base_x`/`base_y` term in the residual body.** Basal drag has left the momentum
 #    balance and become the *bed interface flux* inside `∂z(σxz)`'s own assembly (`bot`
-#    below) — folding the BC into this kernel rather than a separate pass keeps `stress.xz`
-#    honestly meaning `σxz` everywhere a caller might read it for diagnostics, never a
-#    substituted boundary value;
+#    below), which keeps `stress.xz` meaning `σxz` everywhere a caller might read it, never
+#    a substituted boundary value;
 #  - mass scaling is `/ρ̃` (a volume), not `/(ρ̃H)` (an area) — only the vertical term's
 #    ζ→z conversion still needs `H`, via the same `_dz_over_H` `_velocity_gradients!` uses.
 #
 # `∂z(σxz)` is assembled as `_dz_over_H((top - bot) / Δζ_k, Hx)`, mirroring `∂z_σ`'s own
 # `δ(f) * iΔ(...)` exactly (`Δz(grid, Center(), i, j, k)` is the same `Δζ_k` denominator
 # `_viscosity_integrals!` already reads off the sigma axis) but with the two interface
-# values substituted at the column ends per §2.3:
+# values substituted at the column ends:
 #
 #   top = k < nz ? σxz[k+1] : 0          (surface: σxz = 0, stress-free)
 #   bot = k > 1  ? σxz[k]   : τ_b,x      (bed: the flux *is* the basal traction)
@@ -1100,6 +1069,53 @@ _sum_du2_over_dtau(solver, ux, uy) =
 """
 $(TYPEDSIGNATURES)
 
+Close the armed Rayleigh quotient and return `λ_min`, or `NaN` to say "discard this sample
+and keep the parameters in force".
+
+[`ExplicitVertical`](@ref) is the depth-averaged rule verbatim: unweighted sums, and a
+quotient above `1` clamped to `1`, since with `M = diag(Λ)` the bound `λ_max ≤ 1` is exact
+and an excess can only be the roundoff a converged `Δu` degenerates into.
+
+[`ImplicitVertical`](@ref) differs twice. The sums are layer-volume weighted (see
+`_weighted_sum` — without it the denominator is neither cancellation-free nor signed). And an excess is **rejected rather than clamped**: `λ_min = 1` is not a conservative
+reading, it is the *most aggressive* setting the tuner has (maximum `γ` at minimum `Δτ`), so
+clamping converts one bad sample into a step that can blow the solve up. Keeping the previous
+parameters is the conservative reading, and the next sample re-measures anyway.
+"""
+function _rayleigh_lambda_min(
+    ::ExplicitVertical,
+    ::Type{T},
+    state,
+    solver::PseudoTransientSolver,
+    rt::Runtime,
+    ux,
+    uy,
+) where {T}
+    numerator = abs(_sum_du_dot_r(solver, ux, uy) - state.rayleigh_ur)
+    denominator = state.scale * state.rayleigh_uu
+    (numerator > 0 && denominator > 0) || return T(NaN)
+    return min(T(numerator / denominator), one(T))
+end
+
+function _rayleigh_lambda_min(
+    ::ImplicitVertical,
+    ::Type{T},
+    state,
+    solver::PseudoTransientSolver,
+    rt::Runtime,
+    ux,
+    uy,
+) where {T}
+    numerator = abs(_sum_du_dot_r_weighted(solver, ux, uy, rt) - state.rayleigh_ur)
+    denominator = state.scale * state.rayleigh_uu
+    (numerator > 0 && denominator > 0) || return T(NaN)
+    λ_min = T(numerator / denominator)
+    return λ_min > one(T) ? T(NaN) : λ_min
+end
+
+"""
+$(TYPEDSIGNATURES)
+
 Sample `Δuᵀ r̃(u^{k-1})` and `Δuᵀ M Δu`, and arm [`_tune!`](@ref) to take the missing
 `Δuᵀ r̃(u^k)` next iteration. Splitting the Rayleigh quotient this way is what lets it be
 evaluated from iterates the loop already holds, carrying two scalars instead of a second
@@ -1158,13 +1174,8 @@ function _tune!(
 )
     state.armed || return state
     T = typeof(state.gamma)
-    numerator = abs(_sum_du_dot_r(solver, ux, uy) - state.rayleigh_ur)
-    denominator = state.scale * state.rayleigh_uu
-    (numerator > 0 && denominator > 0) || return merge(state, (; armed = false))
-
-    # A Rayleigh quotient of `Â` cannot exceed `λ_max ≤ 1`; above that it is measuring the
-    # roundoff a converged `Δu` degenerates into, not the spectrum.
-    λ_min = min(T(numerator / denominator), one(T))
+    λ_min = _rayleigh_lambda_min(ExplicitVertical(), T, state, solver, rt, ux, uy)
+    isnan(λ_min) && return merge(state, (; armed = false))
     # `convert`ed, not promoted: `tuning` and `pseudo_timestep` are independent keyword
     # arguments, and a Float64 `cfl` on a Float32 solver must not retype `state`.
     d = 2 * convert(T, tu.c_damp) * sqrt(λ_min)
@@ -1252,6 +1263,32 @@ end
     end
 end
 
+# The per-layer launch `DIVAViscosityContinuation` and `BPViscosityContinuation` share: same
+# kernel, same fields, same column grid. Only the effective strain rate feeding it differs,
+# and each caller runs its own before calling this.
+function _glen_continuation_column!(
+    mech::MechanicState,
+    vc::AbstractViscosityContinuation,
+    rt::Runtime,
+    mask::AbstractIceMask,
+)
+    (; material, strainrate) = mech
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _glen_viscosity_continuation! => (
+            material.viscosity,
+            material.rate_factor,
+            strainrate.effective,
+            vc.n_glen,
+            vc.strainrate_reg,
+            vc.theta_mu,
+            mask,
+        ),
+    )
+    return nothing
+end
+
 """
 $(TYPEDSIGNATURES)
 
@@ -1274,22 +1311,14 @@ function update_viscosity!(
     rt::Runtime,
     mask::AbstractIceMask = NoMask(),
 )
-    (; material, strainrate) = mech
     effective_strainrate_diva!(mech, rt, mask)
-    rt.launch(
-        rt.arch,
-        rt.grid,
-        _glen_viscosity_continuation! => (
-            material.viscosity,
-            material.rate_factor,
-            strainrate.effective,
-            vc.n_glen,
-            vc.strainrate_reg,
-            vc.theta_mu,
-            mask,
-        ),
+    _glen_continuation_column!(mech, vc, rt, mask)
+    depthaverage!(
+        mech.material.viscosity_depthaveraged,
+        mech.material.viscosity,
+        rt,
+        mask,
     )
-    depthaverage!(material.viscosity_depthaveraged, material.viscosity, rt, mask)
     return nothing
 end
 
@@ -1302,7 +1331,7 @@ $(TYPEDSIGNATURES)
 rather than diagnosed from `τ_b`) and reusing `_glen_viscosity_continuation!` unchanged.
 
 Does **not** derive `material.viscosity_depthaveraged`: nothing on the BP path reads it
-(`pagos-roadmaps/blatter-pattyn.md`, §1.3), so — unlike the DIVA method — there is no
+(`pagos-roadmap/blatter-pattyn.md`, §1.3), so — unlike the DIVA method — there is no
 `depthaverage!` call here, and the field is left at whatever degenerate allocation the state
 constructor gave it.
 """
@@ -1312,21 +1341,8 @@ function update_viscosity!(
     rt::Runtime,
     mask::AbstractIceMask = NoMask(),
 )
-    (; material, strainrate) = mech
     effective_strainrate_bp!(mech, rt, mask)
-    rt.launch(
-        rt.arch,
-        rt.grid,
-        _glen_viscosity_continuation! => (
-            material.viscosity,
-            material.rate_factor,
-            strainrate.effective,
-            vc.n_glen,
-            vc.strainrate_reg,
-            vc.theta_mu,
-            mask,
-        ),
-    )
+    _glen_continuation_column!(mech, vc, rt, mask)
     return nothing
 end
 
@@ -1354,9 +1370,8 @@ via [`update_viscosity!`](@ref), then `F₁`/`F₂` via [`viscosity_integrals!`]
 `β_eff` via [`beta_eff_diva!`](@ref).
 
 This is the function a caller must invoke before [`pseudo_transient!`](@ref) under the
-default [`NoDIVUpdate`](@ref) — the solver will not do it for you (`pagos-roadmaps/chmy.md`,
-Phase 3, decision 7). Under [`PeriodicDIVUpdate`](@ref) the loop also calls it every
-`n_update` iterations.
+default [`NoDIVUpdate`](@ref) — the solver will not do it for you. Under
+[`PeriodicDIVUpdate`](@ref) the loop also calls it every `n_update` iterations.
 
 !!! warning "Skipping this leaves `β_eff = 0`, i.e. frictionless sliding"
     `friction.beta_eff` is zero at allocation, and a zero friction coefficient is a
@@ -1386,7 +1401,7 @@ function diva_update!(
     return nothing
 end
 
-# "How often", per decision 6 — kept strictly separate from "how" (the continuation type).
+# "How often", kept strictly separate from "how" (the continuation type).
 # SSA has no DIV chain, so its viscosity continuation keeps its every-iteration cadence
 # inside `pseudo_rate!` untouched; only the DIVA path consults `solver.div_update`.
 _div_refresh_due(::NoDIVUpdate, iter) = false
@@ -1421,7 +1436,7 @@ _iterate_viscosity!(
 
 # BP: like SSA, not DIVA. `BPViscosityContinuation` writes `viscosity` (`µ(z)`) directly
 # from the real velocity gradients every iteration — there is no `τ_b`/`F₂` fixed point to
-# stagger it against (`pagos-roadmaps/blatter-pattyn.md`, §2.2: "no F₁/F₂ chain and no β_eff — BP
+# stagger it against (`pagos-roadmap/blatter-pattyn.md`, §2.2: "no F₁/F₂ chain and no β_eff — BP
 # has no depth-integrated closure to build"), so `solver.div_update` plays no role here.
 _iterate_viscosity!(
     mech::MechanicState,
@@ -1488,21 +1503,19 @@ $(TYPEDSIGNATURES)
 
 [`ActiveFrictionUpdate`](@ref): the ordinary basal friction law. Overwrites
 `velocity.base_x`/`base_y` from the current (SSA-limit) depth-averaged velocity
-`velocity.depthaverage_x`/`y` — the field the solver actually iterates (decision 1) — then
-`stress.base_x`/`base_y` from `friction.beta_eff * velocity.base_{x,y}` — the behaviour every
-solver had before [`AbstractFrictionUpdate`](@ref) existed.
+`velocity.depthaverage_x`/`y` — the field the solver actually iterates — then
+`stress.base_x`/`base_y` from `friction.beta_eff * velocity.base_{x,y}`.
 
 One fused launch ([`_basalstress_active!`](@ref)) rather than two `copyto!`s into
 `velocity.base_{x,y}` followed by [`basalstress!`](@ref): under the SSA limit `u_b = ū`, so
-the depth-averaged velocity can be read once and both `velocity.base_{x,y}` (written on the
-way past) and `stress.base_{x,y}` (its friction product) come out of the same pass —
-`benchmark/basics/gpu/README.md` §4 measures the round trip through `velocity.base_{x,y}`
-this replaces at 1.33× on its own.
+the depth-averaged velocity is read once and both `velocity.base_{x,y}` and
+`stress.base_{x,y}` come out of the same pass. Worth 1.33×
+(`benchmark/basics/gpu/README.md` §4).
 
 !!! note "Uses the SSA limit for both balances"
     `u_b = ū` here regardless of the momentum balance. DIVA's correction
-    `u_b = ū/(1 + βF₂)` (Robinson et al. 2022, Eq. 18) is Stage 2 future work
-    (`pagos-roadmaps/chmy.md`, Phase 3).
+    `u_b = ū/(1 + βF₂)` (Robinson et al. 2022, Eq. 18) is future work
+    (`pagos-roadmap/chmy.md`, Phase 3).
 """
 @kernel inbounds = true function _basalstress_active!(
     stress_base_x,
@@ -1613,7 +1626,7 @@ solver; it defaults to `1` (undamped), matching [`dotvel!`](@ref).
 # opposite — it is *defined* by its vertical structure, and on `nz == 1` the single
 # quadrature point sits at `σ = ½`, which makes `F₂ = H/(4µ)` against the true `H/(3µ)`
 # (see `viscosity_integrals!`). That is 25% low while looking entirely plausible, so it is
-# an error rather than a warning (`pagos-roadmaps/chmy.md`, Phase 3, decision 4).
+# an error rather than a warning.
 _check_momentum_grid(::SSAMomentumBalance, ::Runtime) = nothing
 
 function _check_momentum_grid(::DIVAMomentumBalance, rt::Runtime)
@@ -1634,7 +1647,7 @@ end
 # derived quantity, it silently *degenerates to SSA* — the vertical-shear divergence
 # `∂z(µ u_z)` a single layer cannot resolve simply vanishes, and the remaining membrane-only
 # balance is a plausible-looking wrong answer with the wrong (3D, unaveraged) viscosity to
-# boot (`pagos-roadmaps/blatter-pattyn.md`, Phase 1).
+# boot (`pagos-roadmap/blatter-pattyn.md`, Phase 1).
 function _check_momentum_grid(::BlatterPattynMomentumBalance, rt::Runtime)
     rt.grid === rt.grid2d && throw(
         ArgumentError(
@@ -1725,25 +1738,19 @@ Three solver-held strategies steer the iteration:
 
 !!! warning "`material.viscosity_depthaveraged`, `topography.thickness` and `friction.beta_eff` need their halo filled by the caller"
     Unlike the velocity, these are fixed inputs for the whole solve, so this function does
-    not refresh their halo itself (that is a Phase 4, `bc!`-policy decision belonging to
-    whatever step last wrote them, not to the solver reading them). Leaving a halo at its
-    allocation default (`setdata!` only touches the interior, by design — see its
-    docstring) is not merely inexact at the domain edge, it can be `NaN`: the membrane
-    stress's `hlerp(η)` reads the outer ghost ring of `viscosity_depthaveraged` at the two
-    boundary `ab` corners, and `hlerp` of an unset (zero) neighbour is `NaN`, exactly like
-    the already-documented ice-free case — except here there is no ice-free cell at all,
-    only an unfilled halo. This solver's own tests fill every such field with
-    `fill_analytic!` for exactly this reason.
+    not refresh their halo — that belongs to whatever step last wrote them. An unfilled
+    halo is not merely inexact at the domain edge, it can be `NaN`: the membrane stress's
+    `hlerp(η)` reads the outer ghost ring of `viscosity_depthaveraged` at the two boundary
+    `ab` corners, and `hlerp` of an unset (zero) neighbour is `NaN`. Note `setdata!` only
+    touches the interior, by design.
 
-Requires a depth-averaged grid (`rt.grid2d === rt.grid`, i.e. `nz == 1`, checked): DIVA's
-vertical-shear integral is Phase 3 future work, so today `mech.velocity.x`/`y` *are* the
-depth-averaged velocity being solved for.
+Requires a depth-averaged grid (`rt.grid2d === rt.grid`, i.e. `nz == 1`, checked), so
+`mech.velocity.x`/`y` *are* the depth-averaged velocity being solved for.
 
-Two accelerations over the plain Sandip iteration (`pagos-roadmaps/PT-autotune.md` Phase 1):
-the pseudo-time step is a *local* field (`solver.dtau_x`/`dtau_y`, via
-[`pseudo_dt!`](@ref)) rather than one scalar throttled by the domain's single stiffest
-cell, and the velocity rate is damped (via [`dotvel!`](@ref)) rather than recomputed from
-scratch every iteration, which is what buys sub-quadratic iteration scaling.
+Two accelerations over the plain Sandip iteration: the pseudo-time step is a *local* field
+(`solver.dtau_x`/`dtau_y`, via [`pseudo_dt!`](@ref)) rather than one scalar throttled by the
+domain's single stiffest cell, and the velocity rate is damped (via [`dotvel!`](@ref)) rather
+than recomputed from scratch every iteration, which buys sub-quadratic iteration scaling.
 """
 function pseudo_transient!(
     mech::MechanicState,
@@ -1766,10 +1773,9 @@ function pseudo_transient!(
 
     # Fields held fixed over the PT iteration.
     drivingstress!(mech, c, rt, mask)
-    # The membrane prefactor cache: built here from the caller's `µ̄`/`H`, and thereafter
-    # refreshed only where `µ̄` moves (`_refresh_membrane_prefactors!`, called inside
-    # `pseudo_rate!` and after `diva_update!` below). Unconditional — the loop's cheap
-    # membrane kernel reads these on iteration 1, whatever the continuation is.
+    # Built here from the caller's `µ̄`/`H`, and thereafter refreshed only where `µ̄` moves
+    # (`_refresh_membrane_prefactors!`). Unconditional: the loop's membrane kernel reads
+    # these on iteration 1, whatever the continuation is.
     membrane_prefactors!(solver, mech, rt, mask)
     state = _tuning_init!(tuning, solver, mech, c, rt, mask)
     # After `drivingstress!` (it reads the driving stress) and before the loop (it borrows
@@ -1784,17 +1790,14 @@ function pseudo_transient!(
 
         # DIVA's depth-integrated-viscosity chain, at the cadence `solver.div_update` names
         # (never, under the default `NoDIVUpdate`). Before `pseudo_rate!`, so the iteration
-        # sees the refreshed `β_eff`/`µ̄` rather than applying them one iteration late.
-        #
-        # `pseudo_dt!` follows it because `β_eff` feeds the Gershgorin bound behind
-        # `dtau_x`/`dtau_y`: a `β_eff` that grew under a stale bound makes that bound
-        # optimistic, and the explicit iteration then diverges (decision 8).
+        # sees the refreshed `β_eff`/`µ̄` rather than applying them one iteration late, and
+        # `pseudo_dt!` after it, since `β_eff` feeds the Gershgorin bound behind `Δτ`: a
+        # `β_eff` grown under a stale bound makes that bound optimistic and the iteration
+        # diverges.
         if momentum isa DIVAMomentumBalance && _div_refresh_due(solver.div_update, iter)
             diva_update!(mech, solver, rt, mask)
-            # `diva_update!` runs the continuation, i.e. it is the DIVA path's writer of
-            # `µ̄` — the membrane prefactor cache is stale from here until rebuilt. (Under
-            # the default `NoDIVUpdate` this branch never runs, which is exactly why the
-            # cache pays off there.)
+            # `diva_update!` is the DIVA path's writer of `µ̄`, so the prefactor cache is
+            # stale from here until rebuilt.
             _refresh_membrane_prefactors!(solver, mech, rt, mask)
             pseudo_dt!(solver, mech, c, rt, mask)
         end
@@ -1802,17 +1805,12 @@ function pseudo_transient!(
         pseudo_rate!(mech, c, rt, momentum, solver, mask; gamma = state.gamma)
         state = _tune!(tuning, state, solver, mech, c, rt, mask, ux, uy)
 
-        # After `_tune!`, which needs the pre-copy `u_old` (see its docstring). Fused: see
-        # `_pseudo_vel_and_store!`'s docstring for why this is one launch, not a `copyto!`
-        # pair followed by two `pseudo_vel!` calls.
+        # After `_tune!`, which needs the pre-copy `u_old` (see its docstring).
         _pseudo_vel_and_store!(ux, uy, ux_old, uy_old, dvx, dvy, dtau_x, dtau_y, state.theta_v, rt)
 
-        # `ux`/`uy` are two of the 14 `MechanicState` fields `_halo2d` exempts from the
-        # z-ghost shrink specifically so this call stays a plain, whole-axis `Neumann()` —
-        # see the note on `MechanicState`'s constructor for why (Chmy's `bc!` sweeps every
-        # *other* axis at the grid's own `size .+ 2` regardless of the target field's own
-        # halo, so filling the x/y boundary alone still touches a z "ghost" a `(h,h,0)`
-        # field would not have).
+        # `ux`/`uy` are among the `MechanicState` fields `_halo2d` exempts from the z-ghost
+        # shrink, precisely so this stays a plain whole-axis `Neumann()` — see the note on
+        # `MechanicState`'s constructor.
         bc!(rt.arch, rt.grid2d, ux => Neumann())
         bc!(rt.arch, rt.grid2d, uy => Neumann())
 
@@ -1826,8 +1824,8 @@ function pseudo_transient!(
         end
     end
 
-    # Diagnostic only (does not gate the loop above): the raw, undamped rate norm at the
-    # final iterate, independent of `gamma` — see `dotvel!`'s `resid_x`/`resid_y` note.
+    # Diagnostic only: the raw, undamped rate norm at the final iterate, independent of
+    # `gamma` — see `dotvel!`'s `resid_x`/`resid_y` note.
     residual = max(maximum(abs, asarray(resid_x)), maximum(abs, asarray(resid_y)))
 
     return (;
@@ -1844,7 +1842,7 @@ end
 # Blatter-Pattyn pseudo-transient solve
 ###############################################################
 #
-# `pagos-roadmaps/blatter-pattyn.md`, Phase 1. Every piece below is a new method distinguished
+# `pagos-roadmap/blatter-pattyn.md`, Phase 1. Every piece below is a new method distinguished
 # from its `MomentumBalance2D` counterpart either by dispatching on the disjoint
 # `MomentumBalance3D` union or, where the existing function takes no `momentum` argument at
 # all (`update_basalstress!`, `pseudo_dt!`, `gershgorin_dt!`, `_tuning_init!`, `_tune!`,
@@ -1853,7 +1851,7 @@ end
 
 # `_arm_tuning` is not repeated here: it already takes no `momentum`/grid argument at all
 # (`solver.residual_x`/`velocity_x_old`/`dtau_x` alone, reduced via `asarray`), so the
-# existing method serves BP unchanged (`pagos-roadmaps/blatter-pattyn.md`, §1.2).
+# existing method serves BP unchanged (`pagos-roadmap/blatter-pattyn.md`, §1.2).
 
 @kernel inbounds = true function _basal_velocity_bp!(base_x, base_y, x, y, mask, O)
     I = @index(Global, NTuple)
@@ -1872,7 +1870,7 @@ $(TYPEDSIGNATURES)
 [`update_basalstress!(..., ::ActiveFrictionUpdate, ::Runtime)`](@ref): overwrites
 `velocity.base_x`/`base_y` from the **actual** basal-layer velocity `velocity.x`/`y[:,:,1]`
 — not the SSA-limit `depthaverage_x`/`y` the 2D method reads, which BP never populates (a
-degenerate `1×1` allocation on this path, `pagos-roadmaps/blatter-pattyn.md`, §1.3) — then
+degenerate `1×1` allocation on this path, `pagos-roadmap/blatter-pattyn.md`, §1.3) — then
 `stress.base_x`/`base_y` from `friction.beta_eff * velocity.base_{x,y}` via
 [`basalstress!`](@ref), exactly as the 2D method does downstream.
 """
@@ -1918,7 +1916,7 @@ Evaluate the Blatter-Pattyn PT velocity rate: column velocity gradients
 is finite), viscosity continuation, membrane stress ([`membranestress!`](@ref)), basal
 stress, then [`dotvel!`](@ref) — the same order as
 [`pseudo_rate!(..., ::MomentumBalance2D, ...)`](@ref), minus the DIVA-only
-`diva_update!` step BP has no counterpart for (`pagos-roadmaps/blatter-pattyn.md`, §2.2).
+`diva_update!` step BP has no counterpart for (`pagos-roadmap/blatter-pattyn.md`, §2.2).
 
 `strainrate_cap` (default `Inf`, a no-op) is the numerical safety net documented at
 [`clamp_velocity_gradients!`](@ref).
@@ -2021,54 +2019,6 @@ _tune!(
     dtau_cap = Inf,
 ) = state
 
-"""
-$(TYPEDSIGNATURES)
-
-Close the armed Rayleigh quotient and return `λ_min`, or `NaN` to say "discard this sample
-and keep the parameters in force".
-
-[`ExplicitVertical`](@ref) is the depth-averaged rule verbatim: unweighted sums, and a
-quotient above `1` clamped to `1`, since with `M = diag(Λ)` the bound `λ_max ≤ 1` is exact
-and an excess can only be the roundoff a converged `Δu` degenerates into.
-
-[`ImplicitVertical`](@ref) differs twice. The sums are layer-volume weighted (see the source
-note above `_weighted_sum` — without it the denominator is neither cancellation-free nor
-signed). And an excess is **rejected rather than clamped**: `λ_min = 1` is not a conservative
-reading, it is the *most aggressive* setting the tuner has (maximum `γ` at minimum `Δτ`), so
-clamping converts one bad sample into a step that can blow the solve up. Keeping the previous
-parameters is the conservative reading, and the next sample re-measures anyway.
-"""
-function _rayleigh_lambda_min(
-    ::ExplicitVertical,
-    ::Type{T},
-    state,
-    solver::PseudoTransientSolver,
-    rt::Runtime,
-    ux,
-    uy,
-) where {T}
-    numerator = abs(_sum_du_dot_r(solver, ux, uy) - state.rayleigh_ur)
-    denominator = state.scale * state.rayleigh_uu
-    (numerator > 0 && denominator > 0) || return T(NaN)
-    return min(T(numerator / denominator), one(T))
-end
-
-function _rayleigh_lambda_min(
-    ::ImplicitVertical,
-    ::Type{T},
-    state,
-    solver::PseudoTransientSolver,
-    rt::Runtime,
-    ux,
-    uy,
-) where {T}
-    numerator = abs(_sum_du_dot_r_weighted(solver, ux, uy, rt) - state.rayleigh_ur)
-    denominator = state.scale * state.rayleigh_uu
-    (numerator > 0 && denominator > 0) || return T(NaN)
-    λ_min = T(numerator / denominator)
-    return λ_min > one(T) ? T(NaN) : λ_min
-end
-
 function _tune!(
     tu::AutotunedDynamicRelaxation,
     vertical::AbstractVerticalTreatment,
@@ -2168,14 +2118,14 @@ function _convergence_scale(
 end
 
 ###############################################################
-# Vertical-implicit line relaxation (Phase 2)
+# Vertical-implicit line relaxation
 ###############################################################
 #
-# `pagos-roadmaps/blatter-pattyn.md`, Phase 2. What changes is the *step*, not the residual: nothing
-# above this point moves, `dotvel!` still writes the fully explicit `r̃(u^k)`, and
-# `ImplicitVertical` is read as a **preconditioner** on the velocity update alone.
+# What changes is the *step*, not the residual: nothing above this point moves, `dotvel!`
+# still writes the fully explicit `r̃(u^k)`, and `ImplicitVertical` is read as a
+# **preconditioner** on the velocity update alone.
 #
-# Explicit (Phase 1, `pseudo_vel!`) the update is `Δu = θ_v Δτ dv`, i.e. `Δu = θ_v·scale·M⁻¹dv`
+# Under `ExplicitVertical` (`pseudo_vel!`) the update is `Δu = θ_v Δτ dv`, i.e. `Δu = θ_v·scale·M⁻¹dv`
 # with `M = diag(Λ)` the full Gershgorin diagonal and `Δτ = scale/Λ`. Writing `Ã_v` for the
 # vertical part of the residual operator (`-∂z(σxz)/ρ̃`, bed BC included, positive
 # semi-definite) and `Λ_horiz/ρ̃` for the membrane row sum alone, this phase keeps that shape
@@ -2194,7 +2144,7 @@ end
 # reasons: `λ_max(M⁻¹Ã) ≤ 1` — what `AutotunedDynamicRelaxation` needs — holds exactly, since
 # `M - Ã = diag(Λ_horiz/ρ̃) - Ã_h` is precisely the horizontal Gershgorin defect; and it does
 # not degenerate back to an explicit vertical step as `scale` shrinks, which the other form
-# does and which would silently give the phase's benefit away whenever the tuner tightens `Δτ`.
+# does, silently giving the benefit away whenever the tuner tightens `Δτ`.
 #
 # Row `k`, divided through by `Λ_horiz/ρ̃` so the diagonal is `1` plus a dimensionless
 # stiffness (`τ̂ = 1/Λ_horiz`, cancelling the `1/ρ̃` both sides carry; `θ_v·scale·τ̂_k·ρ̃` is just
@@ -2610,14 +2560,14 @@ Iterate `mech.velocity.x`/`y` in pseudo-time until the Blatter-Pattyn momentum-b
 residual vanishes — the [`MomentumBalance3D`](@ref) counterpart of
 [`pseudo_transient!(..., ::MomentumBalance2D, ...)`](@ref). Same return shape, same three
 solver-held strategies, same halo-filling contract; the differences are exactly what
-`pagos-roadmaps/blatter-pattyn.md` §1 lists:
+`pagos-roadmap/blatter-pattyn.md` §1 lists:
 
  - the unknown is `mech.velocity.x`/`y` (`ACX3`/`ACY3`), not the depth-averaged
    `velocity.depthaverage_x`/`y` — BP resolves the full column, so there is nothing to
    reconstruct afterward;
  - the halo refresh ([`bc!`](@ref)) runs on `rt.grid`, the column grid;
  - no DIVA-style depth-integrated-viscosity chain — BP has none to refresh
-   (`pagos-roadmaps/blatter-pattyn.md`, §2.2), so the loop body is one line shorter;
+   (`pagos-roadmap/blatter-pattyn.md`, §2.2), so the loop body is one line shorter;
  - the velocity update goes through [`_velocity_update!`](@ref) rather than
    [`pseudo_vel!`](@ref) directly, so `solver.vertical_treatment` can replace the explicit
    step with a per-column implicit line solve ([`ImplicitVertical`](@ref), Phase 2). Under
@@ -2631,7 +2581,7 @@ wrong (3D, unaveraged) viscosity rather than raise a clear error.
 documented at [`clamp_velocity_gradients!`](@ref) and above
 [`_pseudo_dt_gershgorin_bp!`](@ref) respectively — added after real 8 km AIS geometry showed
 a masked, ice-free-adjacent column can lose its Gershgorin bound's dominant vertical term
-entirely (`pagos-roadmaps/blatter-pattyn.md`, Phase 4 "Thin and ice-free columns"). Two
+entirely (`pagos-roadmap/blatter-pattyn.md`, Phase 4 "Thin and ice-free columns"). Two
 complementary nets, not one: `dtau_cap` bounds the *first* explicit step at such a column,
 `strainrate_cap` bounds the membrane-stress feedback a first step that is still too large
 would otherwise feed into every following iteration.
@@ -2725,8 +2675,8 @@ function pseudo_transient!(
         end
     end
 
-    # Diagnostic only (does not gate the loop above): the raw, undamped rate norm at the
-    # final iterate, independent of `gamma` — see `dotvel!`'s `resid_x`/`resid_y` note.
+    # Diagnostic only: the raw, undamped rate norm at the final iterate, independent of
+    # `gamma` — see `dotvel!`'s `resid_x`/`resid_y` note.
     residual = max(maximum(abs, asarray(resid_x)), maximum(abs, asarray(resid_y)))
 
     return (;
