@@ -21,6 +21,7 @@ using Pagos.Chmy.Architectures: get_backend, heuristic_groupsize
 using Pagos: NODE_AA, NODE_AB, NODE_ACX, NODE_ACY
 using CUDA
 using Printf
+using Statistics: median
 
 const GPU_NX = 760
 const GPU_NY = 760
@@ -46,13 +47,15 @@ const GPU_SOLVER_KWARGS = (
 """
     fill_field!(f, grid, fun)
 
-Fill `f`'s interior *and* both halo rings from `fun(x, y, ζ)` at `f`'s own node class.
-Element-by-element, so it runs on a **CPU** field only — see [`gpu_fixture`](@ref).
+Fill `f`'s interior *and* every halo ring it actually has from `fun(x, y, ζ)` at `f`'s own
+node class. Element-by-element, so it runs on a **CPU** field only — see [`gpu_fixture`](@ref).
 """
 function fill_field!(f, grid, fun)
     loc = location(f)
     ni, nj, nk = size(interior(f))
-    for k in -1:(nk + 2), j in -1:(nj + 2), i in -1:(ni + 2)
+    h = halo(f)
+    hi, hj, hk = h isa Integer ? (h, h, h) : h
+    for k in (1 - hk):(nk + hk), j in (1 - hj):(nj + hj), i in (1 - hi):(ni + hi)
         x, y, ζ = coord(grid, loc, i, j, k)
         f[i, j, k] = fun(x, y, ζ)
     end

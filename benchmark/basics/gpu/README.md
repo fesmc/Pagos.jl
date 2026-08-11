@@ -166,6 +166,28 @@ measures), so there was nothing left in the per-iteration loop to apply it to. T
 depthaverage_{x,y}` (`src/mechanics/velocities.jl`) — called once per solve, not once per
 iteration, so out of scope for what this benchmark measured.
 
+### 5. Groupsize: type-parameter it, but don't expect it to matter much
+
+`FlatLauncher` computed `heuristic_groupsize(backend, Val(3))` once at construction — right —
+but stored the result in a struct *field* and read it back at every launch. A field load
+isn't a compile-time constant, so `StaticSize(launcher.groupsize)` couldn't fold, and the
+launch config never reached the type system on `rt.launch2d` — the ~40 depth-integrated
+launch sites, i.e. every per-iteration kernel in the PT loop. `Worksize` was already a type
+parameter; `GroupSize` now is too (`src/api/runtime.jl`), the same specialization a plain
+`Chmy.Launcher` gets for free from `heuristic_groupsize` folding on the backend's type.
+**Landed in `src`.**
+
+Given that, the natural next question — is the default block shape actually a good one for
+the kernel that matters most? — turned out to have a non-answer here. Swept
+`(32,8,1)`/`(16,16,1)`/`(64,4,1)`/`(128,2,1)`/`(256,1,1)`/... against
+`_membrane_stress_staggered!` (§3, the single most expensive kernel) at the fixed flat
+worksize; with drift controlled for (see the third measurement trap below), every candidate
+lands within **1.13×** of every other — one weak outlier at `(32,32,1)` aside, groupsize is
+simply not a lever on this kernel on this card. `kernel_variants.jl`'s §0 keeps the sweep
+(round-robin, so a re-run on different hardware is trustworthy without redesigning it), but
+the honest conclusion is "shipped `GroupSize` as a type parameter because it's free and
+correct, not because a specific block shape was worth hardcoding."
+
 ## Two measurement traps
 
 **Warm up past the tuning cadence.** `AutotunedDynamicRelaxation(cadence = 50)` first calls
@@ -181,3 +203,16 @@ leaves the process in a state where a later CUDA driver init fails with
 call and `cpu-gpu.jl` does `using CUDA` *after* including it, so `CUDA.functional()` is
 `false` and the whole GPU comparison is silently skipped. Touch the device before the
 `include`, or move the `set_theme!`.
+
+**`bench`'s consecutive batches measure clock drift when comparing many candidates in a
+row, not just two.** Fine for A/B (§1–§4: two variants, back-to-back, similar recent
+thermal history). Broke down sweeping 12 groupsizes (§5): the *same* `(32, 8, 1)` config,
+run at different positions in the sequence, measured anywhere from 315 us to 595 us — a
+1.9× spread with the config held fixed — and this survived a confirmed thermal soak
+(`nvidia-smi`: 930 → 1395 MHz, stable throughout). This card drifts under sustained load
+regardless of temperature having settled; a naive first pass at the §5 sweep reported a
+bogus "1.88× best-vs-heuristic" that was pure position artifact. Fix: round-robin — one
+short timing per candidate per round, cycling through all candidates for many rounds — so
+every candidate samples the same drift trajectory and it cancels out of the comparison
+instead of aliasing onto whichever one happened to run first (or, for a two-way comparison,
+interleave the two rather than timing one fully then the other).
