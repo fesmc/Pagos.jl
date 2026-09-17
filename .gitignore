@@ -1,8 +1,8 @@
 /Manifest*.toml
 src/old
-benchmark/Manifest.toml
-test/Manifest.toml
-docs/Manifest.toml
+benchmark/Manifest*.toml
+test/Manifest*.toml
+docs/Manifest*.toml
 docs/build/
 docs/src/physics/*.md
 benchmark/plots/*
