@@ -222,15 +222,21 @@ end
     `bc!(…, Neumann())` on the velocity every iteration, and a zero-gradient side wall is
     simply the wrong condition here — the ISMIP-HOM solution has `∂u/∂x ≠ 0` at `x = 0`.
 
-    So the loop is written out below **using only exported building blocks**
-    ([`velocitygradients!`](@ref), [`terrain_metric_correction!`](@ref),
-    [`update_viscosity!`](@ref), [`membranestress!`](@ref), [`update_basalstress!`](@ref),
-    [`dotvel!`](@ref), [`pseudo_vel!`](@ref), [`pseudo_dt!`](@ref)) with a periodic halo
-    refresh substituted for the `bc!` call. The *discretization under test is untouched* —
-    `dotvel!` assembles the same BP residual, on the same grid, with the same Gershgorin
-    `Δτ`, in the same order as [`pseudo_rate!`](@ref). What is given up is
-    [`AutotunedDynamicRelaxation`](@ref), whose arming/tuning hooks are private; damping here
-    is a hand-set `gamma`.
+    So the loop is written out below from the library's own building blocks
+    ([`bp_velocitygradients!`](@ref), [`update_viscosity!`](@ref),
+    [`update_basalstress!`](@ref), and the fused rate `Pagos._bp_rate!` that
+    `pseudo_rate!` itself calls) with a periodic halo refresh substituted for the `bc!`
+    call. The *discretization under test is untouched* — the same BP residual, on the same
+    grid, with the same Gershgorin `Δτ`, in the same order as [`pseudo_rate!`](@ref). The
+    damping and `Δτ` are the
+    library's own [`AutotunedDynamicRelaxation`](@ref) as well, driven through the same
+    internal hooks `pseudo_transient!` calls (`Pagos._tuning_init!`, `_refresh_dtau!`,
+    `_tune!`, `_velocity_update!`, `_arm_tuning`) in the same order. Those are not exported
+    API — one more reason the real fix is the periodic halo in the library.
+
+    A hand-set `gamma = 0.6` was used here before (2026-09-18): 6500–15000 iterations per
+    solve against ~300–1000 autotuned, for the same velocities to four digits. The tuner
+    finds `gamma ≈ 0.03–0.06`, so the hand value was ~15× too large.
 
     This is a workaround, not a design: the real fix is periodic halo filling implemented
     Pagos-side, which is what the `StaggeredGrid` docstring already says periodic domains need.
@@ -344,85 +350,90 @@ function periodic_halo!(f, nx, ny)
 end
 
 #=
-One damped pseudo-transient sweep, i.e. [`pseudo_rate!`](@ref)'s body followed by the velocity
-update. Three details are load-bearing.
+One stage of the pseudo-transient iteration, i.e. [`pseudo_rate!`](@ref)'s body followed by
+the tuning and velocity-update calls `pseudo_transient!` makes, on the same fused kernels.
+Three details are load-bearing.
 
-[`terrain_metric_correction!`](@ref) follows [`velocitygradients!`](@ref) exactly as it does
-in `pseudo_rate!`. It is not optional here: it converts the horizontal gradients from
-constant-`ζ` to constant-`z` derivatives, and ISMIP-HOM is precisely the regime where that
-matters — at `L = 10 km` the bed slope `∂H/∂x` reaches 0.31, so the correction term is
-*larger* than the term it corrects.
+[`bp_velocitygradients!`](@ref) applies the terrain-following correction in the same pass
+as the gradients, exactly as `pseudo_rate!` does. It is not optional here: it converts the
+horizontal gradients from constant-`ζ` to constant-`z` derivatives, and ISMIP-HOM is
+precisely the regime where that matters — at `L = 10 km` the bed slope `∂H/∂x` reaches 0.31,
+so the correction term is *larger* than the term it corrects. The fused rate kernel then
+differences all six gradients across the periodic seam, so all six get the halo refresh.
 
-The viscosity halo is refreshed *between* [`update_viscosity!`](@ref) and
-[`membranestress!`](@ref), which is why the body is spelled out rather than delegated.
+The viscosity halo is refreshed *between* [`update_viscosity!`](@ref) and the rebuild of
+the solver's operator cache (`Pagos._bp_cache!`: the interpolated viscosities and the
+`ImplicitVertical` factorization, which `pseudo_transient!` rebuilds at the same point),
+which is why the body is spelled out rather than delegated.
 
-And `copyto!(v_old, v)` must precede [`pseudo_vel!`](@ref), which computes
-`v = v_old + θ·dv·Δτ` reading `v_old` rather than snapshotting it — omit it and `v_old` stays
-at its initial zero, making the update `v = θ·Δτ·dv` outright, which freezes the solve the
-moment the damped accumulator `dv` settles.
+And the velocity update stores `v_old = v` itself before stepping, reading `v_old` rather
+than snapshotting it in the back substitution — so it must *follow* `Pagos._tune!`, which
+reads the `v_old` of the previous step.
+
+The Gershgorin bound behind `Δτ` is rebuilt **every iteration** of the Glen stage, at the
+tuned prefactor (`Pagos._refresh_dtau!`), exactly as `pseudo_transient!` now does under any
+viscosity continuation. Rebuilding it only every 20 iterations, as this loop used to, let
+`µ` run orders of magnitude ahead of the bound at the switch to Glen viscosity: the residual
+burst from `1e-8` to `4e3` within 20 iterations, and with `ImplicitVertical` the solve
+diverged outright. With the per-iteration rebuild the burst is gone.
 =#
-function bp_iterate!(mech, solver, rt, momentum, cst, nx, ny; iters, gamma, theta_v,
-                     glen::Bool, dt_refresh, ncheck, rtol, scale, a1 = true,
+function bp_iterate!(mech, solver, rt, momentum, cst, nx, ny; iters, state, iter0 = 0,
+                     glen::Bool, ncheck, rtol, scale, a1 = true,
                      trace = nothing, stagnation = true)
     vx, vy = mech.velocity.x, mech.velocity.y
+    vx_old, vy_old = solver.velocity_x_old, solver.velocity_y_old
+    (; tuning, vertical_treatment) = solver
+    mask = Pagos.NoMask()
     err, errprev, used = Inf, Inf, 0
-    for iter in 1:iters
-        used = iter
-        velocitygradients!(mech.velocity, mech.topography.thickness, rt)
+    for it in 1:iters
+        iter = iter0 + it       # the tuner's cadence counts across both stages
+        used = it
         ## `a1 = false` is a diagnostic switch, not an option: it drops the terrain-following
         ## metric correction, which the equations doc establishes is *missing* physics. It
         ## exists so a convergence failure can be attributed to the correction or exonerated.
         if a1
-            ## The correction is the first thing in this loop that reads a *gradient* at a
-            ## neighbouring node — `x_dz[i, j-1]` at the `ab` nodes, `y_dz[i-1, j]` — so it is
-            ## also the first thing that needs the gradients periodic across the seam. Without
-            ## this the residual sticks at ~1.5 (of the driving-stress scale) on the duplicate
-            ## vertex planes `i = nx+1`, `j = ny+1` while the interior converges normally,
-            ## which looks exactly like a diverging solve and is not one.
-            periodic_halo!(mech.velocity.x_dz, nx, ny)
-            periodic_halo!(mech.velocity.y_dz, nx, ny)
-            terrain_metric_correction!(mech.velocity, mech.topography.thickness,
-                                       mech.topography.surface, rt)
-            ## `membranestress!` then differences the corrected gradients, so those need the
-            ## seam too — the correction only writes its own launch range.
-            periodic_halo!(mech.velocity.x_dx, nx, ny)
-            periodic_halo!(mech.velocity.y_dy, nx, ny)
-            periodic_halo!(mech.velocity.x_dy, nx, ny)
-            periodic_halo!(mech.velocity.y_dx, nx, ny)
+            bp_velocitygradients!(mech.velocity, mech.topography.thickness,
+                                  mech.topography.surface, rt)
+        else
+            velocitygradients!(mech.velocity, mech.topography.thickness, rt)
+        end
+        ## The rate kernel differences the gradients at neighbouring nodes, so every one of
+        ## them needs the seam. Without this the residual sticks at ~1.5 (of the
+        ## driving-stress scale) on the duplicate vertex planes `i = nx+1`, `j = ny+1` while
+        ## the interior converges normally, which looks exactly like a diverging solve and
+        ## is not one.
+        for f in (mech.velocity.x_dx, mech.velocity.y_dy, mech.velocity.x_dy,
+                  mech.velocity.y_dx, mech.velocity.x_dz, mech.velocity.y_dz)
+            periodic_halo!(f, nx, ny)
         end
         if glen
             update_viscosity!(mech, solver.viscosity_continuation, rt)
             periodic_halo!(mech.material.viscosity, nx, ny)
+            Pagos._bp_cache!(solver, mech, rt, momentum, mask)
         end
-        membranestress!(mech, momentum, rt)
         update_basalstress!(mech, solver.friction_update, rt, momentum)
-        dotvel!(solver.velocity_x_dt, solver.velocity_y_dt,
-                mech.stress.xx, mech.stress.xy, mech.stress.xz,
-                mech.stress.yy, mech.stress.yz,
-                mech.stress.base_x, mech.stress.base_y,
-                mech.stress.driving_x, mech.stress.driving_y,
-                mech.topography.thickness, cst.density_ice, rt, momentum;
-                gamma, resid_x = solver.residual_x, resid_y = solver.residual_y)
-        copyto!(asarray(solver.velocity_x_old), asarray(vx))
-        copyto!(asarray(solver.velocity_y_old), asarray(vy))
-        pseudo_vel!(asarray(vx), asarray(solver.velocity_x_old),
-                    asarray(solver.velocity_x_dt), asarray(solver.dtau_x), theta_v)
-        pseudo_vel!(asarray(vy), asarray(solver.velocity_y_old),
-                    asarray(solver.velocity_y_dt), asarray(solver.dtau_y), theta_v)
+        Pagos._bp_rate!(solver, mech, cst, rt, momentum, mask; gamma = state.gamma)
+        ## `µ` moved, so the bound behind `Δτ` moved with it (see the note above).
+        glen && Pagos._refresh_dtau!(tuning, state, solver, mech, cst, rt, momentum, mask)
+        state = Pagos._tune!(tuning, vertical_treatment, state, solver, mech, cst, rt,
+                             momentum, mask, vx, vy)
+        Pagos._velocity_update!(vertical_treatment, solver, mech, cst, rt, mask, vx, vy,
+                                vx_old, vy_old, state.theta_v)
         periodic_halo!(vx, nx, ny); periodic_halo!(vy, nx, ny)
-        glen && iter % dt_refresh == 0 && pseudo_dt!(solver, mech, cst, rt, momentum)
-        if iter % ncheck == 0
+        state = Pagos._arm_tuning(tuning, vertical_treatment, state, solver, rt, vx, vy, iter)
+        if it % ncheck == 0
             err = max(maximum(abs, interior(solver.residual_x)),
                       maximum(abs, interior(solver.residual_y))) / scale
-            trace === nothing || push!(trace, (iter, err))
+            trace === nothing || push!(trace, (iter, err, state.gamma, state.lambda_min))
             (isfinite(err) && err > rtol) || break
-            ## Stagnation, not convergence: the frozen-bed `β/Δζ₁` term makes `Δτ` at `k = 1`
-            ## small enough that the bottom row stops moving perceptibly. Reported, not hidden.
-            (stagnation && abs(err - errprev) < 1e-4 * err && iter > 4000) && break
+            ## Stagnation, not convergence — reported, not hidden. A guard from the hand-damped
+            ## explicit days, when the frozen-bed `β/Δζ₁` term throttled the bottom row; kept
+            ## because a stalled solve should still return.
+            (stagnation && abs(err - errprev) < 1e-4 * err && it > 4000) && break
             errprev = err
         end
     end
-    return err, used
+    return err, used, state
 end
 
 #=
@@ -431,15 +442,16 @@ end
     `µ ∂u/∂z|_b = β u_b`, so no-slip is the `β → ∞` limit rather than a Dirichlet row, and a
     finite `β` is what the discretization can express. At `1e6` the residual slip is
     `τ_b/β ≈ 0.08 m/a` against surface speeds of 11–108 m/a, i.e. below 1 % everywhere and
-    smallest exactly where the reference velocities are largest. Raising it is not free:
-    `β` enters the explicit Gershgorin bound as `β/(Δζ₁ H)`, which is already the stiffest
-    term in the spectrum, so `1e7` buys a factor-10-smaller slip for a factor-10-smaller `Δτ`.
+    smallest exactly where the reference velocities are largest. Under the default
+    [`ImplicitVertical`](@ref) the bed drag is inverted exactly rather than stepped over, so
+    raising `β` no longer costs `Δτ`; `1e6` is kept so the numbers stay comparable with the
+    explicit runs recorded here, where `β/(Δζ₁ H)` was the stiffest term in the bound.
 =#
 function run_pagos_bp(experiment, L_km; nx = PAGOS_NX[experiment], nz = PAGOS_NZ,
-                      beta0 = BETA_NOSLIP, warmup = 2000, iters = 60000, gamma = 0.6,
-                      theta_v = 0.6, theta_mu = 0.05, reg = 1e-8, dt_refresh = 20,
-                      ncheck = 250, rtol = 1e-5, a1 = true, cfl = 0.9,
-                      trace = nothing, stagnation = true)
+                      beta0 = BETA_NOSLIP, warmup = 2000, iters = 60000,
+                      tuning = AutotunedDynamicRelaxation(), implicit = true,
+                      theta_mu = 0.2, reg = 1e-8, ncheck = 50, rtol = 1e-5, a1 = true,
+                      cfl = 0.9, trace = nothing, stagnation = true)
     L = L_km * 1e3; ω = 2π / L
     ny = experiment === :A ? nx : 4          # exp B has no y dependence
     dx = L / nx
@@ -468,28 +480,33 @@ function run_pagos_bp(experiment, L_km; nx = PAGOS_NX[experiment], nz = PAGOS_NZ
         viscosity_continuation = BPViscosityContinuation(T_PAGOS; n_glen = 3, theta_mu,
                                                          strainrate_reg = reg),
         friction_update = ActiveFrictionUpdate(),
-        pseudo_timestep = GershgorinPseudoTimeStep(; cfl))
+        pseudo_timestep = GershgorinPseudoTimeStep(; cfl), tuning,
+        vertical_treatment = implicit ? ImplicitVertical(grid) : ExplicitVertical())
 
     drivingstress!(mech, cst, rt, momentum)
     ## Normalizer for the reported residual: the rate the driving stress alone would produce,
     ## i.e. `ScaledResidual`'s scale. The first iterate (`u = 0`) has exactly this residual.
     scale = maximum(abs, interior(mech.stress.driving_x)) / cst.density_ice
-    pseudo_dt!(solver, mech, cst, rt, momentum)
+    ## Fills `Δτ` for the first iteration and returns the tuner's state (the warm-up under
+    ## `AutotunedDynamicRelaxation`), exactly as `pseudo_transient!` begins.
+    state = Pagos._tuning_init!(tuning, solver, mech, cst, rt, momentum, Pagos.NoMask())
 
     t0 = time()
     ## Two stages, because a cold start is a trap: at `u = 0` the effective strain rate is the
     ## regularization floor, so Glen returns `µ ~ 2e9 Pa a`, and a nearly rigid slab barely
     ## deforms — a self-consistent stiff state the continuation crawls out of. Stage 1 holds
-    ## `µ` at `MU_GUESS` to get a velocity field of the right order first.
-    bp_iterate!(mech, solver, rt, momentum, cst, nx, ny; iters = warmup, gamma, theta_v,
-                glen = false, dt_refresh, ncheck, rtol = 1e-8, scale, a1)
-    err, iters_used = bp_iterate!(mech, solver, rt, momentum, cst, nx, ny; iters, gamma,
-                                  theta_v, glen = true, dt_refresh, ncheck, rtol, scale,
-                                  a1, trace, stagnation)
+    ## `µ` at `MU_GUESS` to get a velocity field of the right order first. The tuner's state
+    ## carries across the two stages; it re-measures `λ_min` at its cadence either way.
+    _, warmup_used, state = bp_iterate!(mech, solver, rt, momentum, cst, nx, ny;
+                                        iters = warmup, state, glen = false, ncheck,
+                                        rtol = 1e-8, scale, a1)
+    err, iters_used, state = bp_iterate!(mech, solver, rt, momentum, cst, nx, ny; iters,
+                                         state, iter0 = warmup_used, glen = true, ncheck,
+                                         rtol, scale, a1, trace, stagnation)
     elapsed = time() - t0
     verticalvelocity!(mech, rt)
-    return (; grid, rt, mech, nx, ny, nz, L, err, iters_used, elapsed,
-              converged = err <= rtol)
+    return (; grid, rt, mech, nx, ny, nz, L, err, iters_used, warmup_used, elapsed,
+              converged = err <= rtol, gamma = state.gamma, lambda_min = state.lambda_min)
 end
 
 #=

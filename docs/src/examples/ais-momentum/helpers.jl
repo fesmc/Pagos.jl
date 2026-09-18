@@ -15,19 +15,24 @@ using Pagos, NCDatasets, CairoMakie, Statistics, Printf
 
 #=
 `resolution_km` picks which Yelmo restart to load — `8` or `16`, matching the two restarts
-that actually exist on disk (`ice-data-pagos/yelmo_restart_ais_{8,16}km.nc`). A script that
+that actually exist on disk (`ice-data/antarctica/spinups/`, see below). A script that
 wants a specific resolution sets it before `include`ing this file; scripts that don't care
 get the `8` km default below.
 =#
 resolution_km = @isdefined(resolution_km) ? resolution_km : 8
-restart_file = if resolution_km == 8
-    "/home/jan/pCloudSync/PhD/Projects/Ice-Sheet-Modelling/ice-data-pagos/yelmo_restart_ais_8km.nc"
+## The restarts live under the repository's git-ignored `ice-data/` tree; set `restart_file`
+## before `include`ing this file to read from anywhere else.
+ice_data_dir = joinpath(@__DIR__, "../../../../ice-data/antarctica/spinups")
+restart_file = @isdefined(restart_file) ? restart_file : if resolution_km == 8
+    joinpath(ice_data_dir, "yelmo_restart_ais_8km.nc")
 elseif resolution_km == 16
-    "/home/jan/pCloudSync/PhD/Projects/Ice-Sheet-Modelling/ice-data-pagos/yelmo_restart_ais_16km.nc"
+    joinpath(ice_data_dir, "16km", "yelmo_restart.nc")
 else
     error("resolution_km must be 8 or 16, got $resolution_km")
 end
+isfile(restart_file) || error("restart file not found: $restart_file")
 figdir = joinpath(@__DIR__, "figs")
+mkpath(figdir)
 
 load2d(ds, name, T) = T.(dropdims(ds[name][:, :, :]; dims = 3))
 load3d(ds, name, T) = T.(dropdims(ds[name][:, :, :, :]; dims = 4))

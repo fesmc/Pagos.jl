@@ -199,6 +199,106 @@ const SLAB_NX = 128
         @test solver.dtau_x[m + 1, 2, 3] ≈ solver.dtau_x[m, 2, 3] rtol = 1e-2
     end
 
+    # The momentum loop runs on three fused/cached kernels — `bp_velocitygradients!`
+    # (gradients + terrain correction), `_bp_rate!` (membrane stress + rate) and the cached
+    # `membranestress!` — each pinned bit-for-bit here against the unfused building blocks it
+    # replaces, on a masked, laterally varying geometry where every term is live: sloped
+    # surface and bumpy bed (non-zero `cx`/`cy`), 3D viscosity, a margin, and a velocity with
+    # structure in all three directions. `isequal`, not `≈`: the fusions reorder no
+    # arithmetic, so any difference at all is a bug.
+    @testset "fused kernels are bit-identical to the unfused building blocks" begin
+        nx, ny, nz = 9, 7, 5
+        dx = 1e3
+        grid = StaggeredGrid(Float64, nx * dx, ny * dx, dx, dx, layering(; nz))
+        rt = Runtime(grid)
+        momentum = BlatterPattynMomentumBalance()
+        topo = TopographicState(grid)
+        setdata!(topo.mask.is_ice, false)
+        interior(topo.mask.is_ice)[1:6, :, 1] .= true
+        interior(topo.mask.is_ice)[4, 2, 1] = false          # a notch: a margin inside
+        mask = IceMask(topo.mask.is_ice)
+
+        function fresh()
+            mech = MechanicState(grid)
+            fill_analytic!(mech.topography.thickness, rt.grid2d,
+                           (x, y) -> 800 + 150 * sinpi(x / 4e3) * cospi(y / 3e3))
+            fill_analytic!(mech.topography.surface, rt.grid2d,
+                           (x, y) -> 1000 - 0.02 * x + 30 * cospi(y / 2e3))
+            fill_analytic!(mech.friction.beta_eff, rt.grid2d, (x, y) -> 1e3 + 500 * sinpi(x / 5e3))
+            fill_analytic3d!(mech.material.viscosity, rt.grid,
+                             (x, y, ζ) -> 1e7 * (1 + 0.5 * ζ + 0.2 * sinpi(x / 3e3) * cospi(y / 4e3)))
+            fill_analytic3d!(mech.velocity.x, rt.grid,
+                             (x, y, ζ) -> 20 * ζ^2 + 3 * sinpi(x / 4e3) + 2 * cospi(y / 3e3))
+            fill_analytic3d!(mech.velocity.y, rt.grid,
+                             (x, y, ζ) -> 5 * ζ + 2 * cospi(x / 3e3) * sinpi(y / 2e3))
+            return mech
+        end
+        grads(mech) = map(f -> copy(interior(getfield(mech.velocity, f))),
+                          (:x_dx, :y_dy, :x_dy, :y_dx, :x_dz, :y_dz))
+
+        # 1. gradients + terrain correction, two passes vs. one.
+        a = fresh()
+        velocitygradients!(a.velocity, a.topography.thickness, rt, mask)
+        terrain_metric_correction!(a.velocity, a.topography.thickness, a.topography.surface, rt, mask)
+        b = fresh()
+        bp_velocitygradients!(b.velocity, b.topography.thickness, b.topography.surface, rt, mask)
+        for (ga, gb) in zip(grads(a), grads(b))
+            @test isequal(ga, gb)
+        end
+        @test any(!=(0), grads(a)[1]) && any(!=(0), grads(a)[3])   # the correction was live
+
+        # 2. membrane stress + dotvel vs. the fused rate, and the cached stress method.
+        solver = PseudoTransientSolver(grid, momentum; vertical_treatment = ImplicitVertical(grid))
+        pseudo_dt!(solver, a, cst, rt, momentum, mask)            # builds the operator cache
+        drivingstress!(a, cst, rt, momentum, mask)
+        update_basalstress!(a, solver.friction_update, rt, momentum, mask)
+        fill_analytic3d!(solver.velocity_x_dt, rt.grid, (x, y, ζ) -> 0.3 * ζ - 0.1)
+        fill_analytic3d!(solver.velocity_y_dt, rt.grid, (x, y, ζ) -> 0.2 - 0.4 * ζ)
+        dv0 = (copy(interior(solver.velocity_x_dt)), copy(interior(solver.velocity_y_dt)))
+        membranestress!(a, momentum, rt, mask)
+        dotvel!(solver.velocity_x_dt, solver.velocity_y_dt, a.stress.xx, a.stress.xy, a.stress.xz,
+                a.stress.yy, a.stress.yz, a.stress.base_x, a.stress.base_y, a.stress.driving_x,
+                a.stress.driving_y, a.topography.thickness, cst.density_ice, rt, momentum, mask;
+                gamma = 0.3, resid_x = solver.residual_x, resid_y = solver.residual_y)
+        unfused = (copy(interior(solver.residual_x)), copy(interior(solver.residual_y)),
+                   copy(interior(solver.velocity_x_dt)), copy(interior(solver.velocity_y_dt)))
+        stress_self = map(f -> copy(interior(getfield(a.stress, f))), (:xx, :xy, :xz, :yy, :yz))
+
+        interior(solver.velocity_x_dt) .= dv0[1]
+        interior(solver.velocity_y_dt) .= dv0[2]
+        Pagos._bp_rate!(solver, a, cst, rt, momentum, mask; gamma = 0.3)
+        fused = (copy(interior(solver.residual_x)), copy(interior(solver.residual_y)),
+                 copy(interior(solver.velocity_x_dt)), copy(interior(solver.velocity_y_dt)))
+        for (u, f) in zip(unfused, fused)
+            @test isequal(u, f)
+        end
+        @test any(!=(0), unfused[1])
+
+        setdata!(a.stress.xx, 0.0); setdata!(a.stress.xy, 0.0); setdata!(a.stress.xz, 0.0)
+        setdata!(a.stress.yy, 0.0); setdata!(a.stress.yz, 0.0)
+        membranestress!(a.stress, a.velocity, a.material, solver, momentum, rt, mask)
+        for (sa, f) in zip(stress_self, (:xx, :xy, :xz, :yy, :yz))
+            @test isequal(sa, interior(getfield(a.stress, f)))
+        end
+
+        # 3. Both velocity updates store `u → u_old` themselves, at every interior node —
+        # inactive ones included, since the increment-based convergence check reads them.
+        for vt in (ExplicitVertical(), ImplicitVertical(grid))
+            sv = PseudoTransientSolver(grid, momentum; vertical_treatment = vt)
+            pseudo_dt!(sv, a, cst, rt, momentum, mask)
+            fill_analytic3d!(sv.velocity_x_dt, rt.grid, (x, y, ζ) -> 0.3 * ζ - 0.1)
+            fill_analytic3d!(sv.velocity_y_dt, rt.grid, (x, y, ζ) -> 0.2 - 0.4 * ζ)
+            setdata!(sv.velocity_x_old, -1.0); setdata!(sv.velocity_y_old, -1.0)
+            ux0 = copy(interior(a.velocity.x)); uy0 = copy(interior(a.velocity.y))
+            Pagos._velocity_update!(vt, sv, a, cst, rt, mask, a.velocity.x, a.velocity.y,
+                                    sv.velocity_x_old, sv.velocity_y_old, 0.7)
+            @test isequal(interior(sv.velocity_x_old), ux0)
+            @test isequal(interior(sv.velocity_y_old), uy0)
+            @test !isequal(interior(a.velocity.x), ux0)   # and the step did move the active nodes
+            interior(a.velocity.x) .= ux0; interior(a.velocity.y) .= uy0
+        end
+    end
+
     @testset "uniform slab, constant viscosity — pseudo_transient!" begin
         const_case = (H0 = 1000.0, μ0 = 1e8, β0 = 1e3, α = 1e-2)
         an = bp_slab_analytical(; const_case...)

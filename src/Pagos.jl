@@ -181,7 +181,8 @@ export deviatoric_stress!, surface_gradient!
 include("mechanics/strainrate.jl")
 export strainrate!, scaledstrainrate!, velocitygradients!
 export depthaverage_velocitygradients!, membranestress!, membrane_prefactors!
-export terrain_metric_correction!
+export terrain_metric_correction!, bp_velocitygradients!
+export viscosity_interpolations!
 export raw_strainrate!, raw_strainrate_effective!
 export effective_strainrate_ssa!, effective_strainrate_diva!, effective_strainrate_bp!
 export verticalvelocity!

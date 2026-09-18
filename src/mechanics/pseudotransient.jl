@@ -364,6 +364,50 @@ end
            north ? hlerp(μ, NODE_AA_AC, grid, i, j, k) : zero(eltype(μ))
 end
 
+# The three interpolations above, materialized once per viscosity into
+# `solver.viscosity_ab`/`viscosity_acxz`/`viscosity_acyz`. Every reader (membrane stress,
+# Gershgorin bound, tridiagonal factorization) then loads one value where it used to run a
+# four-point harmonic mean — the values are the helpers' own, so nothing can drift.
+@kernel inbounds = true function _viscosity_interpolations_bp!(μab, μxz, μyz, μ, mask, grid, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    μab[I...] = _mu_ab(μ, mask, grid, I...)
+    μxz[I...] = _mu_acxz(μ, mask, grid, I...)
+    μyz[I...] = _mu_acyz(μ, mask, grid, I...)
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Fill `solver.viscosity_ab`/`viscosity_acxz`/`viscosity_acyz` — `material.viscosity`
+harmonically interpolated onto the `ab` corners and the `acx_ac`/`acy_ac` interfaces, with
+the margin rules of `_mu_ab`/`_mu_acxz`/`_mu_acyz` — for one Blatter-Pattyn solve. Read by
+the cached [`membranestress!`](@ref), [`gershgorin_dt!`](@ref) and the
+[`ImplicitVertical`](@ref) factorization. Valid until `material.viscosity` moves; under a
+viscosity continuation [`pseudo_rate!`](@ref) rebuilds it every iteration (`_refresh_bp_cache!`).
+"""
+function viscosity_interpolations!(
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    rt::Runtime,
+    ::MomentumBalance3D,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _viscosity_interpolations_bp! => (
+            solver.viscosity_ab,
+            solver.viscosity_acxz,
+            solver.viscosity_acyz,
+            mech.material.viscosity,
+            mask,
+            rt.grid,
+        ),
+    )
+    return nothing
+end
+
 # The three coefficient groups, factored out so the tridiagonal assembly
 # (`_line_relax_x!`/`_line_relax_y!` below) builds the *same* operator this bound bounds and
 # the two cannot drift apart. All three are per unit volume and *before* the `1/ρ̃` mass
@@ -371,15 +415,15 @@ end
 
 # `∂x(σxx) + ∂y(σxy)`, i.e. the membrane rows — the part that stays explicit under
 # `ImplicitVertical` and therefore the part that alone sets `Δτ` there.
-@inline function _lambda_horiz_x(μ, mask, grid, dx, dy, i, j, k)
+@inline function _lambda_horiz_x(μ, μab, mask, dx, dy, i, j, k)
     Ps = _mu_aa(μ, mask, i - 1, j, k) + _mu_aa(μ, mask, i, j, k)
-    Qs = _mu_ab(μ, mask, grid, i, j, k) + _mu_ab(μ, mask, grid, i, j + 1, k)
+    Qs = μab[i, j, k] + μab[i, j+1, k]
     return 8Ps / dx^2 + 4Ps / (dx * dy) + 2Qs / dy^2 + 2Qs / (dx * dy)
 end
 
-@inline function _lambda_horiz_y(μ, mask, grid, dx, dy, i, j, k)
+@inline function _lambda_horiz_y(μ, μab, mask, dx, dy, i, j, k)
     Ps = _mu_aa(μ, mask, i, j - 1, k) + _mu_aa(μ, mask, i, j, k)
-    Qs = _mu_ab(μ, mask, grid, i, j, k) + _mu_ab(μ, mask, grid, i + 1, j, k)
+    Qs = μab[i, j, k] + μab[i+1, j, k]
     return 8Ps / dy^2 + 4Ps / (dx * dy) + 2Qs / dx^2 + 2Qs / (dx * dy)
 end
 
@@ -387,13 +431,11 @@ end
 # interface `kf` (`kf = k` for the bed-ward neighbour, `kf = k+1` for the surface-ward one),
 # `R/(δ Δ_k H²)`. The Gershgorin row sum takes `2×` this (the coupling appears once on the
 # diagonal and once off it); the tridiagonal takes it once each, on the two sides separately.
-@inline _vshear_x(μ, mask, grid, Hx, i, j, k, kf) =
-    _mu_acxz(μ, mask, grid, i, j, kf) / Δz(grid, Vertex(), i, j, kf) /
-    Δz(grid, Center(), i, j, k) / Hx^2
+@inline _vshear_x(μxz, grid, Hx, i, j, k, kf) =
+    μxz[i, j, kf] / Δz(grid, Vertex(), i, j, kf) / Δz(grid, Center(), i, j, k) / Hx^2
 
-@inline _vshear_y(μ, mask, grid, Hy, i, j, k, kf) =
-    _mu_acyz(μ, mask, grid, i, j, kf) / Δz(grid, Vertex(), i, j, kf) /
-    Δz(grid, Center(), i, j, k) / Hy^2
+@inline _vshear_y(μyz, grid, Hy, i, j, k, kf) =
+    μyz[i, j, kf] / Δz(grid, Vertex(), i, j, kf) / Δz(grid, Center(), i, j, k) / Hy^2
 
 # The bed interface at `k = 1`, where the flux *is* `τ_b = β u_b`: `β/(Δζ₁ H)`, with a single
 # `1/H` and no factor 2 — unlike an interior `R/δ` term, `β u_b` has no neighbouring layer to
@@ -414,6 +456,9 @@ end
     dtau_x,
     dtau_y,
     μ,
+    μab,
+    μxz,
+    μyz,
     H,
     β,
     ρ,
@@ -436,14 +481,14 @@ end
 
     if node_active(mask, NODE_ACX, i, j)
         Hx = lerp(H, NODE_ACX, grid2d, i, j, 1)
-        Λ_horiz = _lambda_horiz_x(μ, mask, grid, dx, dy, i, j, k)
+        Λ_horiz = _lambda_horiz_x(μ, μab, mask, dx, dy, i, j, k)
 
         bottom = if k > 1
-            2 * _vshear_x(μ, mask, grid, Hx, i, j, k, k)
+            2 * _vshear_x(μxz, grid, Hx, i, j, k, k)
         else
             drag ? _vdrag_x(β, grid, grid2d, Hx, i, j) : Z
         end
-        top = k < nz ? 2 * _vshear_x(μ, mask, grid, Hx, i, j, k, k + 1) : Z
+        top = k < nz ? 2 * _vshear_x(μxz, grid, Hx, i, j, k, k + 1) : Z
 
         Λ = Hx > Z ? (Λ_horiz + _bound_vertical(vertical, bottom + top)) / ρ : Z
         # `min(·, dtau_cap)`, not a mask-style ternary: a row whose vertical stiffness has
@@ -460,14 +505,14 @@ end
 
     if node_active(mask, NODE_ACY, i, j)
         Hy = lerp(H, NODE_ACY, grid2d, i, j, 1)
-        Λ_horiz = _lambda_horiz_y(μ, mask, grid, dx, dy, i, j, k)
+        Λ_horiz = _lambda_horiz_y(μ, μab, mask, dx, dy, i, j, k)
 
         bottom = if k > 1
-            2 * _vshear_y(μ, mask, grid, Hy, i, j, k, k)
+            2 * _vshear_y(μyz, grid, Hy, i, j, k, k)
         else
             drag ? _vdrag_y(β, grid, grid2d, Hy, i, j) : Z
         end
-        top = k < nz ? 2 * _vshear_y(μ, mask, grid, Hy, i, j, k, k + 1) : Z
+        top = k < nz ? 2 * _vshear_y(μyz, grid, Hy, i, j, k, k + 1) : Z
 
         Λ = Hy > Z ? (Λ_horiz + _bound_vertical(vertical, bottom + top)) / ρ : Z
         dtau_y[I...] = (Hy > Z && Λ > Z) ? min(scale / Λ, dtau_cap) : Z
@@ -513,6 +558,9 @@ function gershgorin_dt!(
             solver.dtau_x,
             solver.dtau_y,
             mech.material.viscosity,
+            solver.viscosity_ab,
+            solver.viscosity_acxz,
+            solver.viscosity_acyz,
             mech.topography.thickness,
             mech.friction.beta_eff,
             convert(T, c.density_ice),
@@ -541,6 +589,12 @@ operator and has no vertical-shear term to extend, so it is not a meaningful bou
 all, and passing it raises a `MethodError` rather than silently reusing the wrong formula.
 
 `dtau_cap` (default `Inf`) is forwarded to [`gershgorin_dt!`](@ref).
+
+Also (re)builds the solver's Blatter-Pattyn operator cache (`_bp_cache!`: the viscosity
+interpolations and, under [`ImplicitVertical`](@ref), the tridiagonal factorization) from
+`material.viscosity` as it now stands, so a standalone call is self-sufficient. Inside
+[`pseudo_transient!`](@ref) the cache is maintained by the loop and the bound is refilled
+through [`gershgorin_dt!`](@ref) directly.
 """
 function pseudo_dt!(
     solver::PseudoTransientSolver,
@@ -551,6 +605,7 @@ function pseudo_dt!(
     mask::AbstractIceMask = NoMask();
     dtau_cap = Inf,
 )
+    _bp_cache!(solver, mech, rt, momentum, mask)
     dx = Δx(rt.grid2d, Center(), 1, 1, 1)
     dy = Δy(rt.grid2d, Center(), 1, 1, 1)
     return pseudo_dt!(
@@ -1015,6 +1070,56 @@ function _tuning_init!(
     return _tuning_state(T, 1, 1, scale)
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+Whether `Δτ` must be rebuilt every iteration: `true` under any viscosity continuation, since
+`µ` then moves every iteration and the Gershgorin bound behind `Δτ` moves with it — a stale
+bound is an optimistic one. Measured on ISMIP-HOM A (`BPViscosityContinuation`,
+`theta_mu = 0.05`): `µ` moves by orders of magnitude within ~20 iterations of the
+continuation switching on, so a bound refilled only at the tuner's `cadence` (50) is violated
+long before the next refill — the scaled residual went from `1e-8` to `4e3` in 20 iterations,
+the next Rayleigh sample exceeded `1` (its denominator reconstructs the stale `Λ`), and
+[`ImplicitVertical`](@ref) diverged outright at `theta_mu = 0.2`. Refilled every iteration,
+the same solves converge in 300–1000 iterations. Under [`FixedTuning`](@ref) nothing
+refilled `Δτ` at all before this rule.
+
+One kernel per iteration, against the ~15 the residual already costs.
+"""
+_dtau_refresh_due(::NoViscosityContinuation) = false
+_dtau_refresh_due(::AbstractViscosityContinuation) = true
+
+"""
+$(TYPEDSIGNATURES)
+
+Rebuild `solver.dtau_x`/`dtau_y` from the viscosity as it now stands, with the prefactor the
+tuning in force expects. [`FixedTuning`](@ref) defers to [`pseudo_dt!`](@ref), i.e. its own
+`2·cfl` rule under whichever `pseudo_timestep` is selected. [`AutotunedDynamicRelaxation`](@ref)
+keeps its current `state.scale`, so the tuned `Δτ²` prefactor survives the refill and
+`Λ = scale/dtau` — what the Rayleigh denominator reconstructs — stays exact; calling
+`pseudo_dt!` under the autotuner would silently reset the prefactor to `2·cfl` and detune the
+next `λ_min` sample with it.
+"""
+_refresh_dtau!(
+    ::FixedTuning,
+    state,
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    c::Constants,
+    rt::Runtime,
+    mask::AbstractIceMask,
+) = pseudo_dt!(solver, mech, c, rt, mask)
+
+_refresh_dtau!(
+    ::AutotunedDynamicRelaxation,
+    state,
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    c::Constants,
+    rt::Runtime,
+    mask::AbstractIceMask,
+) = gershgorin_dt!(solver, mech, c, rt, mask, state.scale)
+
 @inline _du_dot_r(u, u_old, r) = (u - u_old) * r
 
 # Guarded: `dtau` is exactly zero off-mask, where `Δu` is zero too, and an unguarded 0/0
@@ -1072,15 +1177,19 @@ $(TYPEDSIGNATURES)
 Close the armed Rayleigh quotient and return `λ_min`, or `NaN` to say "discard this sample
 and keep the parameters in force".
 
-[`ExplicitVertical`](@ref) is the depth-averaged rule verbatim: unweighted sums, and a
-quotient above `1` clamped to `1`, since with `M = diag(Λ)` the bound `λ_max ≤ 1` is exact
-and an excess can only be the roundoff a converged `Δu` degenerates into.
+Both treatments **reject** a quotient above `1`. With `M = diag(Λ)` the bound `λ_max ≤ 1`
+is exact for the operator `Λ` was built from, so an excess says the sample is not a Rayleigh
+quotient of that operator: the roundoff a converged `Δu` degenerates into, or — under a
+viscosity continuation — a `Λ` that no longer matches the `µ` the residual was evaluated
+with. Keeping the previous parameters is the conservative reading, and the next sample
+re-measures anyway. The explicit path used to *clamp* the excess to `λ_min = 1` instead;
+measured on ISMIP-HOM A that turned one stale-`Δτ` sample into an ~800-iteration stall,
+because `λ_min = 1` is the *most aggressive* setting the tuner has (`γ ≈ 1.5` at minimum
+`Δτ`), not a conservative one.
 
-[`ImplicitVertical`](@ref) differs twice. The sums are layer-volume weighted (see
-`_weighted_sum` — without it the denominator is neither cancellation-free nor signed). And an excess is **rejected rather than clamped**: `λ_min = 1` is not a conservative
-reading, it is the *most aggressive* setting the tuner has (maximum `γ` at minimum `Δτ`), so
-clamping converts one bad sample into a step that can blow the solve up. Keeping the previous
-parameters is the conservative reading, and the next sample re-measures anyway.
+[`ExplicitVertical`](@ref) takes the depth-averaged rule's unweighted sums;
+[`ImplicitVertical`](@ref) takes both sums in the layer-volume-weighted inner product (see
+`_weighted_sum` — without it the denominator is neither cancellation-free nor signed).
 """
 function _rayleigh_lambda_min(
     ::ExplicitVertical,
@@ -1094,7 +1203,8 @@ function _rayleigh_lambda_min(
     numerator = abs(_sum_du_dot_r(solver, ux, uy) - state.rayleigh_ur)
     denominator = state.scale * state.rayleigh_uu
     (numerator > 0 && denominator > 0) || return T(NaN)
-    return min(T(numerator / denominator), one(T))
+    λ_min = T(numerator / denominator)
+    return λ_min > one(T) ? T(NaN) : λ_min
 end
 
 function _rayleigh_lambda_min(
@@ -1151,8 +1261,10 @@ $(TYPEDSIGNATURES)
 
 Close the Rayleigh quotient armed by [`_arm_tuning`](@ref), derive `Δτ` and `γ` from it
 (closed form in [`AutotunedDynamicRelaxation`](@ref)) and refill
-`solver.dtau_x`/`dtau_y` — the refill doubling as the `λ_max` re-estimation a solve with an
-evolving viscosity needs, since it rebuilds the Gershgorin bound from `η` as it now stands.
+`solver.dtau_x`/`dtau_y` from the Gershgorin bound as `η` now stands. Under a viscosity
+continuation that refill is *not* the only one: [`_refresh_dtau!`](@ref) rebuilds the bound
+every iteration, because `η` can move far more between two cadences than the `cfl` margin
+absorbs (see [`_dtau_refresh_due`](@ref)).
 
 Call after `pseudo_rate!` and *before* the `u → u_old` copy, the one point where `Δu` is
 still the increment [`_arm_tuning`](@ref) measured against and `solver.residual_*` already
@@ -1184,6 +1296,80 @@ function _tune!(
     scale = dtau^2 * convert(T, solver.dtau_scaling)
     gershgorin_dt!(solver, mech, c, rt, mask, scale)
     return merge(state, (; gamma = d * dtau, scale, lambda_min = λ_min, armed = false))
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+[`membranestress!`](@ref) for [`MomentumBalance3D`](@ref) from the solver's viscosity
+interpolation cache ([`viscosity_interpolations!`](@ref)) rather than recomputing `hlerp`
+at every corner and interface — the BP counterpart of the 2D cached method. Bit-for-bit the
+self-contained method's values. [`pseudo_transient!`](@ref) calls it once after its loop so
+`mech.stress` leaves the solve consistent with the final gradients, the iteration itself
+never materializing the stress fields (see `_bp_rate!`).
+"""
+function membranestress!(
+    stress::StressState,
+    velocity::VelocityState,
+    material::MechanicMaterialState,
+    solver::PseudoTransientSolver,
+    ::MomentumBalance3D,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _membrane_stress_cached_bp! => (
+            stress.xx,
+            stress.xy,
+            stress.xz,
+            stress.yy,
+            stress.yz,
+            material.viscosity,
+            solver.viscosity_ab,
+            solver.viscosity_acxz,
+            solver.viscosity_acyz,
+            velocity,
+            mask,
+        ),
+    )
+    return nothing
+end
+
+@kernel inbounds = true function _membrane_stress_cached_bp!(
+    sxx,
+    sxy,
+    sxz,
+    syy,
+    syz,
+    μ,
+    μab,
+    μxz,
+    μyz,
+    vel,
+    mask,
+    O,
+)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    Z = zero(eltype(sxx))
+    if node_active(mask, NODE_AA, i, j)
+        two_μ = 2 * μ[I...]
+        dux = vel.x_dx[I...]
+        dvy = vel.y_dy[I...]
+        sxx[I...] = two_μ * (2 * dux + dvy)
+        syy[I...] = two_μ * (dux + 2 * dvy)
+    else
+        sxx[I...] = Z
+        syy[I...] = Z
+    end
+    sxy[I...] =
+        node_fully_active(mask, NODE_AB, i, j) ? μab[I...] * (vel.x_dy[I...] + vel.y_dx[I...]) :
+        Z
+    sxz[I...] = μxz[I...] * vel.x_dz[I...]
+    syz[I...] = μyz[I...] * vel.y_dz[I...]
 end
 
 ###############################################################
@@ -1799,10 +1985,17 @@ function pseudo_transient!(
             # `diva_update!` is the DIVA path's writer of `µ̄`, so the prefactor cache is
             # stale from here until rebuilt.
             _refresh_membrane_prefactors!(solver, mech, rt, mask)
-            pseudo_dt!(solver, mech, c, rt, mask)
+            _refresh_dtau!(tuning, state, solver, mech, c, rt, mask)
         end
 
         pseudo_rate!(mech, c, rt, momentum, solver, mask; gamma = state.gamma)
+        # `pseudo_rate!` is where a viscosity continuation moves `µ̄`, and the Gershgorin
+        # bound behind `Δτ` moves with it (see `_dtau_refresh_due`). Before `_tune!`, which
+        # reads only the two armed scalars and refills again, at its own cadence, with the
+        # retuned prefactor.
+        if _dtau_refresh_due(solver.viscosity_continuation)
+            _refresh_dtau!(tuning, state, solver, mech, c, rt, mask)
+        end
         state = _tune!(tuning, state, solver, mech, c, rt, mask, ux, uy)
 
         # After `_tune!`, which needs the pre-copy `u_old` (see its docstring).
@@ -1912,9 +2105,10 @@ update_basalstress!(
 $(TYPEDSIGNATURES)
 
 Evaluate the Blatter-Pattyn PT velocity rate: column velocity gradients
-([`velocitygradients!`](@ref), then [`clamp_velocity_gradients!`](@ref) if `strainrate_cap`
-is finite), viscosity continuation, membrane stress ([`membranestress!`](@ref)), basal
-stress, then [`dotvel!`](@ref) — the same order as
+([`bp_velocitygradients!`](@ref), gradients and terrain correction fused, then
+[`clamp_velocity_gradients!`](@ref) if `strainrate_cap` is finite), viscosity continuation
+(followed by a rebuild of the operator cache, `_refresh_bp_cache!`), basal stress, then the
+fused membrane stress and rate (`_bp_rate!`) — the same order as
 [`pseudo_rate!(..., ::MomentumBalance2D, ...)`](@ref), minus the DIVA-only
 `diva_update!` step BP has no counterpart for (`pagos-roadmap/blatter-pattyn.md`, §2.2).
 
@@ -1933,47 +2127,165 @@ function pseudo_rate!(
 )
     (; velocity, material, stress, topography) = mech
 
-    velocitygradients!(velocity, topography.thickness, rt, mask)
-    ## Constant-ζ → constant-z on the four horizontal gradients (equations doc, A1). Its own
-    ## launch, not fused: it reads `x_dz`/`y_dz` at neighbouring nodes the gradient kernel is
-    ## still writing. Before the clamp, so `strainrate_cap` bounds what is actually used.
-    terrain_metric_correction!(
-        velocity,
-        topography.thickness,
-        topography.surface,
-        rt,
-        mask,
-    )
+    ## Gradients and the constant-ζ → constant-z correction (equations doc, A1) in one pass
+    ## (`bp_velocitygradients!`), the six the solve reads and none of the `w`-gradients.
+    ## Before the clamp, so `strainrate_cap` bounds what is actually used.
+    bp_velocitygradients!(velocity, topography.thickness, topography.surface, rt, mask)
     clamp_velocity_gradients!(velocity, strainrate_cap, rt)
     _iterate_viscosity!(mech, momentum, solver, rt, mask)
-    membranestress!(stress, velocity, material, momentum, rt, mask)
+    ## `_iterate_viscosity!` is the writer of `µ`; everything derived from it is stale from
+    ## here until rebuilt (a no-op under `NoViscosityContinuation`).
+    _refresh_bp_cache!(solver, mech, rt, momentum, mask, solver.viscosity_continuation)
 
     update_basalstress!(mech, solver.friction_update, rt, momentum, mask)
 
-    dotvel!(
-        solver.velocity_x_dt,
-        solver.velocity_y_dt,
-        stress.xx,
-        stress.xy,
-        stress.xz,
-        stress.yy,
-        stress.yz,
-        stress.base_x,
-        stress.base_y,
-        stress.driving_x,
-        stress.driving_y,
-        topography.thickness,
-        c.density_ice,
-        rt,
-        momentum,
-        mask;
-        gamma,
-        resid_x = solver.residual_x,
-        resid_y = solver.residual_y,
+    ## Membrane stress and rate fused: the five stress fields are never materialized during
+    ## the iteration (`pseudo_transient!` writes them once after its loop).
+    _bp_rate!(solver, mech, c, rt, momentum, mask; gamma)
+    return nothing
+end
+
+# `_membrane_stress_staggered_bp!` and `_dotvel_staggered_bp!` in one pass: the stresses are
+# evaluated at the two neighbours each divergence needs and differenced in registers, so
+# five column fields are neither written nor read back. Same arithmetic as the pair it
+# replaces — the differences are formed exactly as Chmy's `∂x`/`∂y` form them, `δ · iΔ` at
+# the stress field's own location — and pinned bit-for-bit against it.
+@inline function _sxx_at(μ, vel, mask, i, j, k)
+    node_active(mask, NODE_AA, i, j) || return zero(eltype(μ))
+    return (2 * μ[i, j, k]) * (2 * vel.x_dx[i, j, k] + vel.y_dy[i, j, k])
+end
+
+@inline function _syy_at(μ, vel, mask, i, j, k)
+    node_active(mask, NODE_AA, i, j) || return zero(eltype(μ))
+    return (2 * μ[i, j, k]) * (vel.x_dx[i, j, k] + 2 * vel.y_dy[i, j, k])
+end
+
+@inline function _sxy_at(μab, vel, mask, i, j, k)
+    node_fully_active(mask, NODE_AB, i, j) || return zero(eltype(μab))
+    return μab[i, j, k] * (vel.x_dy[i, j, k] + vel.y_dx[i, j, k])
+end
+
+@kernel inbounds = true function _bp_rate_fused!(
+    dvx,
+    dvy,
+    resid_x,
+    resid_y,
+    μ,
+    μab,
+    μxz,
+    μyz,
+    vel,
+    base_x,
+    base_y,
+    driving_x,
+    driving_y,
+    H,
+    ρ,
+    γ,
+    nz,
+    mask,
+    grid,
+    grid2d,
+    O,
+)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, k = I
+    Z = zero(eltype(dvx))
+    one_m_γ = one(γ) - γ
+
+    if node_active(mask, NODE_ACX, i, j)
+        Hx = lerp(H, NODE_ACX, grid2d, i, j, 1)
+        dζ = Δz(grid, Center(), i, j, k)
+        top = k < nz ? μxz[i, j, k+1] * vel.x_dz[i, j, k+1] : Z
+        bot = k > 1 ? μxz[i, j, k] * vel.x_dz[i, j, k] : base_x[i, j, 1]
+        vert_x = _dz_over_H((top - bot) / dζ, Hx)
+        dsxx = (_sxx_at(μ, vel, mask, i, j, k) - _sxx_at(μ, vel, mask, i - 1, j, k)) *
+               iΔ(grid, NODE_AA, Dim(1), I...)
+        dsxy = (_sxy_at(μab, vel, mask, i, j + 1, k) - _sxy_at(μab, vel, mask, i, j, k)) *
+               iΔ(grid, NODE_AB, Dim(2), I...)
+        shear_x = dsxx + dsxy + vert_x
+        raw_x = Hx > zero(Hx) ? (shear_x - driving_x[i, j, 1]) / ρ : Z
+        resid_x[I...] = raw_x
+        dvx[I...] = one_m_γ * dvx[I...] + raw_x
+    else
+        resid_x[I...] = Z
+        dvx[I...] = Z
+    end
+
+    if node_active(mask, NODE_ACY, i, j)
+        Hy = lerp(H, NODE_ACY, grid2d, i, j, 1)
+        dζ = Δz(grid, Center(), i, j, k)
+        top = k < nz ? μyz[i, j, k+1] * vel.y_dz[i, j, k+1] : Z
+        bot = k > 1 ? μyz[i, j, k] * vel.y_dz[i, j, k] : base_y[i, j, 1]
+        vert_y = _dz_over_H((top - bot) / dζ, Hy)
+        dsxy = (_sxy_at(μab, vel, mask, i + 1, j, k) - _sxy_at(μab, vel, mask, i, j, k)) *
+               iΔ(grid, NODE_AB, Dim(1), I...)
+        dsyy = (_syy_at(μ, vel, mask, i, j, k) - _syy_at(μ, vel, mask, i, j - 1, k)) *
+               iΔ(grid, NODE_AA, Dim(2), I...)
+        shear_y = dsxy + dsyy + vert_y
+        raw_y = Hy > zero(Hy) ? (shear_y - driving_y[i, j, 1]) / ρ : Z
+        resid_y[I...] = raw_y
+        dvy[I...] = one_m_γ * dvy[I...] + raw_y
+    else
+        resid_y[I...] = Z
+        dvy[I...] = Z
+    end
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+The Blatter-Pattyn residual and damped rate in one launch — [`membranestress!`](@ref)'s
+BP stresses and [`dotvel!`](@ref)'s divergence fused (source note above). Reads the solver's
+viscosity-interpolation cache, so `_bp_cache!` must be current. Writes
+`solver.residual_x`/`residual_y` and `solver.velocity_x_dt`/`velocity_y_dt` exactly as
+`dotvel!` does; `mech.stress.xx`/`xy`/`xz`/`yy`/`yz` are left untouched.
+"""
+function _bp_rate!(
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    c::Constants,
+    rt::Runtime,
+    momentum::MomentumBalance3D,
+    mask::AbstractIceMask;
+    gamma = 1,
+)
+    (; velocity, material, stress, topography) = mech
+    T = eltype(solver.residual_x)
+    nz = size(rt.grid, Center())[3]
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _bp_rate_fused! => (
+            solver.velocity_x_dt,
+            solver.velocity_y_dt,
+            solver.residual_x,
+            solver.residual_y,
+            material.viscosity,
+            solver.viscosity_ab,
+            solver.viscosity_acxz,
+            solver.viscosity_acyz,
+            velocity,
+            stress.base_x,
+            stress.base_y,
+            stress.driving_x,
+            stress.driving_y,
+            topography.thickness,
+            convert(T, c.density_ice),
+            convert(T, gamma),
+            nz,
+            mask,
+            rt.grid,
+            rt.grid2d,
+        ),
     )
     return nothing
 end
 
+# Both 3D methods begin by building the operator cache (`pseudo_dt!` does so itself; the
+# autotuned branch calls `gershgorin_dt!` directly and needs it explicitly), so a solve —
+# or a hand-rolled loop driving these hooks — starts from a cache that matches `µ`.
 function _tuning_init!(
     tu::FixedTuning,
     solver::PseudoTransientSolver,
@@ -2000,9 +2312,89 @@ function _tuning_init!(
 )
     T = eltype(solver.dtau_x)
     scale = T(solver.dtau_scaling)
+    _bp_cache!(solver, mech, rt, momentum, mask)
     gershgorin_dt!(solver, mech, c, rt, momentum, mask, scale; dtau_cap)
     return _tuning_state(T, 1, 1, scale)
 end
+
+"""
+$(TYPEDSIGNATURES)
+
+Rebuild everything the Blatter-Pattyn iteration derives from `material.viscosity` once
+rather than per iteration: the viscosity interpolations
+([`viscosity_interpolations!`](@ref)) and, under [`ImplicitVertical`](@ref), the
+tridiagonal factorization (`_factorize_vertical!`). Called at the start of a solve (from
+`_tuning_init!`/[`pseudo_dt!`](@ref)) and, through `_refresh_bp_cache!`, after every
+viscosity update of a continuation solve — the same invalidation rule as
+`_refresh_membrane_prefactors!` on the 2D path.
+"""
+function _bp_cache!(
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    rt::Runtime,
+    momentum::MomentumBalance3D,
+    mask::AbstractIceMask,
+)
+    viscosity_interpolations!(solver, mech, rt, momentum, mask)
+    _factorize_vertical!(solver.vertical_treatment, solver, mech, rt, mask)
+    return nothing
+end
+
+_refresh_bp_cache!(
+    ::PseudoTransientSolver,
+    ::MechanicState,
+    ::Runtime,
+    ::MomentumBalance3D,
+    ::AbstractIceMask,
+    ::NoViscosityContinuation,
+) = nothing
+
+_refresh_bp_cache!(
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    rt::Runtime,
+    momentum::MomentumBalance3D,
+    mask::AbstractIceMask,
+    ::AbstractViscosityContinuation,
+) = _bp_cache!(solver, mech, rt, momentum, mask)
+
+# `MomentumBalance3D` counterparts of `_refresh_dtau!`, one argument longer like every other
+# method in this section; `dtau_cap` is forwarded as `_tuning_init!` forwards it.
+# Straight to `gershgorin_dt!` rather than through `pseudo_dt!`: the loop has already
+# rebuilt the operator cache this iteration (`_refresh_bp_cache!` in `pseudo_rate!`), and
+# `GershgorinPseudoTimeStep` is the only rule `pseudo_dt!` implements for BP anyway.
+_refresh_dtau!(
+    ::FixedTuning,
+    state,
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    c::Constants,
+    rt::Runtime,
+    momentum::MomentumBalance3D,
+    mask::AbstractIceMask;
+    dtau_cap = Inf,
+) = gershgorin_dt!(
+    solver,
+    mech,
+    c,
+    rt,
+    momentum,
+    mask,
+    2 * solver.pseudo_timestep.cfl * solver.dtau_scaling;
+    dtau_cap,
+)
+
+_refresh_dtau!(
+    ::AutotunedDynamicRelaxation,
+    state,
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    c::Constants,
+    rt::Runtime,
+    momentum::MomentumBalance3D,
+    mask::AbstractIceMask;
+    dtau_cap = Inf,
+) = gershgorin_dt!(solver, mech, c, rt, momentum, mask, state.scale; dtau_cap)
 
 _tune!(
     ::FixedTuning,
@@ -2168,16 +2560,71 @@ end
 # velocity field itself is safe and saves an array; only `c'` needs storage that outlives the
 # sweep, and that is what `ImplicitVertical` carries.
 
-@inline function _line_relax_x!(
-    u,
-    u_old,
-    dv,
-    dtau,
-    cp,
+# The factorization: the forward sweep's coefficients, which depend on `µ`, `H`, `β` and the
+# horizontal row sum alone — never on `Δτ`, `θ_v` or the accumulator — so they are computed
+# once per viscosity (`_factorize_vertical!`, via `_bp_cache!`) and the per-iteration sweep
+# below reads them back. `low` is the sub-diagonal `τ̂ A_k` (the textbook `a_k = -low_k`,
+# hence the `+ low` where Thomas has `- a`), `w` the pivot, `cp` the back-substitution
+# coefficient `c'`. The arithmetic is exactly the un-cached sweep's, so the two are
+# bit-identical.
+@inline function _factorize_x!(low, w, cp, μ, μab, μxz, H, β, drag, nz, mask, dx, dy, grid, grid2d, i, j)
+    T = eltype(w)
+    Z = zero(T)
+    node_active(mask, NODE_ACX, i, j) || return nothing
+    Hx = lerp(H, NODE_ACX, grid2d, i, j, 1)
+    Hx > Z || return nothing
+    for k = 1:nz
+        Λh = _lambda_horiz_x(μ, μab, mask, dx, dy, i, j, k)
+        # `Λh == 0` (every neighbouring `µ` masked away) is the degenerate row the explicit
+        # scheme handles by `dtau = 0`, i.e. a frozen face; `τ̂ = 0` freezes it here too, and
+        # keeps the `1/Λh` from becoming an `Inf` that would poison the whole column.
+        τ̂ = Λh > Z ? inv(Λh) : Z
+        lo = k > 1 ? τ̂ * _vshear_x(μxz, grid, Hx, i, j, k, k) : Z
+        up = k < nz ? τ̂ * _vshear_x(μxz, grid, Hx, i, j, k, k + 1) : Z
+        bed = (k == 1 && drag) ? τ̂ * _vdrag_x(β, grid, grid2d, Hx, i, j) : Z
+        b = one(T) + lo + up + bed
+        wk = k > 1 ? b + lo * cp[i, j, k-1] : b
+        low[i, j, k] = lo
+        w[i, j, k] = wk
+        cp[i, j, k] = -up / wk
+    end
+    return nothing
+end
+
+@inline function _factorize_y!(low, w, cp, μ, μab, μyz, H, β, drag, nz, mask, dx, dy, grid, grid2d, i, j)
+    T = eltype(w)
+    Z = zero(T)
+    node_active(mask, NODE_ACY, i, j) || return nothing
+    Hy = lerp(H, NODE_ACY, grid2d, i, j, 1)
+    Hy > Z || return nothing
+    for k = 1:nz
+        Λh = _lambda_horiz_y(μ, μab, mask, dx, dy, i, j, k)
+        τ̂ = Λh > Z ? inv(Λh) : Z
+        lo = k > 1 ? τ̂ * _vshear_y(μyz, grid, Hy, i, j, k, k) : Z
+        up = k < nz ? τ̂ * _vshear_y(μyz, grid, Hy, i, j, k, k + 1) : Z
+        bed = (k == 1 && drag) ? τ̂ * _vdrag_y(β, grid, grid2d, Hy, i, j) : Z
+        b = one(T) + lo + up + bed
+        wk = k > 1 ? b + lo * cp[i, j, k-1] : b
+        low[i, j, k] = lo
+        w[i, j, k] = wk
+        cp[i, j, k] = -up / wk
+    end
+    return nothing
+end
+
+@kernel inbounds = true function _factorize_vertical_bp!(
+    low_x,
+    w_x,
+    cp_x,
+    low_y,
+    w_y,
+    cp_y,
     μ,
+    μab,
+    μxz,
+    μyz,
     H,
     β,
-    θ,
     drag,
     nz,
     mask,
@@ -2185,33 +2632,77 @@ end
     dy,
     grid,
     grid2d,
-    i,
-    j,
+    O,
 )
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    _factorize_x!(low_x, w_x, cp_x, μ, μab, μxz, H, β, drag, nz, mask, dx, dy, grid, grid2d, i, j)
+    _factorize_y!(low_y, w_y, cp_y, μ, μab, μyz, H, β, drag, nz, mask, dx, dy, grid, grid2d, i, j)
+end
+
+_factorize_vertical!(::ExplicitVertical, solver, mech, rt, mask) = nothing
+
+function _factorize_vertical!(
+    vt::ImplicitVertical,
+    solver::PseudoTransientSolver,
+    mech::MechanicState,
+    rt::Runtime,
+    mask::AbstractIceMask,
+)
+    T = eltype(solver.dtau_x)
+    dx = Δx(rt.grid2d, Center(), 1, 1, 1)
+    dy = Δy(rt.grid2d, Center(), 1, 1, 1)
+    nz = size(rt.grid, Center())[3]
+    rt.launch2d(
+        rt.arch,
+        rt.grid2d,
+        _factorize_vertical_bp! => (
+            vt.low_x,
+            vt.w_x,
+            vt.thomas_x,
+            vt.low_y,
+            vt.w_y,
+            vt.thomas_y,
+            mech.material.viscosity,
+            solver.viscosity_ab,
+            solver.viscosity_acxz,
+            solver.viscosity_acyz,
+            mech.topography.thickness,
+            mech.friction.beta_eff,
+            _drag_in_spectrum(solver.friction_update),
+            nz,
+            mask,
+            convert(T, dx),
+            convert(T, dy),
+            rt.grid,
+            rt.grid2d,
+        ),
+    )
+    return nothing
+end
+
+# The per-iteration sweep. Also stores `u_old = u` down the column as it goes — before `u`
+# is overwritten with `d'` — so the loop needs no separate `copyto!` (20 ms of a 240 ms
+# iteration on 8 km AIS). Inactive columns still get the store, since `u_old` feeds the
+# increment-based convergence check everywhere.
+@inline function _line_relax_x!(u, u_old, dv, dtau, low, w, cp, H, θ, nz, mask, grid2d, i, j)
     T = eltype(u)
     Z = zero(T)
-    node_active(mask, NODE_ACX, i, j) || return nothing
     Hx = lerp(H, NODE_ACX, grid2d, i, j, 1)
-    Hx > Z || return nothing
+    if !(node_active(mask, NODE_ACX, i, j) && Hx > Z)
+        for k = 1:nz
+            u_old[i, j, k] = u[i, j, k]
+        end
+        return nothing
+    end
 
-    # Forward sweep. `b`/`d` never outlive one layer, so only `c'` reaches an array; `u`
-    # temporarily holds `d'`, overwritten by the back substitution below. The sub-diagonal is
-    # `a_k = -low_k`, hence the `+ low` where the textbook Thomas has `- a`.
+    # Forward sweep; `u` temporarily holds `d'`, overwritten by the back substitution.
     for k = 1:nz
-        Λh = _lambda_horiz_x(μ, mask, grid, dx, dy, i, j, k)
-        # `Λh == 0` (every neighbouring `µ` masked away) is the degenerate row the explicit
-        # scheme handles by `dtau = 0`, i.e. a frozen face; `τ̂ = 0` freezes it here too, and
-        # keeps the `1/Λh` from becoming an `Inf` that would poison the whole column.
-        τ̂ = Λh > Z ? inv(Λh) : Z
-        low = k > 1 ? τ̂ * _vshear_x(μ, mask, grid, Hx, i, j, k, k) : Z
-        up = k < nz ? τ̂ * _vshear_x(μ, mask, grid, Hx, i, j, k, k + 1) : Z
-        bed = (k == 1 && drag) ? τ̂ * _vdrag_x(β, grid, grid2d, Hx, i, j) : Z
-
-        b = one(T) + low + up + bed
         d = θ * dtau[i, j, k] * dv[i, j, k]
-        w = k > 1 ? b + low * cp[i, j, k-1] : b
-        cp[i, j, k] = -up / w
-        u[i, j, k] = (k > 1 ? d + low * u[i, j, k-1] : d) / w
+        uo = u[i, j, k]
+        u_old[i, j, k] = uo
+        u[i, j, k] = (k > 1 ? d + low[i, j, k] * u[i, j, k-1] : d) / w[i, j, k]
     end
 
     # Back substitution, carrying `Δu[k+1]` in a register so `u` can take its final value
@@ -2225,44 +2716,22 @@ end
     return nothing
 end
 
-@inline function _line_relax_y!(
-    v,
-    v_old,
-    dv,
-    dtau,
-    cp,
-    μ,
-    H,
-    β,
-    θ,
-    drag,
-    nz,
-    mask,
-    dx,
-    dy,
-    grid,
-    grid2d,
-    i,
-    j,
-)
+@inline function _line_relax_y!(v, v_old, dv, dtau, low, w, cp, H, θ, nz, mask, grid2d, i, j)
     T = eltype(v)
     Z = zero(T)
-    node_active(mask, NODE_ACY, i, j) || return nothing
     Hy = lerp(H, NODE_ACY, grid2d, i, j, 1)
-    Hy > Z || return nothing
+    if !(node_active(mask, NODE_ACY, i, j) && Hy > Z)
+        for k = 1:nz
+            v_old[i, j, k] = v[i, j, k]
+        end
+        return nothing
+    end
 
     for k = 1:nz
-        Λh = _lambda_horiz_y(μ, mask, grid, dx, dy, i, j, k)
-        τ̂ = Λh > Z ? inv(Λh) : Z
-        low = k > 1 ? τ̂ * _vshear_y(μ, mask, grid, Hy, i, j, k, k) : Z
-        up = k < nz ? τ̂ * _vshear_y(μ, mask, grid, Hy, i, j, k, k + 1) : Z
-        bed = (k == 1 && drag) ? τ̂ * _vdrag_y(β, grid, grid2d, Hy, i, j) : Z
-
-        b = one(T) + low + up + bed
         d = θ * dtau[i, j, k] * dv[i, j, k]
-        w = k > 1 ? b + low * cp[i, j, k-1] : b
-        cp[i, j, k] = -up / w
-        v[i, j, k] = (k > 1 ? d + low * v[i, j, k-1] : d) / w
+        vo = v[i, j, k]
+        v_old[i, j, k] = vo
+        v[i, j, k] = (k > 1 ? d + low[i, j, k] * v[i, j, k-1] : d) / w[i, j, k]
     end
 
     x = v[i, j, nz]
@@ -2283,77 +2752,39 @@ end
     dvy,
     dtau_x,
     dtau_y,
-    cpx,
-    cpy,
-    μ,
+    low_x,
+    w_x,
+    cp_x,
+    low_y,
+    w_y,
+    cp_y,
     H,
-    β,
     θ,
-    drag,
     nz,
     mask,
-    dx,
-    dy,
-    grid,
     grid2d,
     O,
 )
     I = @index(Global, NTuple)
     I = I + O
     i, j, _ = I
-    _line_relax_x!(
-        ux,
-        ux_old,
-        dvx,
-        dtau_x,
-        cpx,
-        μ,
-        H,
-        β,
-        θ,
-        drag,
-        nz,
-        mask,
-        dx,
-        dy,
-        grid,
-        grid2d,
-        i,
-        j,
-    )
-    _line_relax_y!(
-        uy,
-        uy_old,
-        dvy,
-        dtau_y,
-        cpy,
-        μ,
-        H,
-        β,
-        θ,
-        drag,
-        nz,
-        mask,
-        dx,
-        dy,
-        grid,
-        grid2d,
-        i,
-        j,
-    )
+    _line_relax_x!(ux, ux_old, dvx, dtau_x, low_x, w_x, cp_x, H, θ, nz, mask, grid2d, i, j)
+    _line_relax_y!(uy, uy_old, dvy, dtau_y, low_y, w_y, cp_y, H, θ, nz, mask, grid2d, i, j)
 end
 
 """
 $(TYPEDSIGNATURES)
 
 Advance `ux`/`uy` by one pseudo-transient step, dispatching on
-`solver.vertical_treatment`. [`ExplicitVertical`](@ref) is the pair of [`pseudo_vel!`](@ref)
-calls the [`MomentumBalance2D`](@ref) loop also makes, unchanged;
-[`ImplicitVertical`](@ref) replaces them with a per-column tridiagonal solve of the
-vertical-shear operator (see the source note above).
+`solver.vertical_treatment`, **storing `u → u_old` on the way** (the pre-step iterate, which
+the increment-based convergence check and the autotuner read): [`ExplicitVertical`](@ref) is
+the fused store-and-step the [`MomentumBalance2D`](@ref) loop also makes
+(`_pseudo_vel_fused!`); [`ImplicitVertical`](@ref) replaces it with a per-column tridiagonal
+solve of the vertical-shear operator, from the factorization `_bp_cache!` built (see the
+source note above).
 
-Called from [`pseudo_transient!`](@ref) after the `u → u_old` copy, so `ux_old`/`uy_old` hold
-the iterate the increment is measured from.
+Called from [`pseudo_transient!`](@ref) after `_tune!`, which needs `ux_old`/`uy_old` still
+holding the iterate *before* the previous step.
 """
 function _velocity_update!(
     ::ExplicitVertical,
@@ -2368,19 +2799,21 @@ function _velocity_update!(
     uy_old,
     theta_v,
 )
-    pseudo_vel!(
-        asarray(ux),
-        asarray(ux_old),
-        asarray(solver.velocity_x_dt),
-        asarray(solver.dtau_x),
-        theta_v,
-    )
-    pseudo_vel!(
-        asarray(uy),
-        asarray(uy_old),
-        asarray(solver.velocity_y_dt),
-        asarray(solver.dtau_y),
-        theta_v,
+    θ = convert(eltype(solver.dtau_x), theta_v)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _pseudo_vel_fused! => (
+            ux,
+            uy,
+            ux_old,
+            uy_old,
+            solver.velocity_x_dt,
+            solver.velocity_y_dt,
+            solver.dtau_x,
+            solver.dtau_y,
+            θ,
+        ),
     )
     return nothing
 end
@@ -2399,8 +2832,6 @@ function _velocity_update!(
     theta_v,
 )
     T = eltype(solver.dtau_x)
-    dx = Δx(rt.grid2d, Center(), 1, 1, 1)
-    dy = Δy(rt.grid2d, Center(), 1, 1, 1)
     nz = size(rt.grid, Center())[3]
     rt.launch2d(
         rt.arch,
@@ -2414,18 +2845,16 @@ function _velocity_update!(
             solver.velocity_y_dt,
             solver.dtau_x,
             solver.dtau_y,
+            vt.low_x,
+            vt.w_x,
             vt.thomas_x,
+            vt.low_y,
+            vt.w_y,
             vt.thomas_y,
-            mech.material.viscosity,
             mech.topography.thickness,
-            mech.friction.beta_eff,
             convert(T, theta_v),
-            _drag_in_spectrum(solver.friction_update),
             nz,
             mask,
-            convert(T, dx),
-            convert(T, dy),
-            rt.grid,
             rt.grid2d,
         ),
     )
@@ -2629,6 +3058,11 @@ function pseudo_transient!(
             gamma = state.gamma,
             strainrate_cap,
         )
+        # Same rule as the depth-averaged loop: a continuation moved `µ` inside
+        # `pseudo_rate!`, so the bound behind `Δτ` is rebuilt before it is stepped with.
+        if _dtau_refresh_due(solver.viscosity_continuation)
+            _refresh_dtau!(tuning, state, solver, mech, c, rt, momentum, mask; dtau_cap)
+        end
         state = _tune!(
             tuning,
             vertical,
@@ -2644,10 +3078,8 @@ function pseudo_transient!(
             dtau_cap,
         )
 
-        # After `_tune!`, which needs the pre-copy `u_old` (see its docstring).
-        copyto!(asarray(ux_old), asarray(ux))
-        copyto!(asarray(uy_old), asarray(uy))
-
+        # After `_tune!`, which needs the pre-step `u_old` (see its docstring); the update
+        # stores `u → u_old` itself before stepping.
         _velocity_update!(
             vertical,
             solver,
@@ -2674,6 +3106,11 @@ function pseudo_transient!(
             println("PT iteration $iter: err = $err, gamma = $(state.gamma)")
         end
     end
+
+    # The iteration never materializes the stress fields (`_bp_rate!` fuses them into the
+    # rate); write them once here, from the gradients of the last evaluated iterate, so
+    # `mech.stress` leaves the solve exactly as the unfused loop left it.
+    membranestress!(mech.stress, mech.velocity, mech.material, solver, momentum, rt, mask)
 
     # Diagnostic only: the raw, undamped rate norm at the final iterate, independent of
     # `gamma` — see `dotvel!`'s `resid_x`/`resid_y` note.

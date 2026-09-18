@@ -893,6 +893,75 @@ end
         @test isnan(res_fixed.lambda_min)
     end
 
+    # A Rayleigh sample above 1 cannot be a quotient of the operator `Λ` bounds — with
+    # `M = diag(Λ)` the bound `λ_max ≤ 1` is exact — so it is a stale-`Λ` or roundoff sample
+    # and must be *rejected* (parameters kept), not clamped to `λ_min = 1`: that clamp is the
+    # tuner's most aggressive setting (`γ ≈ 1.5`), and on ISMIP-HOM A it turned one bad sample
+    # into an ~800-iteration stall. Synthetic sample: `Δu = 1`, `Δr̃ = -2`, `Δτ = 1` gives a
+    # quotient of exactly 2.
+    @testset "AutotunedDynamicRelaxation: a Rayleigh quotient above 1 is rejected, not clamped" begin
+        grid, rt, mech = setup_slab()
+        fill_slab!(mech, rt, const_case)
+        solver = PseudoTransientSolver(grid; tuning = AutotunedDynamicRelaxation())
+        ux, uy = mech.velocity.depthaverage_x, mech.velocity.depthaverage_y
+        setdata!(ux, 1.0); setdata!(uy, 0.0)
+        setdata!(solver.velocity_x_old, 0.0); setdata!(solver.velocity_y_old, 0.0)
+        setdata!(solver.dtau_x, 1.0); setdata!(solver.dtau_y, 1.0)
+        N = length(interior(ux))
+        armed = merge(Pagos._tuning_state(Float64, 1, 1, 1.0),
+                      (; rayleigh_ur = 0.0, rayleigh_uu = Float64(N), armed = true))
+
+        setdata!(solver.residual_x, -2.0); setdata!(solver.residual_y, 0.0)
+        @test isnan(Pagos._rayleigh_lambda_min(ExplicitVertical(), Float64, armed, solver, rt, ux, uy))
+        tuned = Pagos._tune!(solver.tuning, armed, solver, mech, cst, rt, NoMask(), ux, uy)
+        @test tuned.gamma == armed.gamma && tuned.scale == armed.scale   # parameters kept
+        @test isnan(tuned.lambda_min) && !tuned.armed
+        @test all(==(1.0), interior(solver.dtau_x))                      # and no refill
+
+        # The same sample at half the residual jump is a legitimate 0.5 and is accepted.
+        setdata!(solver.residual_x, -0.5)
+        @test Pagos._rayleigh_lambda_min(ExplicitVertical(), Float64, armed, solver, rt, ux, uy) ≈ 0.5
+        @test Pagos._tune!(solver.tuning, armed, solver, mech, cst, rt, NoMask(), ux, uy).lambda_min ≈ 0.5
+    end
+
+    # Under a viscosity continuation `µ̄` moves every iteration, and so does the Gershgorin
+    # bound behind `Δτ`; a bound refilled only at the tuner's cadence is optimistic in between
+    # (measured on ISMIP-HOM A: the residual burst from 1e-8 to 4e3 within 20 iterations of
+    # the continuation switching on). So `pseudo_transient!` refills `Δτ` every iteration at
+    # the prefactor in force. Pinned by stopping *inside* the warm-up (no cadence ever fires,
+    # `scale = 1`), where the only way `Δτ` can match the final `µ̄` is the per-iteration refill.
+    @testset "viscosity continuation refills Δτ every iteration, at the tuned prefactor" begin
+        nx, dx = 40, 5e3
+        Lx = nx * dx
+        H0, α, β0, n, amp = 1000.0, 1e-3, 1e3, 3.0, 0.95
+        ε̇_typical, μ_target = 1e-4, 1e5
+        A0 = (1 / (2 * μ_target * ε̇_typical^((n - 1) / n)))^n
+        vc = GlenViscosityContinuation(; n_glen = n, theta_mu = 1.0, strainrate_reg = 1e-8)
+        for tuning in (AutotunedDynamicRelaxation(), FixedTuning(theta_v = 1.0, gamma = 0.5))
+            g, r, mc = setup_slab(; nx, dx)
+            fill_analytic!(mc.topography.surface, r.grid2d, (x, y) -> H0 - α * x)
+            fill_analytic!(mc.topography.thickness, r.grid2d, (x, y) -> H0)
+            fill_analytic!(mc.friction.beta_eff, r.grid2d,
+                           (x, y) -> β0 * (1 + amp * cospi(2x / Lx)))
+            fill_analytic!(mc.material.rate_factor_depthaveraged, r.grid2d, (x, y) -> A0)
+            fill_analytic!(mc.material.viscosity_depthaveraged, r.grid2d, (x, y) -> μ_target)
+            sv = PseudoTransientSolver(g; maxiter = 37, abstol = 0.0,
+                pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.99),
+                viscosity_continuation = vc, tuning)
+            # The bound at the *initial* viscosity: what a solve without the refill would
+            # still be stepping with.
+            initial = copy(interior(sv.dtau_x))
+            pseudo_transient!(mc, cst, sv, r)
+            final = copy(interior(sv.dtau_x))
+            # Rebuild from the final `µ̄` with the prefactor each tuning uses: `2·cfl` for
+            # FixedTuning, the warm-up's `scale = 1` for the autotuner.
+            tuning isa FixedTuning ? pseudo_dt!(sv, mc, cst, r) :
+                                     Pagos.gershgorin_dt!(sv, mc, cst, r, NoMask(), 1.0)
+            @test final ≈ interior(sv.dtau_x) rtol=1e-12
+            @test !(final ≈ initial)          # `µ̄` did move, so the test discriminates
+        end
+    end
+
     # `pseudo_transient!` hoists the membrane stress's `2η̄H`/`η̄H̄` prefactor out of the
     # iteration (`membrane_prefactors!`). That is only sound while `µ̄` holds still, so the
     # loop refreshes the cache wherever `µ̄` is written. A missing refresh does not error —

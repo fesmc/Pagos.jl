@@ -58,7 +58,7 @@ alone.
 =#
 pagosA = nothing
 if RUN_PAGOS
-    println("\nPagos Blatter-Pattyn (periodic halo, hand-damped PT) on ",
+    println("\nPagos Blatter-Pattyn (periodic halo, autotuned PT, ImplicitVertical) on ",
             USE_GPU ? "GPU" : "CPU", ":")
     pagosA = Vector{Any}(undef, length(LENGTHS_KM))
     for (i, L) in enumerate(LENGTHS_KM)

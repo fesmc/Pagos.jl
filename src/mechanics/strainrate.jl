@@ -496,6 +496,107 @@ end
     end
 end
 
+# `_velocity_gradients!` and `_terrain_metric_correction!` for the momentum solve, as two
+# passes that between them read and write less than the pair they replace: the first writes
+# `x_dz`/`y_dz` alone (what the correction reads at neighbouring nodes, and the stress reads
+# as is); the second forms the four horizontal gradients and applies the correction in
+# registers before writing them once, where the old pair wrote them, read them back and
+# rewrote them. The three `w`-gradients, which the solve never reads, are not written at
+# all. Same arithmetic, same order, same gates — pinned bit-for-bit against the pair. (A
+# single-pass version that re-derived the neighbouring `x_dz` from the velocity was tried
+# first and cost 160 ms against the pair's 60 on 8 km AIS: sixteen sigma-axis derivatives per
+# cell are far dearer than one field round trip.)
+@kernel inbounds = true function _bp_vertical_gradients!(velocity, H, mask, grid, grid2d, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, _ = I
+    u, v = velocity.x, velocity.y
+    Z = zero(eltype(velocity.x_dz))
+    velocity.x_dz[I...] =
+        node_active(mask, NODE_ACX, i, j) ?
+        _dz_over_H(∂z_σ(u, grid, I...), lerp(H, NODE_ACX, grid2d, i, j, 1)) : Z
+    velocity.y_dz[I...] =
+        node_active(mask, NODE_ACY, i, j) ?
+        _dz_over_H(∂z_σ(v, grid, I...), lerp(H, NODE_ACY, grid2d, i, j, 1)) : Z
+end
+
+@kernel inbounds = true function _bp_horizontal_gradients!(velocity, H, s, mask, grid, grid2d, O)
+    I = @index(Global, NTuple)
+    I = I + O
+    i, j, k = I
+    u, v = velocity.x, velocity.y
+    T = eltype(velocity.x_dx)
+    Z = zero(T)
+    act_aa = node_active(mask, NODE_AA, i, j)
+    act_ab = node_active(mask, NODE_AB, i, j)
+    x_dx = act_aa ? ∂x(u, grid, I...) : Z
+    y_dy = act_aa ? ∂y(v, grid, I...) : Z
+    x_dy = act_ab ? ∂y(u, grid, I...) : Z
+    y_dx = act_ab ? ∂x(v, grid, I...) : Z
+
+    w = one(T) - T(zcenter(grid, k))
+    q4(f, a, b, c, d) = (f[a...] + f[b...] + f[c...] + f[d...]) / 4
+    if act_aa
+        cx =
+            (∂x(s, grid2d, i, j, 1) + ∂x(s, grid2d, i + 1, j, 1)) / 2 -
+            w * (∂x(H, grid2d, i, j, 1) + ∂x(H, grid2d, i + 1, j, 1)) / 2
+        cy =
+            (∂y(s, grid2d, i, j, 1) + ∂y(s, grid2d, i, j + 1, 1)) / 2 -
+            w * (∂y(H, grid2d, i, j, 1) + ∂y(H, grid2d, i, j + 1, 1)) / 2
+        uz = q4(velocity.x_dz, (i, j, k), (i + 1, j, k), (i, j, k + 1), (i + 1, j, k + 1))
+        vz = q4(velocity.y_dz, (i, j, k), (i, j + 1, k), (i, j, k + 1), (i, j + 1, k + 1))
+        x_dx -= cx * uz
+        y_dy -= cy * vz
+    end
+    if act_ab
+        cx =
+            (∂x(s, grid2d, i, j - 1, 1) + ∂x(s, grid2d, i, j, 1)) / 2 -
+            w * (∂x(H, grid2d, i, j - 1, 1) + ∂x(H, grid2d, i, j, 1)) / 2
+        cy =
+            (∂y(s, grid2d, i - 1, j, 1) + ∂y(s, grid2d, i, j, 1)) / 2 -
+            w * (∂y(H, grid2d, i - 1, j, 1) + ∂y(H, grid2d, i, j, 1)) / 2
+        uz = q4(velocity.x_dz, (i, j - 1, k), (i, j, k), (i, j - 1, k + 1), (i, j, k + 1))
+        vz = q4(velocity.y_dz, (i - 1, j, k), (i, j, k), (i - 1, j, k + 1), (i, j, k + 1))
+        x_dy -= cy * uz
+        y_dx -= cx * vz
+    end
+    velocity.x_dx[I...] = x_dx
+    velocity.y_dy[I...] = y_dy
+    velocity.x_dy[I...] = x_dy
+    velocity.y_dx[I...] = y_dx
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+The six velocity gradients the Blatter-Pattyn momentum solve reads — `x_dx`, `y_dy`, `x_dy`,
+`y_dx` with the terrain-following correction already applied, and `x_dz`, `y_dz` —
+bit-for-bit [`velocitygradients!`](@ref) followed by [`terrain_metric_correction!`](@ref),
+minus the three `w`-gradients the solve never reads and minus the round trip of the four
+corrected gradients through memory (see the source note above). Used by
+[`pseudo_rate!`](@ref) for [`MomentumBalance3D`](@ref); the two separate functions remain
+for diagnostics and tests.
+"""
+function bp_velocitygradients!(
+    velocity::VelocityState,
+    H,
+    s,
+    rt::Runtime,
+    mask::AbstractIceMask = NoMask(),
+)
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _bp_vertical_gradients! => (velocity, H, mask, rt.grid, rt.grid2d),
+    )
+    rt.launch(
+        rt.arch,
+        rt.grid,
+        _bp_horizontal_gradients! => (velocity, H, s, mask, rt.grid, rt.grid2d),
+    )
+    return nothing
+end
+
 """
 $(TYPEDSIGNATURES)
 

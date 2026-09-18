@@ -514,7 +514,11 @@ the `λ_min` mode the first quotient must see.
  - `cadence`: re-estimate every `cadence` iterations (default `50`), each re-estimation also
    refilling `Δτ` from a fresh Gershgorin bound. Duretz use ~100; tighter here because the
    first estimate is also what ends the warm-up. One re-estimation costs two reductions and
-   a kernel — the cost of one `ncheck` check, which defaults to every iteration.
+   a kernel — the cost of one `ncheck` check, which defaults to every iteration. The cadence
+   is **not** what keeps `Δτ` valid under a viscosity continuation: `µ` can move by orders of
+   magnitude between two re-estimations, so [`pseudo_transient!`](@ref) then refills `Δτ` at
+   the current `Δτ²` prefactor every iteration (`_dtau_refresh_due`), and a Rayleigh sample
+   above `1` — the signature of a bound that lagged `µ` — is rejected rather than clamped.
 
 `theta_v` and `gamma` have no existence outside [`FixedTuning`](@ref), so there is nothing
 here to leave unread: this type simply does not carry them.
@@ -646,21 +650,32 @@ Two wins, not one. The vertical diffusion leaves the explicit spectrum, and so d
 term the explicit bound has to carry. On 8 km Antarctic geometry 87 % of the residual left
 after 600 explicit iterations sits at `k = 1`, so that second win is the larger one.
 
-!!! warning "Verified on clean geometry; does not yet converge on real Antarctic geometry"
+!!! note "Verified on clean geometry and, since 2026-09, on the 8 km Antarctic restart"
     Same fixed point as [`ExplicitVertical`](@ref) and an iteration count flat in `nz` (1100 →
     1420 over `nz ∈ {4…32}`, against 1720 → 25 380 explicit) — on uniform slabs and on
     synthetically masked, laterally varying cases. On the real 8 km Antarctic restart the
-    solve instead *cycles*: down to `err ~ 3e-2`, a burst to `1e6`–`1e7`, recovery, repeat.
-    The cause is open and tracked in `pagos-roadmap/blatter-pattyn.md`, Phase 2 ("recurring
-    bursts"), which also records what has already been ruled out (the `cfl`/`λ_max` margin,
-    and the `λ_min = 1` clamp). Prefer [`ExplicitVertical`](@ref) on real geometry.
+    solve used to *cycle* (down to `err ~ 3e-2`, a burst to `1e6`–`1e7`, recovery, repeat;
+    `pagos-roadmap/blatter-pattyn.md`, Phase 2, "recurring bursts"). Re-run on 2026-09-18
+    (`docs/src/examples/ais-momentum/ssa-diva-bp.jl`) it converges to a scaled residual of
+    `1e-3` in 390 iterations with the SSA/DIVA solver settings, the residual decreasing at
+    every check. On ISMIP-HOM A it is 3× cheaper than the explicit treatment (300 against
+    1000 iterations at `L = 80 km`). Under a viscosity continuation it needs the
+    every-iteration `Δτ` refill `pseudo_transient!` now performs: with the bound refilled only
+    every 20 iterations it diverged outright at `theta_mu = 0.2`, where the explicit
+    treatment merely stalled.
 
 # Fields
  - `thomas_x`, `thomas_y`: the Thomas back-substitution coefficients `c'`, one column field
-   per velocity component. The forward sweep's `b'` and `d'` never outlive one layer (`d'` is
-   written into the velocity field itself), so these two arrays are the entire extra
-   footprint — allocated here rather than on [`PseudoTransientSolver`](@ref) so that an
-   [`ExplicitVertical`](@ref) solve pays nothing for a strategy it does not use.
+   per velocity component; `low_x`/`low_y` the sub-diagonal and `w_x`/`w_y` the forward
+   sweep's pivots. All six depend on `µ`, `H`, `β` and the horizontal row sum alone — never
+   on `Δτ` or the accumulator — so they are **factorized once per viscosity**
+   (`_factorize_vertical!`, called from `_bp_cache!`: at the start of a solve, and again
+   every iteration only under a viscosity continuation) and the per-iteration line solve is
+   a pure sweep over three cached fields. Measured on the 8 km Antarctic restart the
+   un-cached sweep, which rebuilt every coefficient (two harmonic viscosity interpolations
+   and a row sum per layer) each iteration, was the single most expensive kernel of the
+   loop, 95 ms of 240. Allocated here rather than on [`PseudoTransientSolver`](@ref) so that
+   an [`ExplicitVertical`](@ref) solve pays nothing for a strategy it does not use.
 
 Construct from the same [`StaggeredGrid`](@ref) the solver is built on:
 
@@ -681,6 +696,10 @@ solver = PseudoTransientSolver(grid, BlatterPattynMomentumBalance();
 struct ImplicitVertical{MX,MY} <: AbstractVerticalTreatment
     thomas_x::MX
     thomas_y::MY
+    low_x::MX
+    low_y::MY
+    w_x::MX
+    w_y::MY
 end
 Adapt.@adapt_structure ImplicitVertical
 
@@ -688,10 +707,9 @@ function ImplicitVertical(grid::StaggeredGrid; halo = 1)
     (; arch) = grid
     g = grid.grid
     T = eltype(g)
-    return ImplicitVertical(
-        _field(arch, g, NODE_ACX, T, halo),
-        _field(arch, g, NODE_ACY, T, halo),
-    )
+    acx() = _field(arch, g, NODE_ACX, T, halo)
+    acy() = _field(arch, g, NODE_ACY, T, halo)
+    return ImplicitVertical(acx(), acy(), acx(), acy(), acx(), acy())
 end
 
 """
@@ -799,6 +817,9 @@ struct PseudoTransientSolver{
     MY,
     PA,
     PB,
+    VAB,
+    VXZ,
+    VYZ,
     PT<:AbstractPseudoTimeStep,
     CV<:AbstractPTConvergence,
     VC<:AbstractViscosityContinuation,
@@ -826,6 +847,15 @@ struct PseudoTransientSolver{
     # path is per-layer from `material.viscosity` and never reads these.
     membrane_pre_aa::PA
     membrane_pre_ab::PB
+
+    # The Blatter-Pattyn counterpart: `µ` harmonically interpolated onto the `ab` corners
+    # and the `acx_ac`/`acy_ac` interfaces (`viscosity_interpolations!`), which the membrane
+    # stress, the Gershgorin bound and the implicit line solve all read instead of each
+    # re-deriving it from `material.viscosity` with `hlerp` every iteration. Rebuilt only
+    # where `µ` moves (`_refresh_bp_cache!`). Degenerate `1×1` under a `MomentumBalance2D`.
+    viscosity_ab::VAB
+    viscosity_acxz::VXZ
+    viscosity_acyz::VYZ
 
     pseudo_timestep::PT
     convergence::CV
@@ -892,6 +922,10 @@ function PseudoTransientSolver(
         # on: `aa` for `membrane_xx`/`yy`, `ab` for `membrane_xy`.
         _field(arch, g, NODE_AA, T, h),
         _field(arch, g, NODE_AB, T, h),
+        # BP's viscosity-interpolation cache has no reader on this path — degenerate.
+        _field(arch, _degenerate_grid(grid), NODE_AB, T, h),
+        _field(arch, _degenerate_grid(grid), NODE_AB, T, h),
+        _field(arch, _degenerate_grid(grid), NODE_AB, T, h),
         pseudo_timestep,
         convergence,
         viscosity_continuation,
@@ -964,6 +998,10 @@ function PseudoTransientSolver(
         acy(),
         _field(arch, d, NODE_AA, T, halo),
         _field(arch, d, NODE_AB, T, halo),
+        # `µ` at the corners and the two interface classes — see `viscosity_interpolations!`.
+        _field(arch, g, NODE_AB, T, halo),
+        _field(arch, g, NODE_ACX_AC, T, halo),
+        _field(arch, g, NODE_ACY_AC, T, halo),
         pseudo_timestep,
         convergence,
         viscosity_continuation,

@@ -21,16 +21,19 @@ at most one `MechanicState` alive at a time; Blatter-Pattyn's is by far the larg
 column tensor fields against SSA/DIVA's handful of 2D ones), so this script never holds two
 solves' `MechanicState`s at once.
 
-!!! warning "The BP run below does not converge on this geometry"
-    It uses [`ImplicitVertical`](@ref) (`pagos-roadmap/blatter-pattyn.md`, Phase 2), which removes
-    the aspect-ratio penalty on `Δτ` and is verified — same fixed point, iteration count flat
-    in `nz` — on clean and synthetically masked geometry. On the real 8 km restart it instead
-    *cycles*: down to `err ~ 3e-2`, a burst to `1e6`–`1e7`, recovery over ~60 iterations,
-    repeat. The cause is open (Phase 2's "recurring bursts" section ranks the hypotheses);
-    it is not the `cfl` margin and not the `λ_min` clamp, both of which were ruled out.
-    **The BP panel below is therefore not a converged solve** — read `bp.converged` before
-    reading the figure. Swap in `ExplicitVertical()` (the default, i.e. drop the keyword) for
-    a BP field that is actually converged, at Phase 1's iteration cost.
+!!! note "The BP run uses `ImplicitVertical`, and converges"
+    [`ImplicitVertical`](@ref) (`pagos-roadmap/blatter-pattyn.md`, Phase 2) removes the
+    aspect-ratio penalty on `Δτ`. Until 2026-08 it *cycled* on this restart — down to
+    `err ~ 3e-2`, a burst to `1e6`–`1e7`, recovery, repeat — which is why this call used to
+    carry its own `abstol = 4e-2`, `cfl = 0.5`, `cadence = 1`. Re-run on 2026-09-18 with the
+    code as it then stood, the bursts were gone: `abstol = 1e-3` in 480 iterations with those
+    cautious settings and in 390 with the shared `SOLVER_KWARGS` (`cfl = 0.8`, `cadence = 50`),
+    the residual decreasing at every printout and both settings giving the same speeds. So
+    the BP solve now takes the same kwargs as SSA and DIVA. Which intervening change removed
+    the bursts was not isolated; the roadmap's "recurring bursts" section keeps the record.
+    Against Yelmo's `uxy_bar`: grounded median 8.9 vs 7.8 m/yr, floating median 556 vs 414,
+    max 5029 vs 3951 — BP runs faster than Yelmo on the shelves, a discretization question
+    (`blatter-pattyn-equations.md`, items A1–A3), not a convergence one.
 
 !!! note "Choosing the horizontal resolution"
     `resolution_km` selects which Yelmo restart `helpers.jl` loads — `8` or `16`, the two
@@ -46,12 +49,7 @@ println("SSA:  ", (; ssa.converged, ssa.iterations, ssa.elapsed, ssa.residual))
 diva = run_solve(DIVAMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...)
 println("DIVA: ", (; diva.converged, diva.iterations, diva.elapsed, diva.residual))
 
-bp   = run_solve(BlatterPattynMomentumBalance(), grid, rt, mask;
-    abstol = 4e-2, maxiter = 2000, ncheck = 10, printout_every = 10,
-    pseudo_timestep = GershgorinPseudoTimeStep(cfl = 0.5),
-    convergence = ScaledResidual(),
-    friction_update = ActiveFrictionUpdate(),
-    tuning = AutotunedDynamicRelaxation(cadence = 1),
+bp   = run_solve(BlatterPattynMomentumBalance(), grid, rt, mask; SOLVER_KWARGS...,
     vertical_treatment = ImplicitVertical(grid))
 println("BP:   ", (; bp.converged, bp.iterations, bp.elapsed, bp.residual))
 
